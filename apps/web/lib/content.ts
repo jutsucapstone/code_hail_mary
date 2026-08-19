@@ -361,3 +361,45 @@ export const footerNav = [
     ],
   },
 ] as const;
+
+/**
+ * The pilot funnel — the first screen behind "Request a pilot".
+ *
+ * Lives here with the rest of the copy rather than inline in the page, for the same
+ * reason the marketing sections do: the wording of the two paths is a product decision
+ * that gets edited far more often than the layout around it.
+ *
+ * Each card says who it is *for* before it says what it does. "Admin / HR" alone is a
+ * job title; a visitor deciding between two doors needs to recognise themselves.
+ */
+export const pilot = {
+  eyebrow: "Pilot access",
+  title: "Choose how you're joining",
+  lead: "JUTSU builds one living memory of your organisation. How you get in depends on whether you're setting it up or joining one that already exists.",
+  paths: [
+    {
+      id: "admin",
+      href: "/pilot/admin",
+      icon: "org",
+      label: "I'm setting up my organisation",
+      role: "Admin, HR or IT",
+      description:
+        "Register your organisation, connect the tools it already runs on, and invite your people. You'll be the first administrator.",
+      note: "Creates a new organisation",
+    },
+    {
+      id: "employee",
+      href: "/pilot/employee",
+      icon: "employee",
+      label: "I've been invited by my organisation",
+      role: "Employee",
+      description:
+        "Sign in with the JUTSU ID your admin issued you, complete your profile, and connect your own accounts. You choose what to connect.",
+      note: "Requires a JUTSU ID",
+    },
+  ],
+  reassurance: [
+    "Read-only. JUTSU never writes back to your tools.",
+    "You connect each account yourself. Nothing is connected on your behalf.",
+  ],
+} as const;

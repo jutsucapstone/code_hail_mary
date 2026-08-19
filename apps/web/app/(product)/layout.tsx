@@ -5,6 +5,7 @@ import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { requireSession } from "@/lib/auth";
 import { SURFACES } from "@/lib/surfaces";
+import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
 export const metadata: Metadata = {
   // The product is behind auth; keeping it out of the index is deliberate.
@@ -60,7 +61,7 @@ export default async function ProductLayout({ children }: { children: React.Reac
         </div>
       </header>
 
-      <main className="flex-1">{children}</main>
+      <main id={MAIN_CONTENT_ID} className="flex-1">{children}</main>
     </div>
   );
 }

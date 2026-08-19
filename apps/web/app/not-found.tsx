@@ -5,6 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { Container } from "@/components/site/section";
 import { nav } from "@/lib/content";
+import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
 export const metadata: Metadata = {
   title: "Page not found",
@@ -17,7 +18,10 @@ export const metadata: Metadata = {
  */
 export default function NotFound() {
   return (
-    <main className="relative isolate flex min-h-dvh flex-col items-center justify-center py-24">
+    <main
+      id={MAIN_CONTENT_ID}
+      className="relative isolate flex min-h-dvh flex-col items-center justify-center py-24"
+    >
       <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-clip">
         <div className="hairline-grid radial-fade absolute inset-0" />
         <div className="glow-warm absolute left-1/2 top-1/4 h-[28rem] w-[46rem] max-w-[130vw] -translate-x-1/2 rounded-[50%] blur-[130px]" />

@@ -5,6 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import { Container } from "@/components/site/section";
 import { SiteFooter } from "@/components/site/site-footer";
 import { SiteHeader } from "@/components/site/site-header";
+import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
 /**
  * Shell for the standalone legal pages.
@@ -30,7 +31,7 @@ export function LegalPage({
         <SiteHeader />
       </div>
 
-      <main className="flex-1 pb-24 pt-32 lg:pt-40">
+      <main id={MAIN_CONTENT_ID} className="flex-1 pb-24 pt-32 lg:pt-40">
         <Container>
           <Link
             href="/"

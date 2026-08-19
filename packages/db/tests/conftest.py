@@ -125,6 +125,16 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
     org_a, org_b = uuid.uuid4(), uuid.uuid4()
 
     for org_id, label in ((org_a, "alpha"), (org_b, "beta")):
+        # The scope is set BEFORE the organisation row exists, and that ordering is the
+        # point rather than an accident. Migration 0002 put RLS on `orgs` itself, with a
+        # `WITH CHECK` on `id`, so an unscoped INSERT is rejected — and the row cannot be
+        # scoped to itself before it exists. The id is therefore minted client-side and
+        # the GUC set to it first. Real registration has exactly the same shape: it
+        # creates the tenant it is already scoped to, in one transaction.
+        await conn.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
+        )
+
         await conn.execute(
             text("INSERT INTO orgs (id, name) VALUES (:id, :name)"),
             {"id": org_id, "name": label},
@@ -136,11 +146,6 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
                 "VALUES (:id, :org, 'local', '{}'::jsonb)"
             ),
             {"id": source_id, "org": org_id},
-        )
-
-        # RLS is FORCEd, so even seeding must be scoped.
-        await conn.execute(
-            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
         )
 
         doc_id = uuid.uuid4()

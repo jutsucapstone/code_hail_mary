@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { WordmarkGradientDefs } from "@/components/site/wordmark-art";
 import { ThemeProvider } from "@/components/theme-provider";
 import { faq, siteConfig } from "@/lib/content";
+import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
 import "./globals.css";
 
@@ -123,7 +124,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="grain flex min-h-full flex-col bg-background text-foreground">
         <a
-          href="#hero"
+          href={`#${MAIN_CONTENT_ID}`}
           className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:left-4 focus-visible:top-4 focus-visible:z-100 focus-visible:rounded-md focus-visible:bg-brand focus-visible:px-4 focus-visible:py-2 focus-visible:text-sm focus-visible:font-medium focus-visible:text-brand-foreground"
         >
           Skip to main content
