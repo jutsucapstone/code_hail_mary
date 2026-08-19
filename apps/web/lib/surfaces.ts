@@ -85,3 +85,16 @@ export const surfaceBySlug = (slug: string): Surface | undefined =>
 
 /** Path prefixes the middleware treats as authenticated-only. */
 export const PRODUCT_PATHS: readonly string[] = SURFACES.map((s) => `/${s.slug}`);
+
+/**
+ * The door into the product from the marketing site.
+ *
+ * A Route Handler rather than a page: it mints the stub session cookie and redirects,
+ * and a server component cannot set a cookie during render. That distinction matters at
+ * every call site — a `<Link>` to this path would be fetched as RSC and the cookie would
+ * never be set, so it must always be a plain anchor.
+ */
+export const PLATFORM_ENTRY_PATH = "/enter";
+
+/** Where `/enter` lands when no valid `next` is supplied. */
+export const DEFAULT_SURFACE = `/${SURFACES[0].slug}`;

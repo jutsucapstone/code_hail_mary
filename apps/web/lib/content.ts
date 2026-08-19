@@ -7,6 +7,17 @@
  * without touching layout code, and it stays trivially portable to a CMS.
  */
 
+import { PLATFORM_ENTRY_PATH } from "@/lib/surfaces";
+
+/**
+ * The two destinations every call to action resolves to.
+ *
+ * "Request a pilot" opens the product; "Contact us" reaches a person. Naming them once
+ * keeps the header, hero, contact section, announcement bar and footer from drifting
+ * apart — the CTA that matters most appears in five places.
+ */
+const CONTACT_MAILTO = "mailto:hello@jutsu.dev?subject=JUTSU%20enquiry";
+
 export const siteConfig = {
   name: "JUTSU",
   legalName: "Corporate Memory Graph",
@@ -54,12 +65,14 @@ export const hero = {
   tagline: siteConfig.tagline,
   subhead:
     "One living memory of your organization — people, projects, decisions and skills in a single temporal graph. Ask anything, trace any decision, lose nothing.",
-  primaryCta: { label: "Request a pilot", href: "#contact" },
-  // Primary scrolls to the CTA section; this one is the direct action, so the
-  // two buttons do not both land in the same place.
+  // Opens the product itself. `/enter` is a Route Handler that mints the preview
+  // session and redirects, so this must stay a plain anchor — see app/enter/route.ts.
+  primaryCta: { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+  // Primary opens the platform; this one reaches a human, so the two buttons do not
+  // land in the same place.
   secondaryCta: {
     label: "Contact us",
-    href: "mailto:hello@jutsu.dev?subject=JUTSU%20enquiry",
+    href: CONTACT_MAILTO,
   },
   kicker: "Ask anything. Trace any decision. Lose nothing.",
   stack: [
@@ -245,11 +258,11 @@ export const contact = {
   eyebrow: "Get started",
   title: "Bring your organization's memory online.",
   lead: "A read-only overlay on the systems you already run. No process disruption, no migration, a pilot in twelve weeks.",
-  primaryCta: {
-    label: "Request a pilot",
-    href: "mailto:hello@jutsu.dev?subject=JUTSU%20pilot%20enquiry",
-  },
-  secondaryCta: { label: "See the comparison", href: "#landscape" },
+  // Also drives the header button, desktop and mobile (site-header.tsx).
+  primaryCta: { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+  // The section's route to a human. Without it this block would have no way to reach
+  // one, now that the primary opens the platform instead of a mail client.
+  secondaryCta: { label: "Contact us", href: CONTACT_MAILTO },
 } as const;
 
 /** Thin bar above the header. Dismissed state persists per browser. */
@@ -257,7 +270,7 @@ export const announcement = {
   id: "private-beta-2026",
   label: "Private beta",
   message: "JUTSU is onboarding design partners.",
-  cta: { label: "Request access", href: "#contact" },
+  cta: { label: "Request access", href: PLATFORM_ENTRY_PATH },
 } as const;
 
 export const howItWorks = {
@@ -335,8 +348,8 @@ export const footerNav = [
     heading: "Company",
     links: [
       { label: "Questions", href: "#faq" },
-      { label: "Request a pilot", href: "#contact" },
-      { label: "Contact", href: "mailto:hello@jutsu.dev" },
+      { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+      { label: "Contact us", href: CONTACT_MAILTO },
     ],
   },
   {
