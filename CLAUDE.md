@@ -120,6 +120,24 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **Query and document embeddings use different `task_type` values.** Using one for both costs
   several points of recall and is invisible until eval.
 
+### Postgres / RLS traps (`packages/db`)
+
+- **A superuser bypasses RLS unconditionally, and `FORCE` does not change that** — FORCE only
+  covers the table *owner*. The app therefore connects as `jutsu_app`
+  (`NOSUPERUSER NOBYPASSRLS`); migrations run as the owner via `MIGRATION_DATABASE_URL`.
+  Point the app at the owner and every policy goes silently inert while every isolation
+  test still passes. `test_app_role_cannot_bypass_rls` exists to catch that regression.
+- **`current_setting('app.current_org_id', true)` returns NULL only until the GUC is first
+  set.** Afterwards a fresh transaction reads `''`, and `''::uuid` *raises* instead of
+  filtering. Every policy predicate wraps it in `NULLIF(…, '')` so unset and reset both
+  fail closed.
+- **`SET LOCAL x = :param` is a syntax error** — `SET` is a utility statement and takes no
+  bind parameters. Use `set_config(name, value, true)`, which is transaction-scoped *and*
+  parameterisable, so an org id from a request context is never concatenated into SQL.
+- **Chunk and ACL rows carry a denormalised `org_id`** with a composite FK to
+  `(documents.id, documents.org_id)`. Dropping it to "match §8" makes the RLS policy a
+  correlated subquery on the hot retrieval path (ADR 0002).
+
 ### Landing-page traps (`apps/web`)
 
 - `--brand` / `--graph` **flip lightness role between themes**; `--brand-foreground` inverts to

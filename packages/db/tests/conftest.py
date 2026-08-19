@@ -4,14 +4,22 @@ These need a real database — pgvector, RLS and `FORCE ROW LEVEL SECURITY` have
 in-memory equivalent, and a SQLite stand-in would pass while proving nothing about the
 thing S1 exists to guarantee.
 
-Without `JUTSU_TEST_DATABASE_URL` the tests skip with a message naming what is missing,
-so `make preflight` stays usable on a machine without Docker. CI sets the variable
-against a pgvector service container, so they run for real there. The S1 gate requires
-zero skips.
+Two URLs, deliberately:
+
+  * `JUTSU_TEST_DATABASE_URL` — the **restricted** role (NOSUPERUSER NOBYPASSRLS) that
+    the application uses. Every isolation assertion runs through this one, because a
+    superuser bypasses RLS unconditionally and the whole suite would pass against
+    policies that never engage.
+  * `JUTSU_TEST_MIGRATION_URL` — the owner, which is the only role with DDL rights.
+
+Without them the tests skip, naming what is missing, so `make preflight` stays usable on
+a machine without Docker. CI sets both against a pgvector service container. The S1 gate
+requires zero skips.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -24,11 +32,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 TEST_DB_ENV = "JUTSU_TEST_DATABASE_URL"
+MIGRATION_DB_ENV = "JUTSU_TEST_MIGRATION_URL"
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get(TEST_DB_ENV),
     reason=f"{TEST_DB_ENV} is unset — start Postgres with `make up` and export it",
 )
+
+
+async def run_alembic(cfg: Config, direction: str, revision: str) -> None:
+    """Run an Alembic command from inside an async test.
+
+    Alembic's env.py is async and ends in `asyncio.run()`. Called directly from an
+    async fixture that would raise "cannot be called from a running event loop", so the
+    command goes to a worker thread where no loop is running yet.
+    """
+    fn = command.upgrade if direction == "upgrade" else command.downgrade
+    await asyncio.to_thread(fn, cfg, revision)
 
 
 def alembic_config(url: str) -> Config:
@@ -46,10 +66,17 @@ def alembic_config(url: str) -> Config:
 
 @pytest.fixture(scope="session")
 def database_url() -> str:
+    """Connection as the restricted application role — what RLS is tested through."""
     url = os.environ.get(TEST_DB_ENV)
     if not url:
         pytest.skip(f"{TEST_DB_ENV} is unset")
     return url
+
+
+@pytest.fixture(scope="session")
+def migration_url(database_url: str) -> str:
+    """Connection as the owner. Only this role can run DDL."""
+    return os.environ.get(MIGRATION_DB_ENV, database_url)
 
 
 @pytest.fixture
@@ -60,20 +87,23 @@ async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
 
 
 @pytest.fixture
-async def migrated(database_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+async def migrated(
+    database_url: str, migration_url: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[str]:
     """A database at head, torn back down afterwards.
 
     Migrations run through Alembic rather than `metadata.create_all` on purpose: the RLS
     policies, the HNSW index and the extension only exist in the migration, so
     create_all would produce a schema that looks complete and enforces nothing.
     """
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    cfg = alembic_config(database_url)
+    # DDL runs as the owner; the yielded URL is the restricted role the tests use.
+    monkeypatch.setenv("DATABASE_URL", migration_url)
+    cfg = alembic_config(migration_url)
 
-    command.downgrade(cfg, "base")  # start from a known-empty state
-    command.upgrade(cfg, "head")
+    await run_alembic(cfg, "downgrade", "base")  # start from a known-empty state
+    await run_alembic(cfg, "upgrade", "head")
     yield database_url
-    command.downgrade(cfg, "base")
+    await run_alembic(cfg, "downgrade", "base")
 
 
 @pytest.fixture
@@ -109,7 +139,9 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
         )
 
         # RLS is FORCEd, so even seeding must be scoped.
-        await conn.execute(text("SET LOCAL app.current_org_id = :org"), {"org": str(org_id)})
+        await conn.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
+        )
 
         doc_id = uuid.uuid4()
         await conn.execute(

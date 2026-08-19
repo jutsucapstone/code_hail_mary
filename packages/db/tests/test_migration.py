@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from alembic import command
-from conftest import alembic_config
+from conftest import alembic_config, run_alembic
 from jutsu_db import EMBEDDING_DIM
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
@@ -70,18 +69,20 @@ async def _fingerprint(conn: AsyncConnection) -> dict[str, object]:
 
 class TestReversibility:
     async def test_downgrade_then_upgrade_restores_identical_schema(
-        self, migrated: str, monkeypatch: pytest.MonkeyPatch
+        self, migrated: str, migration_url: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABASE_URL", migrated)
-        cfg = alembic_config(migrated)
+        # DDL and pg_catalog reads both go through the owner: the application role
+        # deliberately cannot run DDL.
+        monkeypatch.setenv("DATABASE_URL", migration_url)
+        cfg = alembic_config(migration_url)
 
-        engine = create_async_engine(migrated)
+        engine = create_async_engine(migration_url)
         try:
             async with engine.connect() as conn:
                 before = await _fingerprint(conn)
 
-            command.downgrade(cfg, "base")
-            command.upgrade(cfg, "head")
+            await run_alembic(cfg, "downgrade", "base")
+            await run_alembic(cfg, "upgrade", "head")
 
             async with engine.connect() as conn:
                 after = await _fingerprint(conn)
@@ -92,15 +93,15 @@ class TestReversibility:
             assert before[section] == after[section], f"{section} differs after round trip"
 
     async def test_downgrade_leaves_no_domain_tables(
-        self, migrated: str, monkeypatch: pytest.MonkeyPatch
+        self, migrated: str, migration_url: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A partial downgrade is worse than none — the next upgrade then fails on a
         table that already exists."""
-        monkeypatch.setenv("DATABASE_URL", migrated)
-        cfg = alembic_config(migrated)
-        command.downgrade(cfg, "base")
+        monkeypatch.setenv("DATABASE_URL", migration_url)
+        cfg = alembic_config(migration_url)
+        await run_alembic(cfg, "downgrade", "base")
 
-        engine = create_async_engine(migrated)
+        engine = create_async_engine(migration_url)
         try:
             async with engine.connect() as conn:
                 remaining = (
@@ -119,7 +120,7 @@ class TestReversibility:
             await engine.dispose()
 
         assert remaining == []
-        command.upgrade(cfg, "head")  # restore for the fixture teardown
+        await run_alembic(cfg, "upgrade", "head")  # restore for the fixture teardown
 
 
 class TestSchemaShape:

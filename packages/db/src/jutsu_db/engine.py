@@ -4,11 +4,17 @@ The whole tenancy guarantee rests on one thing: every query runs in a transactio
 `app.current_org_id` has been set. `org_session()` is the only sanctioned way to get a
 session, so that cannot be forgotten by accident.
 
-Why `SET LOCAL` and not `SET`: connections are pooled. A plain `SET` outlives the
-transaction and stays on the connection when it returns to the pool, so the next
-request — a different org — would inherit it. `SET LOCAL` is scoped to the transaction
-and is reverted on commit or rollback. This is the single most dangerous detail in the
-persistence layer.
+Two details carry the whole guarantee.
+
+Transaction scope: connections are pooled, so a plain `SET` outlives the transaction
+and rides the connection back into the pool, where the next request — a different org —
+inherits it. The scope must be the transaction, not the session.
+
+Parameter binding: `SET LOCAL x = $1` is a syntax error. `SET` is a utility statement
+and takes no bind parameters, so the org id would have to be interpolated into SQL —
+with a value that arrives from a request context. `set_config(name, value, is_local)`
+is the function form: it takes `is_local = true` for transaction scope *and* accepts
+bound parameters, so nothing is ever concatenated into the statement.
 """
 
 from __future__ import annotations
@@ -91,8 +97,12 @@ async def org_session(org_id: UUID) -> AsyncIterator[AsyncSession]:
     """
     session_factory = get_sessionmaker()
     async with session_factory() as session, session.begin():
-        # Bound parameter, not interpolation — org_id arrives from a request context.
-        await session.execute(text(f"SET LOCAL {ORG_GUC} = :org_id"), {"org_id": str(org_id)})
+        # set_config(..., is_local=true) is SET LOCAL in function form, so the org id
+        # is a bound parameter rather than string-concatenated into a utility statement.
+        await session.execute(
+            text("SELECT set_config(:guc, :org_id, true)"),
+            {"guc": ORG_GUC, "org_id": str(org_id)},
+        )
         yield session
 
 

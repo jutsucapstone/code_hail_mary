@@ -28,10 +28,24 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    url = os.environ.get("DATABASE_URL")
+    """The URL migrations connect through.
+
+    `MIGRATION_DATABASE_URL` wins because the two are different roles: the application
+    connects as a NOSUPERUSER NOBYPASSRLS role that cannot run DDL, and only the owner
+    can. Falls back to `DATABASE_URL` for deployments where one role does both.
+    """
+    # An explicitly configured URL — what the test suite passes — outranks the
+    # environment, so a stray DATABASE_URL cannot redirect a migration at the wrong
+    # database.
+    configured = config.get_main_option("sqlalchemy.url", None)
+    if configured:
+        return configured
+
+    url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError(
-            "DATABASE_URL is not set. Copy .env.example to .env, or run `make up` first."
+            "Neither MIGRATION_DATABASE_URL nor DATABASE_URL is set. "
+            "Copy .env.example to .env, or run `make up` first."
         )
     return url
 

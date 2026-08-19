@@ -27,6 +27,9 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Runs once on an empty volume. Creates the restricted role the app connects
+      # as — the bootstrap role is a superuser and bypasses RLS entirely.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U jutsu -d jutsu"]
       interval: 5s

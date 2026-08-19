@@ -44,7 +44,9 @@ def upgrade() -> None:
         "confluence",
         "github",
         name="source_system",
-        create_type=True,
+        # Created once, explicitly, below. Leaving this True makes create_table
+        # emit a second CREATE TYPE and the migration dies on DuplicateObject.
+        create_type=False,
     )
     pii_type = pg.ENUM(
         "person",
@@ -54,7 +56,7 @@ def upgrade() -> None:
         "gov_id",
         "financial",
         name="pii_type",
-        create_type=True,
+        create_type=False,
     )
     source_system.create(op.get_bind(), checkfirst=True)
     pii_type.create(op.get_bind(), checkfirst=True)
@@ -309,17 +311,44 @@ def upgrade() -> None:
     # every local test would pass against an unenforced policy and the leak would only
     # appear in production under a different role.
     #
-    # `current_setting(..., true)` returns NULL when the GUC is unset, so the predicate
-    # is NULL and no row qualifies: an unscoped session sees nothing rather than
-    # everything. Failing closed is the point.
+    # The predicate must yield NULL for an unscoped session so no row qualifies —
+    # failing closed is the point. NULLIF is load-bearing: `current_setting(.., true)`
+    # returns NULL only while the GUC has never been set in the session. After any
+    # set_config, a later transaction sees an EMPTY STRING instead, and ''::uuid
+    # raises InvalidTextRepresentation rather than filtering. NULLIF turns both the
+    # unset and the reset case back into NULL.
     for table in RLS_TABLES:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
         op.execute(
             f"CREATE POLICY {table}_org_isolation ON {table} "
-            f"USING (org_id = current_setting('app.current_org_id', true)::uuid) "
-            f"WITH CHECK (org_id = current_setting('app.current_org_id', true)::uuid)"
+            f"USING (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid) "
+            f"WITH CHECK (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid)"
         )
+
+    # ------------------------------------------------------------------ app role
+    #
+    # Migrations run as the owner; the application runs as jutsu_app, which is
+    # NOSUPERUSER NOBYPASSRLS so the policies above actually bind to it. A superuser
+    # bypasses RLS unconditionally and FORCE does not change that, so connecting the
+    # app as the bootstrap role would leave every policy inert.
+    #
+    # Guarded on existence: the role is created by infrastructure (compose initdb in
+    # dev, Terraform in staging and prod), not by this migration, because a role is
+    # cluster-wide and its password belongs in Secret Manager.
+    op.execute(
+        """
+        DO $do$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'jutsu_app') THEN
+            GRANT USAGE ON SCHEMA public TO jutsu_app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO jutsu_app;
+            GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO jutsu_app;
+            GRANT USAGE ON SCHEMA langgraph TO jutsu_app;
+          END IF;
+        END $do$;
+        """
+    )
 
 
 def downgrade() -> None:

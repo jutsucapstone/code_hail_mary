@@ -20,7 +20,28 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 
 async def _scope(conn: AsyncConnection, org_id: uuid.UUID) -> None:
-    await conn.execute(text("SET LOCAL app.current_org_id = :org"), {"org": str(org_id)})
+    await conn.execute(
+        text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
+    )
+
+
+class TestConnectingRole:
+    async def test_app_role_cannot_bypass_rls(self, conn: AsyncConnection) -> None:
+        """The role the application connects as must not be able to ignore the policies.
+
+        This is the test that would have caught the real failure found in S1: the
+        bootstrap role created by the Postgres image is a SUPERUSER, superusers bypass
+        row-level security unconditionally, and `FORCE ROW LEVEL SECURITY` does not
+        change that — FORCE only covers the table owner. Connecting as that role left
+        every policy inert while every other isolation assertion still passed.
+        """
+        row = (
+            await conn.execute(
+                text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            )
+        ).one()
+        assert row.rolsuper is False, "connected as a SUPERUSER — RLS is bypassed entirely"
+        assert row.rolbypassrls is False, "connected role has BYPASSRLS — RLS is bypassed"
 
 
 class TestPolicyIsInstalled:
