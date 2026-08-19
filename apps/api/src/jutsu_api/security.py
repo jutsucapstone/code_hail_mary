@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, Final, TypeVar
 from uuid import UUID
@@ -42,6 +42,7 @@ __all__ = [
     "GuardedAPIRoute",
     "Principal",
     "UndeclaredRoute",
+    "iter_api_routes",
     "public",
     "requires",
     "session_token_hash",
@@ -197,6 +198,32 @@ def verify_csrf(request: Request, expected_hash: bytes) -> None:
         hashlib.sha256(presented.encode("ascii")).digest(), expected_hash
     ):
         raise Unauthenticated("Missing or invalid CSRF token.")
+
+
+def iter_api_routes(container: object) -> Iterator[APIRoute]:
+    """Every APIRoute reachable from an app or router, including nested ones.
+
+    Not simply `app.routes`. This FastAPI version does not flatten `include_router` into
+    the application's route list — it inserts a wrapper object that holds its own
+    `routes` — so a naive walk sees the top-level endpoints and none of the mounted ones.
+    A coverage test written against `app.routes` therefore passes while checking almost
+    nothing, which is the failure mode it exists to prevent.
+    """
+    for route in getattr(container, "routes", None) or []:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+
+        # FastAPI 0.141 does not flatten `include_router` into the application's route
+        # list. It inserts an `_IncludedRouter` wrapper whose `routes` attribute is None
+        # and keeps the real APIRouter on `original_router`. Following only `.routes`
+        # therefore walks straight past every mounted endpoint — which is exactly how a
+        # coverage test can pass while checking almost nothing.
+        nested = getattr(route, "original_router", None)
+        if nested is not None:
+            yield from iter_api_routes(nested)
+        elif getattr(route, "routes", None):
+            yield from iter_api_routes(route)
 
 
 PrincipalResolver = Callable[[Request], Awaitable[Principal]]

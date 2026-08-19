@@ -17,7 +17,6 @@ import hashlib
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request
-from fastapi.routing import APIRoute
 from jutsu_api.main import create_app
 from jutsu_api.security import (
     CSRF_HEADER,
@@ -25,6 +24,7 @@ from jutsu_api.security import (
     Principal,
     UndeclaredRoute,
     declaration_of,
+    iter_api_routes,
     public,
     requires,
     session_token_hash,
@@ -111,11 +111,12 @@ class TestEveryRouteInTheLiveApp:
         """
         app = create_app()
 
-        undeclared = [
-            route.path
-            for route in app.routes
-            if isinstance(route, APIRoute) and declaration_of(route.endpoint) is None
-        ]
+        routes = list(iter_api_routes(app))
+        # Guards the guard: if the traversal stops seeing mounted routers, this test
+        # silently checks almost nothing.
+        assert len(routes) >= 5, "route traversal is not reaching the mounted routers"
+
+        undeclared = [route.path for route in routes if declaration_of(route.endpoint) is None]
         assert not undeclared, (
             f"routes with no authorization declaration: {undeclared}. "
             "Register them through a router with route_class=GuardedAPIRoute."

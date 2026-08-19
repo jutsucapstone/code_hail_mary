@@ -20,6 +20,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from jutsu_core import JutsuError
 
+from jutsu_api.routers import auth as auth_router
+from jutsu_api.routers import me as me_router
+from jutsu_api.routers import orgs as orgs_router
 from jutsu_api.security import public
 
 REQUEST_ID_HEADER: Final = "x-request-id"
@@ -107,6 +110,10 @@ def create_app() -> FastAPI:
             "checks": checks,
             "request_id": getattr(request.state, "request_id", "unknown"),
         }
+
+    app.include_router(auth_router.router)
+    app.include_router(orgs_router.router)
+    app.include_router(me_router.router)
 
     return app
 

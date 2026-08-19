@@ -1,0 +1,63 @@
+"""The signed-in caller's own view.
+
+`GET /v1/me` is what lets the frontend decide what to *render*. It is never what decides
+what to *allow* — every permission listed here is re-checked server-side on the call it
+gates. Hiding a button the caller cannot use is a courtesy; the guard on the endpoint
+behind it is the control.
+
+Note what is absent: no email, no display name, no organisation name. Those need a read
+under the tenant scope and belong to the organisation endpoint. This one answers exactly
+"who am I and what may I do", which is what the shell needs before it can render at all.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+from jutsu_core.rbac import Permission
+from pydantic import BaseModel
+from sqlalchemy import text
+
+from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.security import GuardedAPIRoute, requires
+
+router = APIRouter(prefix="/v1/me", tags=["me"], route_class=GuardedAPIRoute)
+
+
+class Capabilities(BaseModel):
+    """The caller's own identity and permission set.
+
+    `org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they
+    describe, and they are what the UI uses for its own routing — but they are never
+    accepted back as an authorisation input, which is why no endpoint takes an org id
+    from the client.
+    """
+
+    org_id: str
+    user_id: str
+    jutsu_id: str | None
+    role: str
+    permissions: list[str]
+
+
+@router.get("")
+@requires(Permission.ORG_READ)
+async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
+    """Requires `org:read`, which every role holds except a bare Member.
+
+    A Member reaching this gets a 403 rather than an empty response: they have a session
+    but no place in the admin surface, and saying so plainly is better than rendering a
+    dashboard with everything hidden.
+    """
+    jutsu_id = (
+        await session.execute(
+            text("SELECT jutsu_id FROM users WHERE id = :u"), {"u": principal.user_id}
+        )
+    ).scalar_one_or_none()
+
+    return Capabilities(
+        org_id=str(principal.org_id),
+        user_id=str(principal.user_id),
+        jutsu_id=jutsu_id,
+        role=principal.role.value,
+        permissions=sorted(permission.value for permission in principal.permissions),
+    )

@@ -781,6 +781,20 @@ def downgrade() -> None:
         "identity_id",
     ):
         op.drop_column("users", column)
+    # Reverting to a NOT NULL `external_id` is only possible if no row violates it, and
+    # this migration's whole purpose is to allow rows that do: a pilot user has no IdP
+    # subject yet. Those rows are exactly the ones 0001's schema cannot represent, so
+    # removing them is the faithful reversal rather than an incidental cleanup.
+    #
+    # It is nonetheless destructive, and silently so, which is why it is called out here
+    # rather than left for someone to discover: downgrading past 0002 deletes every
+    # account created through the pilot onboarding flow. Anything else would mean
+    # inventing an `external_id`, and a fabricated ACL principal is far worse than a
+    # deleted row — it would match grants that were never meant for that person.
+    #
+    # Found by an integration test rather than by review: the first reversibility check
+    # ran against an empty database, where this passes.
+    op.execute("DELETE FROM users WHERE external_id IS NULL")
     op.alter_column("users", "external_id", existing_type=sa.String(255), nullable=False)
 
     op.execute("DROP INDEX IF EXISTS uq_orgs_domain_active")

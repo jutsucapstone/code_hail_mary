@@ -1,0 +1,87 @@
+"""Runtime settings.
+
+Every secret here comes from the environment, which in staging and production means
+Secret Manager (§4.10). Nothing has a usable default: `email_pepper` deliberately raises
+rather than falling back, because a default pepper is the same as no pepper — every
+deployment would derive identical HMACs and the org-less identity table would become
+correlatable across installations.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Final
+
+__all__ = ["Settings", "get_settings"]
+
+#: Six digits over a 10-symbol alphabet is a 1,000,000-wide space. With the attempt
+#: budget below, an attacker's chance of guessing a specific code is 5/1e6 = 5e-6 — and
+#: because `auth.consume_attempt` spends the budget atomically, that bound holds under
+#: concurrency instead of collapsing to one attempt per round.
+OTP_DIGITS: Final = 6
+OTP_MAX_ATTEMPTS: Final = 5
+
+#: Short, because an OTP sits in an inbox. The magic-link token shares the challenge row
+#: and therefore the same window; it is high-entropy, so the window is about limiting the
+#: interception opportunity rather than about guessing.
+CHALLENGE_TTL_SECONDS: Final = 10 * 60
+
+#: An admin console holding a whole tenant's OAuth tokens. Absolute lifetime is a hard
+#: ceiling; idle expiry is what actually protects a shared machine.
+SESSION_ABSOLUTE_TTL_SECONDS: Final = 12 * 60 * 60
+SESSION_IDLE_TTL_SECONDS: Final = 60 * 60
+
+#: Idle expiry is only rewritten when it has moved by at least this much, so a burst of
+#: requests does not turn every read into a write on the sessions row.
+SESSION_TOUCH_INTERVAL_SECONDS: Final = 5 * 60
+
+
+class MissingSecret(RuntimeError):
+    """A required secret is absent. Raised at first use, never defaulted."""
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    email_pepper: bytes
+    environment: str
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "prod"
+
+    @property
+    def cookies_secure(self) -> bool:
+        """Always true, including in development.
+
+        The session cookies carry the `__Host-` prefix, and that prefix is only honoured
+        when the cookie is also `Secure` — a browser rejects `__Host-` without it
+        outright. Making this environment-dependent would therefore not "relax" dev, it
+        would stop the cookie being stored at all, and the failure would look like a
+        broken login rather than a misconfiguration.
+
+        Plain HTTP on localhost is fine: browsers treat localhost as a trustworthy origin
+        and accept `Secure` cookies there. Tying this to `X-Forwarded-Proto` instead was
+        rejected — an upstream misconfiguration would then silently downgrade every
+        cookie in production.
+        """
+        return True
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    pepper = os.environ.get("JUTSU_EMAIL_PEPPER")
+    if not pepper:
+        raise MissingSecret(
+            "JUTSU_EMAIL_PEPPER is not set. It keys the HMAC that stands in for email "
+            "addresses in the org-less auth schema; without it those rows would either "
+            "hold plaintext or be identical across deployments. Generate one with "
+            '`python -c "import secrets; print(secrets.token_urlsafe(32))"` for local '
+            "development, and take it from Secret Manager everywhere else."
+        )
+
+    return Settings(
+        email_pepper=pepper.encode("utf-8"),
+        environment=os.environ.get("JUTSU_ENV", "dev"),
+    )
