@@ -52,3 +52,7 @@ __pycache__/
 # local data + volumes
 /data/corpora/raw/
 /infra/docker/volumes/
+
+# Regeneration artefacts from `make api-types-check`. Compared, then deleted.
+apps/web/lib/.openapi.check.json
+apps/web/lib/.api-schema.check.d.ts

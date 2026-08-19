@@ -133,6 +133,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/orgs/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Current Organisation
+         * @description The signed-in caller's own organisation.
+         *
+         *     There is deliberately no `{org_id}` variant. An organisation id in a path is an
+         *     authorisation input from the client, and the whole architecture refuses those — the
+         *     tenant comes from the session, server-side, every time. That also means this route
+         *     cannot be used to probe whether another organisation exists.
+         */
+        get: operations["read_current_organisation_v1_orgs_current_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/register": {
         parameters: {
             query?: never;
@@ -169,9 +194,8 @@ export interface components {
             /** Org Id */
             org_id: string;
             /** Permissions */
-            permissions: string[];
-            /** Role */
-            role: string;
+            permissions: components["schemas"]["Permission"][];
+            role: components["schemas"]["Role"];
             /** User Id */
             user_id: string;
         };
@@ -199,6 +223,51 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * MemberCounts
+         * @description Headline numbers for the overview.
+         *
+         *     Computed under the tenant scope, so these are this organisation's rows and nobody
+         *     else's — row-level security does the filtering, not a WHERE clause someone has to
+         *     remember to write.
+         */
+        MemberCounts: {
+            /** Active */
+            active: number;
+            /** Admins */
+            admins: number;
+            /** Deactivated */
+            deactivated: number;
+            /** Invited */
+            invited: number;
+            /** Total */
+            total: number;
+        };
+        /** OrganisationProfile */
+        OrganisationProfile: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Domain */
+            domain: string | null;
+            /** Id */
+            id: string;
+            members: components["schemas"]["MemberCounts"];
+            /** Name */
+            name: string;
+            /** Size Band */
+            size_band: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * Permission
+         * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
+         * @enum {string}
+         */
+        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_update" | "integration:self_manage";
         /** RegisterPayload */
         RegisterPayload: {
             /** Company Domain */
@@ -231,6 +300,11 @@ export interface components {
              */
             status: string;
         };
+        /**
+         * Role
+         * @enum {string}
+         */
+        Role: "owner" | "super_admin" | "hr_admin" | "it_admin" | "analyst" | "viewer" | "member";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -409,6 +483,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+        };
+    };
+    read_current_organisation_v1_orgs_current_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganisationProfile"];
                 };
             };
         };

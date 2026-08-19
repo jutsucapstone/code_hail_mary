@@ -21,14 +21,13 @@
           },
           "permissions": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Permission"
             },
             "title": "Permissions",
             "type": "array"
           },
           "role": {
-            "title": "Role",
-            "type": "string"
+            "$ref": "#/components/schemas/Role"
           },
           "user_id": {
             "title": "User Id",
@@ -84,6 +83,117 @@
         },
         "title": "HTTPValidationError",
         "type": "object"
+      },
+      "MemberCounts": {
+        "description": "Headline numbers for the overview.\n\nComputed under the tenant scope, so these are this organisation's rows and nobody\nelse's \u2014 row-level security does the filtering, not a WHERE clause someone has to\nremember to write.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "admins": {
+            "title": "Admins",
+            "type": "integer"
+          },
+          "deactivated": {
+            "title": "Deactivated",
+            "type": "integer"
+          },
+          "invited": {
+            "title": "Invited",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "active",
+          "invited",
+          "deactivated",
+          "admins"
+        ],
+        "title": "MemberCounts",
+        "type": "object"
+      },
+      "OrganisationProfile": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "members": {
+            "$ref": "#/components/schemas/MemberCounts"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size_band": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Band"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "domain",
+          "size_band",
+          "status",
+          "created_at",
+          "members"
+        ],
+        "title": "OrganisationProfile",
+        "type": "object"
+      },
+      "Permission": {
+        "description": "What a caller may do. Namespaced `subject:verb` so the set stays readable.",
+        "enum": [
+          "org:read",
+          "org:update",
+          "org:delete",
+          "member:read",
+          "member:invite",
+          "member:update",
+          "member:assign_role",
+          "integration:read",
+          "integration:connect",
+          "integration:revoke",
+          "audit:read",
+          "profile:self_update",
+          "integration:self_manage"
+        ],
+        "title": "Permission",
+        "type": "string"
       },
       "RegisterPayload": {
         "additionalProperties": false,
@@ -146,6 +256,19 @@
         },
         "title": "RegistrationAccepted",
         "type": "object"
+      },
+      "Role": {
+        "enum": [
+          "owner",
+          "super_admin",
+          "hr_admin",
+          "it_admin",
+          "analyst",
+          "viewer",
+          "member"
+        ],
+        "title": "Role",
+        "type": "string"
       },
       "ValidationError": {
         "properties": {
@@ -396,6 +519,28 @@
         "summary": "Read Me",
         "tags": [
           "me"
+        ]
+      }
+    },
+    "/v1/orgs/current": {
+      "get": {
+        "description": "The signed-in caller's own organisation.\n\nThere is deliberately no `{org_id}` variant. An organisation id in a path is an\nauthorisation input from the client, and the whole architecture refuses those \u2014 the\ntenant comes from the session, server-side, every time. That also means this route\ncannot be used to probe whether another organisation exists.",
+        "operationId": "read_current_organisation_v1_orgs_current_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganisationProfile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Current Organisation",
+        "tags": [
+          "orgs"
         ]
       }
     },

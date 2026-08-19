@@ -80,10 +80,21 @@ api-types:
 	uv run python scripts/emit-openapi.py > apps/web/lib/openapi.json
 	pnpm exec openapi-typescript apps/web/lib/openapi.json -o apps/web/lib/api-schema.d.ts
 
-# Regenerate, then fail if anything moved. A stale client is worse than no client: it
-# type-checks against a contract the server no longer honours.
-api-types-check: api-types
-	git diff --exit-code -- apps/web/lib/openapi.json apps/web/lib/api-schema.d.ts
+# Fail if regenerating would produce something different from what is checked in. A
+# stale client is worse than no client: it type-checks against a contract the server no
+# longer honours.
+#
+# Compared against the files ON DISK, not against HEAD. Diffing against HEAD would fail
+# for any legitimate API change and make it impossible to ever commit one — the check
+# would be asking "has the API changed", when the question is "is the client in step".
+# git diff --no-index is used because it ships with git and behaves the same on every
+# platform, unlike diff or fc.
+api-types-check:
+	uv run python scripts/emit-openapi.py > apps/web/lib/.openapi.check.json
+	pnpm exec openapi-typescript apps/web/lib/.openapi.check.json -o apps/web/lib/.api-schema.check.d.ts
+	git --no-pager diff --no-index --exit-code apps/web/lib/openapi.json apps/web/lib/.openapi.check.json
+	git --no-pager diff --no-index --exit-code apps/web/lib/api-schema.d.ts apps/web/lib/.api-schema.check.d.ts
+	node -e "for (const f of process.argv.slice(1)) require('fs').rmSync(f, { force: true })" apps/web/lib/.openapi.check.json apps/web/lib/.api-schema.check.d.ts
 
 # §4.15 — this is what the commit hook runs. Keep it fast enough to run every time.
 preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-py test-py api-types-check

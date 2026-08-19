@@ -1,52 +1,34 @@
-/**
- * Stub authentication.
- *
- * Real auth is Google Identity Platform with OAuth2/SAML and httpOnly rotating
- * sessions (§17). None of that exists yet, so this is a single cookie whose *presence*
- * gates the product routes.
- *
- * It is deliberately trivial and deliberately obvious. The one thing it gets right is
- * the shape of the boundary — `getSession()` is the only way any surface learns who the
- * caller is, so swapping the implementation later touches this file and nothing else.
- *
- * This is not a security control. It gates navigation, not data. Every real access
- * decision happens server-side against source ACLs (§4.5, §4.6), which is why no
- * product route may read a permission from this session.
- */
-
 import { cookies } from "next/headers";
 
-export const SESSION_COOKIE = "jutsu_session";
+/**
+ * The session cookie, as far as the frontend is concerned.
+ *
+ * This module used to decode a `"<userId>:<orgId>"` stub and hand back a `Session`. It
+ * cannot any more, and that is the point: the cookie is now 256 bits of opaque random
+ * data with no claims in it at all. There is no organisation id to read, no user id, no
+ * role — nothing for a route here to branch on even if someone wanted to.
+ *
+ * So the only question this file can answer is "is there a cookie". That is a
+ * *navigation* question, and answering it just avoids rendering a shell that would
+ * immediately 401. Every real access decision — who the caller is, which tenant they
+ * belong to, and what they may do — is made by FastAPI against the database, on every
+ * request, including the ones this file's answer let through.
+ *
+ * If a future change needs the org id in the browser, it comes from `GET /v1/me`, which
+ * is the API stating a fact about the caller. It never comes from the cookie, and it is
+ * never accepted back as an authorisation input.
+ */
 
-export interface Session {
-  userId: string;
-  orgId: string;
-}
+/** Name only. The value is opaque and the browser never needs to look inside it. */
+export const SESSION_COOKIE = "__Host-jutsu_session";
 
 /**
- * The signed-in caller, or null.
+ * Whether a session cookie is present. Not whether it is valid.
  *
- * The cookie carries an opaque id only — never an email or display name — so a stray
- * log line cannot leak PII (§4.9).
+ * Deliberately boolean. A function that returned the token would invite a caller to do
+ * something with it, and there is nothing correct to do with it here.
  */
-export async function getSession(): Promise<Session | null> {
+export async function hasSessionCookie(): Promise<boolean> {
   const store = await cookies();
-  const raw = store.get(SESSION_COOKIE)?.value;
-  if (!raw) return null;
-
-  // Stub format: "<userId>:<orgId>". Replaced wholesale by a verified JWT at S29.
-  const [userId, orgId] = raw.split(":");
-  if (!userId || !orgId) return null;
-
-  return { userId, orgId };
-}
-
-export async function requireSession(): Promise<Session> {
-  const session = await getSession();
-  if (!session) {
-    // Middleware redirects before a product page renders, so reaching here means the
-    // matcher and the route tree have drifted apart.
-    throw new Error("requireSession called without a session — check middleware matcher");
-  }
-  return session;
+  return store.has(SESSION_COOKIE);
 }

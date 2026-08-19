@@ -108,6 +108,9 @@ type VerifyResponse =
 
 type MeResponse = paths["/v1/me"]["get"]["responses"][200]["content"]["application/json"];
 
+type OrganisationResponse =
+  paths["/v1/orgs/current"]["get"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -128,6 +131,9 @@ export const api = {
     }),
 
   me: () => call<MeResponse>("/v1/me", { method: "GET" }),
+
+  currentOrganisation: () =>
+    call<OrganisationResponse>("/v1/orgs/current", { method: "GET" }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

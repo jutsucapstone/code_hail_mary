@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
-import { requireSession } from "@/lib/auth";
+
 import { SURFACES } from "@/lib/surfaces";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
@@ -19,9 +19,7 @@ export const metadata: Metadata = {
  * explicit that a product looking unrelated to its own landing page reads as
  * unfinished.
  */
-export default async function ProductLayout({ children }: { children: React.ReactNode }) {
-  const session = await requireSession();
-
+export default function ProductLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-50 border-b border-hairline bg-background/80 backdrop-blur-xl">
@@ -50,13 +48,11 @@ export default async function ProductLayout({ children }: { children: React.Reac
           </nav>
 
           <div className="flex items-center gap-3">
+            {/* The organisation is no longer read from the cookie — there is nothing in
+                it to read. Surfacing it here means asking GET /v1/me, which these six
+                surfaces do not do yet, so the badge is simply absent rather than showing
+                a placeholder that would be indistinguishable from real data (§4.11). */}
             <ThemeToggle />
-            <span
-              className="font-mono text-[0.6875rem] uppercase tracking-[0.14em] text-muted-foreground"
-              title="Stub session — real auth lands at S29"
-            >
-              {session.orgId}
-            </span>
           </div>
         </div>
       </header>

@@ -13,7 +13,7 @@ under the tenant scope and belong to the organisation endpoint. This one answers
 from __future__ import annotations
 
 from fastapi import APIRouter
-from jutsu_core.rbac import Permission
+from jutsu_core.rbac import Permission, Role
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -35,8 +35,13 @@ class Capabilities(BaseModel):
     org_id: str
     user_id: str
     jutsu_id: str | None
-    role: str
-    permissions: list[str]
+    # Typed as the enums, not as plain strings. Pydantic then emits them as enumerations
+    # in the OpenAPI document, so the generated TypeScript is a real union rather than
+    # `string` — which is the difference between §4.13 buying something and being
+    # ceremony. A permission removed from the catalogue becomes a frontend build error
+    # instead of a section that silently stops rendering.
+    role: Role
+    permissions: list[Permission]
 
 
 @router.get("")
@@ -58,6 +63,6 @@ async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
         org_id=str(principal.org_id),
         user_id=str(principal.user_id),
         jutsu_id=jutsu_id,
-        role=principal.role.value,
-        permissions=sorted(permission.value for permission in principal.permissions),
+        role=principal.role,
+        permissions=sorted(principal.permissions),
     )

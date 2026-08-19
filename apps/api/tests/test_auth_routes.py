@@ -250,3 +250,58 @@ class TestValidationEnvelope:
 
         assert response.status_code == 422
         assert "secret.person" not in response.text
+
+
+class TestCurrentOrganisation:
+    """The overview's data, and the tenancy property that makes it safe."""
+
+    async def _sign_in(self, client: AsyncClient, mailbox: RecordingEmailSender) -> None:
+        await client.post("/v1/orgs/register", json=REGISTRATION)
+        delivered = mailbox.last.secrets
+        await client.post(
+            "/v1/auth/verify",
+            json={"token": delivered["token"], "code": delivered["code"]},
+        )
+
+    async def test_requires_a_session(self, client: AsyncClient) -> None:
+        response = await client.get("/v1/orgs/current")
+
+        assert response.status_code == 401
+
+    async def test_returns_the_callers_own_organisation_with_real_counts(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await self._sign_in(client, mailbox)
+
+        response = await client.get("/v1/orgs/current")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == "Example Analytical"
+        assert body["domain"] == "example.com"
+        assert body["status"] == "active"
+        # One person, who is active and is an administrator. Counted in Postgres under
+        # the tenant scope, not assembled in Python from an unfiltered query.
+        assert body["members"] == {
+            "total": 1,
+            "active": 1,
+            "invited": 0,
+            "deactivated": 0,
+            "admins": 1,
+        }
+
+    async def test_there_is_no_route_that_takes_an_organisation_id(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The tenant comes from the session, never from the client.
+
+        An `/v1/orgs/{id}` variant would be an authorisation input from the browser, and
+        it would also let anyone probe whether an organisation exists. Its absence is the
+        design, so this pins it rather than leaving it to reviewer memory.
+        """
+        await self._sign_in(client, mailbox)
+        own = (await client.get("/v1/orgs/current")).json()
+
+        probe = await client.get(f"/v1/orgs/{own['id']}")
+
+        assert probe.status_code == 404
