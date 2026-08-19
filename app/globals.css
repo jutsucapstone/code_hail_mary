@@ -1,0 +1,409 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ---------------------------------------------------------------------------
+   JUTSU brand layer
+   Green = the brand mark itself (sampled from the logo: #83d005 / #499f02).
+   Teal = the graph edge / connection, held low-chroma so green stays dominant.
+
+   `--brand` and `--graph` deliberately *flip lightness role* between themes:
+   bright on the obsidian ground, deep green on the light ground. That
+   keeps a single set of utilities (`text-brand`, `bg-brand`, `border-brand/40`)
+   legible in both without per-theme overrides at every call site.
+   `--brand-foreground` inverts to match, so the primary CTA — brand fill,
+   brand-foreground text — stays high-contrast either way.
+--------------------------------------------------------------------------- */
+@theme inline {
+  --color-brand: var(--brand);
+  --color-brand-muted: var(--brand-muted);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-graph: var(--graph);
+  --color-graph-muted: var(--graph-muted);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+
+  --animate-pulse-node: pulse-node 4s ease-in-out infinite;
+  --animate-trace: trace 3.2s ease-in-out infinite;
+  --animate-marquee: marquee 42s linear infinite;
+  --animate-rise: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ----------------------------------- light ----------------------------- */
+:root {
+  color-scheme: light;
+
+  --background: oklch(0.985 0.002 265);
+  --foreground: oklch(0.175 0.012 265);
+  /* Surfaces sit *above* the page in both themes: white cards on an off-white
+     ground here, lifted greys on obsidian in dark. */
+  --surface: oklch(1 0 0);
+  --surface-raised: oklch(1 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.175 0.012 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.175 0.012 265);
+  --primary: oklch(0.505 0.145 137);
+  --primary-foreground: oklch(0.99 0.01 135);
+  --secondary: oklch(0.955 0.004 265);
+  --secondary-foreground: oklch(0.245 0.014 265);
+  --muted: oklch(0.958 0.004 265);
+  /* Dark enough that the `/80` tier used for captions and mono detail still
+     clears 4.5:1 on the off-white ground, not just at full opacity. */
+  --muted-foreground: oklch(0.418 0.015 265);
+  --accent: oklch(0.952 0.005 265);
+  --accent-foreground: oklch(0.245 0.014 265);
+  --destructive: oklch(0.518 0.19 25);
+  --border: oklch(0.175 0.012 265 / 12%);
+  --input: oklch(0.175 0.012 265 / 16%);
+  --ring: oklch(0.505 0.145 137 / 55%);
+  --chart-1: oklch(0.505 0.145 137);
+  --chart-2: oklch(0.46 0.088 200);
+  --chart-3: oklch(0.6 0.08 200);
+  --chart-4: oklch(0.68 0.06 265);
+  --chart-5: oklch(0.8 0.03 265);
+  --radius: 0.75rem;
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.175 0.012 265);
+  --sidebar-primary: oklch(0.505 0.145 137);
+  --sidebar-primary-foreground: oklch(0.99 0.01 135);
+  --sidebar-accent: oklch(0.952 0.005 265);
+  --sidebar-accent-foreground: oklch(0.245 0.014 265);
+  --sidebar-border: oklch(0.175 0.012 265 / 12%);
+  --sidebar-ring: oklch(0.505 0.145 137 / 55%);
+
+  --brand: oklch(0.505 0.145 137);
+  --brand-muted: oklch(0.6 0.16 134);
+  --brand-foreground: oklch(0.99 0.01 135);
+  --graph: oklch(0.46 0.088 200);
+  --graph-muted: oklch(0.57 0.07 198);
+  --hairline: oklch(0.175 0.012 265 / 10%);
+  --hairline-strong: oklch(0.175 0.012 265 / 18%);
+  /* The brand green is perceptually far stronger than a warm hue at the same
+     alpha, so these sit lower than a neutral glow would: enough to register,
+     not enough to tint the whole viewport. */
+  --glow-alpha: 6%;
+  --grain-alpha: 0.028;
+  --grid-alpha: 70%;
+}
+
+/* ------------------------------------ dark ----------------------------- */
+.dark {
+  color-scheme: dark;
+
+  --background: oklch(0.145 0.008 264);
+  --foreground: oklch(0.975 0.002 264);
+  --surface: oklch(0.175 0.009 264);
+  --surface-raised: oklch(0.215 0.011 264);
+  --card: oklch(0.185 0.009 264);
+  --card-foreground: oklch(0.975 0.002 264);
+  --popover: oklch(0.185 0.009 264);
+  --popover-foreground: oklch(0.975 0.002 264);
+  --primary: oklch(0.76 0.19 132);
+  --primary-foreground: oklch(0.17 0.035 135);
+  --secondary: oklch(0.255 0.01 264);
+  --secondary-foreground: oklch(0.975 0.002 264);
+  --muted: oklch(0.245 0.01 264);
+  --muted-foreground: oklch(0.705 0.012 264);
+  --accent: oklch(0.265 0.012 264);
+  --accent-foreground: oklch(0.975 0.002 264);
+  --destructive: oklch(0.68 0.19 24);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.76 0.19 132 / 60%);
+  --chart-1: oklch(0.76 0.19 132);
+  --chart-2: oklch(0.74 0.1 197);
+  --chart-3: oklch(0.64 0.08 197);
+  --chart-4: oklch(0.5 0.06 264);
+  --chart-5: oklch(0.34 0.02 264);
+  --sidebar: oklch(0.185 0.009 264);
+  --sidebar-foreground: oklch(0.975 0.002 264);
+  --sidebar-primary: oklch(0.76 0.19 132);
+  --sidebar-primary-foreground: oklch(0.17 0.035 135);
+  --sidebar-accent: oklch(0.265 0.012 264);
+  --sidebar-accent-foreground: oklch(0.975 0.002 264);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.76 0.19 132 / 60%);
+
+  --brand: oklch(0.76 0.19 132);
+  --brand-muted: oklch(0.62 0.16 134);
+  --brand-foreground: oklch(0.17 0.035 135);
+  --graph: oklch(0.74 0.1 197);
+  --graph-muted: oklch(0.55 0.068 198);
+  --hairline: oklch(1 0 0 / 8%);
+  --hairline-strong: oklch(1 0 0 / 16%);
+  --glow-alpha: 4.5%;
+  --grain-alpha: 0.04;
+  --grid-alpha: 100%;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01";
+    font-variant-ligatures: contextual;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--brand) 26%, transparent);
+    color: var(--foreground);
+  }
+
+  /* Anchored sections must clear the fixed header. */
+  :where(section[id], div[id]) {
+    /* Published by SiteChrome; the fallback covers the pre-hydration frame. */
+    scroll-margin-top: calc(var(--chrome-h, 4.5rem) + 1.5rem);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Editorial display type: tight tracking + optical balance. */
+  .display {
+    letter-spacing: -0.035em;
+    line-height: 0.98;
+    text-wrap: balance;
+  }
+
+  .eyebrow {
+    @apply font-mono text-[0.6875rem] font-medium uppercase tracking-[0.22em];
+  }
+
+  .hairline-grid {
+    background-image:
+      linear-gradient(to right, var(--hairline) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--hairline) 1px, transparent 1px);
+    background-size: 4rem 4rem;
+    opacity: var(--grid-alpha);
+  }
+
+  .radial-fade {
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 78%);
+  }
+
+  .text-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      var(--foreground) 0%,
+      var(--foreground) 42%,
+      var(--brand) 78%,
+      var(--graph) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Ambient wash behind hero / CTA. Alpha is theme-aware so the effect reads on
+     obsidian and on off-white without going muddy on either. */
+  .glow-warm {
+    background-color: color-mix(in oklab, var(--brand) var(--glow-alpha), transparent);
+  }
+
+  .glow-cool {
+    background-color: color-mix(in oklab, var(--graph) var(--glow-alpha), transparent);
+  }
+
+  .glow-brand {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--brand) 22%, transparent),
+      0 12px 48px -12px color-mix(in oklab, var(--brand) 34%, transparent);
+  }
+
+  /* Cursor-tracked spotlight. --mx/--my are written by SpotlightGroup on
+     pointermove; the gradient is painted above the surface but below content. */
+  .spotlight {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .spotlight::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    opacity: 0;
+    transition: opacity 400ms ease;
+    background: radial-gradient(
+      22rem circle at var(--mx, 50%) var(--my, 50%),
+      color-mix(in oklab, var(--brand) 14%, transparent),
+      transparent 60%
+    );
+  }
+
+  .spotlight-group:hover .spotlight::before {
+    opacity: 1;
+  }
+
+  /* Hairline that lights up along the cursor, the way premium dashboards edge
+     their cards. Sits on the border box, not the fill. */
+  .spotlight::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    padding: 1px;
+    opacity: 0;
+    transition: opacity 400ms ease;
+    background: radial-gradient(
+      16rem circle at var(--mx, 50%) var(--my, 50%),
+      color-mix(in oklab, var(--brand) 55%, transparent),
+      transparent 65%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+
+  .spotlight-group:hover .spotlight::after {
+    opacity: 1;
+  }
+
+  /* Fine film grain. Keeps large flat areas from banding and gives the dark
+     theme a cinematic surface rather than a plastic one. */
+  .grain::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: var(--grain-alpha, 0.035);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27140%27 height=%27140%27%3E%3Cfilter id=%27n%27%3E%3CfeTurbulence type=%27fractalNoise%27 baseFrequency=%270.85%27 numOctaves=%272%27 stitchTiles=%27stitch%27/%3E%3C/filter%3E%3Crect width=%27100%25%27 height=%27100%25%27 filter=%27url(%23n)%27/%3E%3C/svg%3E");
+  }
+
+  .mask-fade-x {
+    mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+  }
+}
+
+/* A CSS animation beats the SVG `opacity` presentation attribute, so these
+   keyframes are the *only* thing controlling halo strength. Keeping the peak
+   low is what stops the halo rendering as a solid disc — which it did at
+   opacity 1, badly on the light ground where the fill is a dark green. */
+@keyframes pulse-node {
+  0%,
+  100% {
+    opacity: 0.09;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.26;
+    transform: scale(1.3);
+  }
+}
+
+@keyframes trace {
+  0% {
+    stroke-dashoffset: 220;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: -220;
+    opacity: 0;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
