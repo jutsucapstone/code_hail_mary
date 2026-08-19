@@ -1,0 +1,8 @@
+packages:
+  - "apps/web"
+  - "packages/ui"
+
+# eslint-config-next resolves imports through a native binary (unrs-resolver);
+# its postinstall must run or `next lint` cannot resolve any module.
+allowBuilds:
+  unrs-resolver: true

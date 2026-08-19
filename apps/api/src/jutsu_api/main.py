@@ -1,0 +1,103 @@
+"""JUTSU gateway.
+
+Stateless, request-path only (§6). Long-running work goes to the worker via the queue;
+nothing here blocks on extraction or ingestion.
+
+S0 ships the shape: liveness, readiness, the single error envelope and request-id
+propagation. The `/v1` surface in §15 lands slice by slice from S7 onward.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any, Final
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from jutsu_core import JutsuError
+
+REQUEST_ID_HEADER: Final = "x-request-id"
+
+logger = logging.getLogger("jutsu.api")
+
+
+def _configure_logging() -> None:
+    """Structured JSON to stdout.
+
+    §4.9 forbids PII in logs. The formatter emits only the fields listed here, so a
+    stray `logger.info(document.body)` cannot leak text through an unexpected attribute
+    — the message itself is the caller's responsibility, but nothing is auto-attached.
+    """
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter('{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}')
+    )
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+
+
+def create_app() -> FastAPI:
+    _configure_logging()
+
+    app = FastAPI(
+        title="JUTSU API",
+        version="0.1.0",
+        description="Enterprise Memory OS gateway",
+        docs_url="/docs",
+        openapi_url="/openapi.json",
+    )
+
+    @app.middleware("http")
+    async def request_id_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Any]]
+    ) -> Any:
+        """Every response carries a request_id (§15).
+
+        Honours an inbound header so a trace survives across services rather than
+        restarting at each hop.
+        """
+        request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+    @app.exception_handler(JutsuError)
+    async def jutsu_error_handler(request: Request, exc: JutsuError) -> JSONResponse:
+        """The one envelope for every 4xx/5xx (§15)."""
+        request_id = getattr(request.state, "request_id", "unknown")
+        logger.warning("%s", exc.code)
+        return JSONResponse(status_code=exc.status_code, content=exc.envelope(request_id))
+
+    @app.get("/healthz", tags=["ops"])
+    async def healthz(request: Request) -> dict[str, Any]:
+        """Liveness. Answers whether the process is up, nothing more."""
+        return {"status": "ok", "request_id": getattr(request.state, "request_id", "unknown")}
+
+    @app.get("/readyz", tags=["ops"])
+    async def readyz(request: Request) -> dict[str, Any]:
+        """Readiness — whether dependencies are reachable.
+
+        Reports `degraded` while there are no dependencies to check, rather than a bare
+        `ok`: an unconditional 200 here would make the Cloud Run health gate meaningless
+        the moment Postgres and Neo4j are wired in at S1/S2.
+        """
+        checks: dict[str, str] = {
+            "postgres": "not_configured",
+            "neo4j": "not_configured",
+        }
+        ready = all(v == "ok" for v in checks.values())
+        return {
+            "status": "ready" if ready else "degraded",
+            "checks": checks,
+            "request_id": getattr(request.state, "request_id", "unknown"),
+        }
+
+    return app
+
+
+app = create_app()

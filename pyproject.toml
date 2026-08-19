@@ -1,0 +1,55 @@
+[project]
+name = "jutsu"
+version = "0.1.0"
+description = "JUTSU — Corporate Memory Graph, an Enterprise Memory OS"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker", "packages/*"]
+exclude = ["packages/ui"]
+
+[tool.uv.sources]
+jutsu-core = { workspace = true }
+jutsu-graph = { workspace = true }
+jutsu-retrieval = { workspace = true }
+jutsu-agents = { workspace = true }
+jutsu-connectors = { workspace = true }
+jutsu-evals = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "node_modules", "docs", "apps/web"]
+
+[tool.ruff.lint]
+# E,F pyflakes/pycodestyle · I import order · UP pyupgrade · B bugbear
+# ASYNC async pitfalls · S bandit (security) · DTZ naive datetimes
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "DTZ", "RUF"]
+ignore = ["E501"]  # formatter owns line length
+
+[tool.ruff.lint.per-file-ignores]
+# S101: assert is the point of a test.
+# S105/S106: `token` in this codebase is a PII mask placeholder ("[PERSON_A7]"),
+#            not a credential — bandit cannot tell the difference from the name alone.
+"**/tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+exclude = ['.venv', 'node_modules']
+
+[tool.pytest.ini_options]
+testpaths = ["packages", "apps"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"

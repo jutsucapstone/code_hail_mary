@@ -1,0 +1,13 @@
+# Normalise line endings so a Windows dev and Linux CI produce identical diffs.
+* text=auto eol=lf
+
+# Binary — never touch
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+
+# Generated; collapse in diffs and reviews
+pnpm-lock.yaml -diff linguist-generated
+uv.lock        -diff linguist-generated
+lib/wordmark-paths.ts -diff linguist-generated
