@@ -32,9 +32,9 @@ const PILOT_ILLUSTRATIONS = [
 
 export default function PilotPage() {
   return (
-    <div className="mx-auto grid w-full max-w-7xl flex-1 gap-10 px-6 py-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-stretch lg:gap-16 lg:px-8 lg:py-16">
+    <div className="mx-auto grid w-full max-w-7xl flex-1 gap-10 px-6 py-10 [@media(max-height:820px)]:gap-6 [@media(max-height:820px)]:py-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-stretch lg:gap-16 lg:px-8 lg:py-16 lg:[@media(max-height:820px)]:py-6">
       {/* ---------------------------------------------------------------- brand panel */}
-      <aside className="relative isolate hidden overflow-hidden rounded-3xl border border-hairline bg-surface/40 p-10 lg:flex lg:flex-col">
+      <aside className="relative isolate hidden overflow-hidden rounded-3xl border border-hairline bg-surface/40 p-10 [@media(max-height:820px)]:p-6 lg:flex lg:flex-col">
         <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-clip">
           <div className="hairline-grid radial-fade absolute inset-0" />
           <div className="glow-warm absolute -left-24 top-[-12rem] h-[34rem] w-[34rem] rounded-full blur-[120px]" />
@@ -53,7 +53,7 @@ export default function PilotPage() {
             description used to. It is decorative and carries no copy, so nothing that
             was being read is lost — the two choice cards opposite are what this page is
             for, and a paragraph of product prose here competed with them. */}
-        <div className="flex min-h-0 flex-1 items-center justify-center py-10">
+        <div className="flex min-h-0 flex-1 items-center justify-center py-10 [@media(max-height:820px)]:py-4">
           {/* 15rem, not larger. The source artwork is 197-307px on its longest side, so
               a wider stage upscales it and the line work goes soft — the frame is sized
               to the art rather than the art stretched to the frame. */}
@@ -105,23 +105,23 @@ export default function PilotPage() {
 
         <h1
           id="pilot-heading"
-          className="display mt-5 text-4xl font-semibold sm:text-5xl"
+          className="display mt-5 text-4xl font-semibold [@media(max-height:820px)]:mt-3 [@media(max-height:820px)]:text-3xl sm:text-5xl"
         >
           {pilot.title}
         </h1>
 
-        <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
+        <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground [@media(max-height:820px)]:mt-3 sm:text-lg">
           {pilot.lead}
         </p>
 
-        <div className="spotlight-group mt-10 flex flex-col gap-4">
+        <div className="spotlight-group mt-10 flex flex-col gap-4 [@media(max-height:820px)]:mt-6 [@media(max-height:820px)]:gap-3">
           {pilot.paths.map((path) => {
             const Icon = PATH_ICONS[path.icon];
             return (
               <Link
                 key={path.id}
                 href={path.href}
-                className="spotlight group relative flex items-start gap-5 rounded-2xl border border-hairline bg-surface/40 p-6 transition-colors duration-300 hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand sm:p-7"
+                className="spotlight group relative flex items-start gap-5 rounded-2xl border border-hairline bg-surface/40 p-6 transition-colors duration-300 hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [@media(max-height:820px)]:p-4 sm:p-7"
               >
                 <span
                   aria-hidden="true"
@@ -155,7 +155,7 @@ export default function PilotPage() {
           })}
         </div>
 
-        <p className="mt-8 max-w-xl text-xs leading-relaxed text-muted-foreground/80">
+        <p className="mt-8 max-w-xl text-xs leading-relaxed text-muted-foreground/80 [@media(max-height:820px)]:mt-4">
           By continuing you accept the{" "}
           <Link
             href="/terms"

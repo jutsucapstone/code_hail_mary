@@ -73,8 +73,21 @@ export default function AdminRegistrationPage() {
       lead="You'll be the first administrator. We'll email you a code to confirm this address — no password to choose or remember."
       backHref="/pilot"
       backLabel="Back to account type"
+      size="wide"
     >
-      <form onSubmit={onSubmit} noValidate={false} className="flex flex-col gap-5">
+      {/* Two columns from `sm` up, so six fields occupy three rows and the submit button
+          stays above the fold on a laptop. Stacked below that, where a second column
+          would leave each field too narrow to read its own hint.
+
+          `items-end` is what keeps the rows tidy: only some fields carry a hint, so a
+          stretched row puts one input 47px lower than its neighbour. Aligning to the
+          bottom lets the labels sit at different heights while the inputs line up, which
+          is the edge the eye actually follows down a form. */}
+      <form
+        onSubmit={onSubmit}
+        noValidate={false}
+        className="grid items-end gap-x-6 gap-y-4 sm:grid-cols-2"
+      >
         <Field
           id="full_name"
           name="full_name"
@@ -147,14 +160,18 @@ export default function AdminRegistrationPage() {
         </div>
 
         {failure ? (
-          <FormError message={failure.message} requestId={failure.requestId} />
+          <div className="sm:col-span-2">
+            <FormError message={failure.message} requestId={failure.requestId} />
+          </div>
         ) : null}
 
-        <SubmitButton pending={pending} pendingLabel="Creating your organisation…">
-          Create organisation
-        </SubmitButton>
+        <div className="sm:col-span-2">
+          <SubmitButton pending={pending} pendingLabel="Creating your organisation…">
+            Create organisation
+          </SubmitButton>
+        </div>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-xs leading-relaxed text-muted-foreground sm:col-span-2">
           JUTSU connects to your tools read-only. Nothing is connected until you choose it,
           and nothing is ever written back.
         </p>
