@@ -7,7 +7,7 @@
  * without touching layout code, and it stays trivially portable to a CMS.
  */
 
-import { PLATFORM_ENTRY_PATH } from "@/lib/surfaces";
+import { PILOT_PATH } from "@/lib/surfaces";
 
 /**
  * The two destinations every call to action resolves to.
@@ -65,9 +65,9 @@ export const hero = {
   tagline: siteConfig.tagline,
   subhead:
     "One living memory of your organization — people, projects, decisions and skills in a single temporal graph. Ask anything, trace any decision, lose nothing.",
-  // Opens the product itself. `/enter` is a Route Handler that mints the preview
-  // session and redirects, so this must stay a plain anchor — see app/enter/route.ts.
-  primaryCta: { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+  // Opens the pilot funnel, where a visitor picks whether they are setting an
+  // organisation up or joining one that already exists.
+  primaryCta: { label: "Request a pilot", href: PILOT_PATH },
   // Primary opens the platform; this one reaches a human, so the two buttons do not
   // land in the same place.
   secondaryCta: {
@@ -259,7 +259,7 @@ export const contact = {
   title: "Bring your organization's memory online.",
   lead: "A read-only overlay on the systems you already run. No process disruption, no migration, a pilot in twelve weeks.",
   // Also drives the header button, desktop and mobile (site-header.tsx).
-  primaryCta: { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+  primaryCta: { label: "Request a pilot", href: PILOT_PATH },
   // The section's route to a human. Without it this block would have no way to reach
   // one, now that the primary opens the platform instead of a mail client.
   secondaryCta: { label: "Contact us", href: CONTACT_MAILTO },
@@ -270,7 +270,7 @@ export const announcement = {
   id: "private-beta-2026",
   label: "Private beta",
   message: "JUTSU is onboarding design partners.",
-  cta: { label: "Request access", href: PLATFORM_ENTRY_PATH },
+  cta: { label: "Request access", href: PILOT_PATH },
 } as const;
 
 export const howItWorks = {
@@ -348,7 +348,7 @@ export const footerNav = [
     heading: "Company",
     links: [
       { label: "Questions", href: "#faq" },
-      { label: "Request a pilot", href: PLATFORM_ENTRY_PATH },
+      { label: "Request a pilot", href: PILOT_PATH },
       { label: "Contact us", href: CONTACT_MAILTO },
     ],
   },

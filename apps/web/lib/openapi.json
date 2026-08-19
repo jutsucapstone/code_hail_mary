@@ -1,0 +1,444 @@
+{
+  "components": {
+    "schemas": {
+      "Capabilities": {
+        "description": "The caller's own identity and permission set.\n\n`org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they\ndescribe, and they are what the UI uses for its own routing \u2014 but they are never\naccepted back as an authorisation input, which is why no endpoint takes an org id\nfrom the client.",
+        "properties": {
+          "jutsu_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jutsu Id"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "org_id",
+          "user_id",
+          "jutsu_id",
+          "role",
+          "permissions"
+        ],
+        "title": "Capabilities",
+        "type": "object"
+      },
+      "ChallengeAccepted": {
+        "description": "Identical for every input. Carries no signal about whether the account exists.",
+        "properties": {
+          "status": {
+            "default": "sent",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "ChallengeAccepted",
+        "type": "object"
+      },
+      "ChallengeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "ChallengeRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "RegisterPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "company_domain": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Company Domain",
+            "type": "string"
+          },
+          "company_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Company Name",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "job_title": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Job Title",
+            "type": "string"
+          },
+          "org_size": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Org Size",
+            "type": "string"
+          },
+          "work_email": {
+            "format": "email",
+            "title": "Work Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "full_name",
+          "work_email",
+          "company_name",
+          "company_domain",
+          "job_title",
+          "org_size"
+        ],
+        "title": "RegisterPayload",
+        "type": "object"
+      },
+      "RegistrationAccepted": {
+        "description": "Deliberately says nothing about what happened.\n\nNo organisation id, no JUTSU ID, no \"already exists\". The next step is in the\nrecipient's inbox, which is the only channel that proves they control the address.",
+        "properties": {
+          "status": {
+            "default": "check_your_email",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "RegistrationAccepted",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VerifyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 6,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "code"
+        ],
+        "title": "VerifyRequest",
+        "type": "object"
+      },
+      "VerifyResult": {
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination"
+        ],
+        "title": "VerifyResult",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Enterprise Memory OS gateway",
+    "title": "JUTSU API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "description": "Liveness. Answers whether the process is up, nothing more.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "ops"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Readiness \u2014 whether dependencies are reachable.\n\nReports `degraded` while there are no dependencies to check, rather than a bare\n`ok`: an unconditional 200 here would make the Cloud Run health gate meaningless\nthe moment Postgres and Neo4j are wired in at S1/S2.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readyz Readyz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz",
+        "tags": [
+          "ops"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "description": "Revokes server-side and clears the cookies, whatever state the session was in.\n\nDeliberately not behind `get_principal`. A logout that refuses because the session\nhad already expired would leave a stale cookie in the browser and give the user no\nway to clear it \u2014 the one moment a strict check makes things less safe, not more.\n\nRevocation is server-side as well as cookie-clearing: deleting the cookie alone\nleaves the handle valid, so anyone who captured it keeps a working session.",
+        "operationId": "logout_v1_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/request": {
+      "post": {
+        "operationId": "request_challenge_v1_auth_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChallengeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallengeAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Challenge",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/verify": {
+      "post": {
+        "operationId": "verify_v1_auth_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "description": "Requires `org:read`, which every role holds except a bare Member.\n\nA Member reaching this gets a 403 rather than an empty response: they have a session\nbut no place in the admin surface, and saying so plainly is better than rendering a\ndashboard with everything hidden.",
+        "operationId": "read_me_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Me",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/orgs/register": {
+      "post": {
+        "operationId": "register_v1_orgs_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register",
+        "tags": [
+          "orgs"
+        ]
+      }
+    }
+  }
+}

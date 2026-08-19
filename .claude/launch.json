@@ -6,6 +6,21 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "web", "dev"],
       "port": 3210
+    },
+    {
+      "name": "jutsu-api",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--package",
+        "api",
+        "uvicorn",
+        "jutsu_api.main:app",
+        "--reload",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
     }
   ]
 }

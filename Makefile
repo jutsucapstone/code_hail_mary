@@ -7,7 +7,7 @@
 # Targets for slices that have not landed yet fail loudly and name the slice,
 # rather than silently succeeding and letting a gate pass on nothing.
 
-.PHONY: help dev api worker up down migrate migrate-down migrate-rev psql seed test preflight eval gate deploy clean
+.PHONY: help dev api worker up down migrate migrate-down migrate-rev psql seed test preflight eval gate deploy clean api-types api-types-check
 
 help:
 	@echo "JUTSU targets"
@@ -73,8 +73,20 @@ test-hooks:
 
 test: test-hooks test-py
 
+# §4.13 — frontend types are generated from Pydantic via OpenAPI, never hand-written.
+# Derived from the app object rather than a running server, so the check is a pure
+# function of the source and cannot flake on whether the API happened to be up.
+api-types:
+	uv run python scripts/emit-openapi.py > apps/web/lib/openapi.json
+	pnpm exec openapi-typescript apps/web/lib/openapi.json -o apps/web/lib/api-schema.d.ts
+
+# Regenerate, then fail if anything moved. A stale client is worse than no client: it
+# type-checks against a contract the server no longer honours.
+api-types-check: api-types
+	git diff --exit-code -- apps/web/lib/openapi.json apps/web/lib/api-schema.d.ts
+
 # §4.15 — this is what the commit hook runs. Keep it fast enough to run every time.
-preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-py test-py
+preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-py test-py api-types-check
 	@echo "preflight OK"
 
 # ---------------------------------------------------------------- schema

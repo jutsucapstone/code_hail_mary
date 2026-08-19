@@ -89,12 +89,12 @@ export const PRODUCT_PATHS: readonly string[] = SURFACES.map((s) => `/${s.slug}`
 /**
  * The door into the product from the marketing site.
  *
- * A Route Handler rather than a page: it mints the stub session cookie and redirects,
- * and a server component cannot set a cookie during render. That distinction matters at
- * every call site — a `<Link>` to this path would be fetched as RSC and the cookie would
- * never be set, so it must always be a plain anchor.
+ * A real page, so a `<Link>` is correct here — unlike the `/enter` route it replaced,
+ * which was a Route Handler that minted a session cookie during a redirect and therefore
+ * had to be a plain anchor. That route is gone: it issued a session with no identity,
+ * which becomes an authentication bypass the moment real auth exists.
  */
-export const PLATFORM_ENTRY_PATH = "/enter";
+export const PILOT_PATH = "/pilot";
 
-/** Where `/enter` lands when no valid `next` is supplied. */
+/** The surface a signed-in caller lands on when none is specified. */
 export const DEFAULT_SURFACE = `/${SURFACES[0].slug}`;

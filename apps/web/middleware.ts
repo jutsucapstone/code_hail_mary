@@ -14,6 +14,12 @@ import { PRODUCT_PATHS } from "@/lib/surfaces";
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // The API proxy is intentionally not gated here. It forwards to FastAPI, which makes
+  // every authorization decision itself — gating it in middleware would put an access
+  // decision in Next, which is exactly what this architecture refuses. Stated explicitly
+  // because the matcher below does match /api/*, so silence would read as an oversight.
+  if (pathname.startsWith("/api/jutsu/")) return NextResponse.next();
+
   const isProductPath = PRODUCT_PATHS.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );

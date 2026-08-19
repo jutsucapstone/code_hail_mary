@@ -4,7 +4,6 @@ import { Mail } from "lucide-react";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { Container } from "@/components/site/section";
 import { footerNav, siteConfig } from "@/lib/content";
-import { PLATFORM_ENTRY_PATH } from "@/lib/surfaces";
 
 export function SiteFooter() {
   const year = siteConfig.org.date.split(" ")[1];
@@ -41,13 +40,9 @@ export function SiteFooter() {
               </h2>
               <ul className="mt-5 flex flex-col gap-3">
                 {group.links.map((link) => {
-                  // Route changes go through the router; in-page hashes and
-                  // mailto: must stay plain anchors. So must /enter — it is a
-                  // Route Handler rather than a page, and the client router would
-                  // fetch it as RSC, so the session cookie it sets would never
-                  // reach the browser.
-                  const isRoute =
-                    link.href.startsWith("/") && link.href !== PLATFORM_ENTRY_PATH;
+                  // Route changes go through the router; in-page hashes and mailto:
+                  // must stay plain anchors.
+                  const isRoute = link.href.startsWith("/");
                   const cls =
                     "rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
                   return (
