@@ -84,9 +84,18 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex min-h-dvh flex-col">
+    // `h-dvh`, not `min-h-dvh`, and the overflow is clipped here.
+    //
+    // This is what makes an inner scroll area possible at all. With a *minimum* height the
+    // column simply grows past the viewport, so no flex child is ever forced to shrink and
+    // `flex-1 overflow-auto` further down bounds nothing. Measured with 62 employee rows:
+    // the page grew by 4068px and the table's scroller never scrolled a pixel.
+    //
+    // A definite height makes the chain of `min-h-0 flex-1` below it real, so the table
+    // scrolls inside its own box and the chrome stays put however many people there are.
+    <div className="flex h-dvh flex-col overflow-hidden">
       <header className="sticky top-0 z-50 border-b border-hairline bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-6 px-6 lg:px-8">
+        <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-6 px-6 [@media(max-height:820px)]:h-14 lg:px-8">
           <Link
             href="/"
             className="flex shrink-0 items-center gap-2.5 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand"
@@ -117,7 +126,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-8 px-6 py-8 lg:flex-row lg:gap-12 lg:px-8 lg:py-12">
+      <div className="mx-auto flex w-full min-h-0 max-w-7xl flex-1 flex-col gap-8 px-6 py-8 [@media(max-height:820px)]:gap-5 [@media(max-height:820px)]:py-4 lg:flex-row lg:gap-12 lg:px-8 lg:py-12 lg:[@media(max-height:820px)]:py-6">
         <nav aria-label="Admin sections" className="lg:w-56 lg:shrink-0">
           <ul className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
             {visible.map((section) => {
@@ -144,7 +153,10 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </ul>
         </nav>
 
-        <main className="min-w-0 flex-1">
+        {/* The safety valve. A section whose content genuinely exceeds the viewport
+            scrolls here rather than being clipped and unreachable — but because this box
+            has a definite height, a child asking for its own scroll area still gets one. */}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
           {failed ? null : capabilities ? (
             <CapabilitiesContext.Provider value={capabilities}>
               {children}

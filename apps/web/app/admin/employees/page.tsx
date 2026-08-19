@@ -142,13 +142,15 @@ export default function EmployeesPage() {
   const grantable = Object.keys(ROLE_RANKS).filter((role) => ROLE_RANKS[role] < actorRank);
 
   return (
-    <div className="flex flex-col gap-10">
+    <div className="flex min-h-0 flex-1 flex-col gap-10 [@media(max-height:820px)]:gap-6">
       <header>
         <p className="eyebrow flex items-center gap-2.5 text-brand">
           <span aria-hidden="true" className="h-1 w-1 rounded-full bg-brand" />
           Employees
         </p>
-        <h1 className="display mt-4 text-3xl font-semibold sm:text-4xl">People</h1>
+        <h1 className="display mt-4 text-3xl font-semibold [@media(max-height:820px)]:mt-2 [@media(max-height:820px)]:text-2xl sm:text-4xl">
+          People
+        </h1>
         <p className="mt-3 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
           Everyone in your organisation. Inviting someone issues their JUTSU ID when they
           accept — not before, so an unaccepted invitation never consumes one.
@@ -158,7 +160,7 @@ export default function EmployeesPage() {
       {mayInvite ? (
         <section
           aria-labelledby="invite-heading"
-          className="rounded-2xl border border-hairline bg-surface/40 p-6 sm:p-7"
+          className="rounded-2xl border border-hairline bg-surface/40 p-6 [@media(max-height:820px)]:p-4 sm:p-7"
         >
           <h2 id="invite-heading" className="display text-lg font-semibold">
             Invite someone
@@ -213,7 +215,7 @@ export default function EmployeesPage() {
         </section>
       ) : null}
 
-      <section aria-labelledby="people-heading" className="flex flex-col gap-4">
+      <section aria-labelledby="people-heading" className="flex min-h-0 flex-1 flex-col gap-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <h2 id="people-heading" className="display text-xl font-semibold sm:text-2xl">
             All people
@@ -252,27 +254,35 @@ export default function EmployeesPage() {
             </p>
           </div>
         ) : (
-          /* `relative` is load-bearing on the scroll container: a static one is not a
-             containing block, so the table's min-width escapes and stretches the page. */
-          <div className="relative overflow-x-auto rounded-2xl border border-hairline-strong">
+          /* The TABLE scrolls, not the page.
+
+             With two people this container is irrelevant; with fifty it is the whole
+             point — page height would otherwise grow with headcount and no amount of
+             spacing tuning would keep the invite form on screen. Bounding it here means
+             the chrome stays put and only the rows move.
+
+             `relative` is load-bearing: a static scroll box is not a containing block, so
+             the table's min-width escapes and stretches the page sideways. */
+          <div className="relative min-h-0 flex-1 overflow-auto rounded-2xl border border-hairline-strong">
             <table className="w-full min-w-[44rem] border-collapse text-sm">
               <caption className="sr-only">
                 People in your organisation, with their JUTSU ID, role and status.
               </caption>
               <thead>
-                <tr className="border-b border-hairline text-left">
-                  <th scope="col" className="px-5 py-3 font-medium text-muted-foreground">
-                    Person
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium text-muted-foreground">
-                    JUTSU ID
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium text-muted-foreground">
-                    Role
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium text-muted-foreground">
-                    Status
-                  </th>
+                {/* Sticky on each cell rather than on <thead>: a sticky thead is still
+                    not honoured consistently, and the column headings must stay readable
+                    once the rows start scrolling under them. The background is opaque so
+                    rows do not show through. */}
+                <tr className="text-left">
+                  {["Person", "JUTSU ID", "Role", "Status"].map((heading) => (
+                    <th
+                      key={heading}
+                      scope="col"
+                      className="sticky top-0 z-10 border-b border-hairline bg-background px-5 py-3 font-medium text-muted-foreground"
+                    >
+                      {heading}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
