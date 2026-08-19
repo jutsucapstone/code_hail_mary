@@ -19,7 +19,7 @@ from jutsu_api.config import Settings, get_settings
 from jutsu_api.deps import get_db, get_email_sender
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.main import create_app
-from jutsu_api.security import CSRF_COOKIE, SESSION_COOKIE
+from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE
 from sqlalchemy.ext.asyncio import AsyncSession
 
 REGISTRATION = {
@@ -305,3 +305,130 @@ class TestCurrentOrganisation:
         probe = await client.get(f"/v1/orgs/{own['id']}")
 
         assert probe.status_code == 404
+
+
+def csrf_headers(client: AsyncClient) -> dict[str, str]:
+    """The double-submit header a browser would send.
+
+    Every authenticated, state-changing request needs it. Public routes do not, which is
+    why the earlier POSTs in this file get away without it — and why the first
+    authenticated POST written without it came back 401 rather than doing anything.
+    """
+    token = client.cookies.get(CSRF_COOKIE)
+    return {CSRF_HEADER: token} if token else {}
+
+
+class TestInvitationLifecycle:
+    """Invite, accept, and the authorization boundary that follows.
+
+    `test_a_member_is_denied_administrative_endpoints` is the most important test in this
+    file. Without enforcement, `@requires(...)` only *described* a permission — every
+    authenticated caller reached every endpoint, and a bare Member could list the whole
+    organisation. The declaration existed, the import-time guard passed, and nothing
+    denied anything.
+    """
+
+    async def _owner(self, client: AsyncClient, mailbox: RecordingEmailSender) -> None:
+        await client.post("/v1/orgs/register", json=REGISTRATION)
+        delivered = mailbox.last.secrets
+        await client.post(
+            "/v1/auth/verify",
+            json={"token": delivered["token"], "code": delivered["code"]},
+        )
+
+    async def _invite_and_accept(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, *, role: str = "member"
+    ) -> str:
+        await client.post(
+            "/v1/employees/invitations",
+            json={"email": "charles@example.com", "role": role},
+            headers=csrf_headers(client),
+        )
+        token = mailbox.last.secrets["token"]
+        # A fresh client: the invitee is a different person, not the admin's browser.
+        accepted = await client.post(
+            "/v1/invitations/accept",
+            json={"token": token, "full_name": "Charles Babbage"},
+        )
+        assert accepted.status_code == 200, accepted.text
+        return str(accepted.json()["jutsu_id"])
+
+    async def test_accepting_issues_an_employee_id_and_a_session(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await self._owner(client, mailbox)
+        jutsu_id = await self._invite_and_accept(client, mailbox)
+
+        assert jutsu_id.startswith("JUTSU-EMP-"), "an invited person joins as an employee"
+
+        me = (await client.get("/v1/me")).json()
+        assert me["jutsu_id"] == jutsu_id
+        assert me["role"] == "member"
+
+    async def test_a_member_is_denied_administrative_endpoints(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await self._owner(client, mailbox)
+        await self._invite_and_accept(client, mailbox)
+
+        # They can read themselves — that is what `profile:self_read` is for, and without
+        # it the shell could not render for an employee at all.
+        assert (await client.get("/v1/me")).status_code == 200
+
+        for path in ("/v1/employees", "/v1/orgs/current"):
+            denied = await client.get(path)
+            assert denied.status_code == 403, f"{path} was reachable by a bare Member"
+            assert denied.json()["error"]["code"] == "permission_denied"
+
+    async def test_an_invitation_can_only_be_accepted_once(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await self._owner(client, mailbox)
+        await client.post(
+            "/v1/employees/invitations",
+            json={"email": "charles@example.com", "role": "member"},
+            headers=csrf_headers(client),
+        )
+        token = mailbox.last.secrets["token"]
+
+        first = await client.post(
+            "/v1/invitations/accept",
+            json={"token": token, "full_name": "Charles Babbage"},
+        )
+        second = await client.post(
+            "/v1/invitations/accept",
+            json={"token": token, "full_name": "Someone Else"},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 401
+        # Same refusal as an unknown token, so a used link cannot be told from a fake one.
+        assert second.json()["error"]["code"] == "unauthenticated"
+
+    async def test_an_unknown_token_is_refused_identically(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/v1/invitations/accept",
+            json={"token": "x" * 43, "full_name": "Nobody"},
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthenticated"
+
+    async def test_nobody_can_invite_above_their_own_rank(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The escalation ceiling is strict, so even an Owner cannot mint another Owner.
+
+        An invitation conferring a role the inviter does not outrank is the same
+        privilege escalation as granting it directly — only slower, and easier to miss.
+        """
+        await self._owner(client, mailbox)
+
+        response = await client.post(
+            "/v1/employees/invitations",
+            json={"email": "usurper@example.com", "role": "owner"},
+            headers=csrf_headers(client),
+        )
+
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "permission_denied"

@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jutsu_api.auth_service import load_csrf_hash, resolve_principal
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.email import ConsoleEmailSender, EmailSender
-from jutsu_api.security import SESSION_COOKIE, Principal, verify_csrf
+from jutsu_api.security import (
+    SESSION_COOKIE,
+    Principal,
+    declaration_of,
+    verify_csrf,
+)
 
 __all__ = [
     "CurrentPrincipal",
@@ -74,6 +79,24 @@ async def get_principal(request: Request, session: Db) -> Principal:
     csrf_hash = await load_csrf_hash(session, token=token)
     if csrf_hash is not None:
         verify_csrf(request, csrf_hash)
+
+    # ENFORCE the route's declaration. This line is the difference between authorization
+    # and the appearance of it.
+    #
+    # `@requires(...)` stamps an attribute that `GuardedAPIRoute` reads at import time, so
+    # a route with no declaration cannot start. But that check only proves a permission
+    # was *named* — for a while nothing consulted it per request, and every authenticated
+    # caller could reach every endpoint regardless of role. A bare Member could list the
+    # organisation's people. Declared, documented, tested for presence, and completely
+    # inert: the same shape as the row-level security failure ADR 0003 records.
+    #
+    # The declaration is read from the matched route rather than passed in, so a handler
+    # cannot accidentally check a different permission from the one it advertises — the
+    # OpenAPI description and the enforcement come from one source.
+    route = request.scope.get("route")
+    declaration = declaration_of(getattr(route, "endpoint", None))
+    if declaration is not None and declaration.permission is not None:
+        principal.require(declaration.permission)
 
     return principal
 

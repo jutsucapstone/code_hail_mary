@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from jutsu_core import JutsuError, ValidationFailed
 
 from jutsu_api.routers import auth as auth_router
+from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import me as me_router
 from jutsu_api.routers import orgs as orgs_router
 from jutsu_api.security import public
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(orgs_router.router)
     app.include_router(me_router.router)
+    app.include_router(employees_router.router)
 
     return app
 

@@ -45,7 +45,7 @@ class Capabilities(BaseModel):
 
 
 @router.get("")
-@requires(Permission.ORG_READ)
+@requires(Permission.PROFILE_SELF_READ)
 async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
     """Requires `org:read`, which every role holds except a bare Member.
 

@@ -17,6 +17,7 @@ import hashlib
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request
+from jutsu_api.deps import get_principal
 from jutsu_api.main import create_app
 from jutsu_api.security import (
     CSRF_HEADER,
@@ -202,3 +203,58 @@ class TestCsrf:
 
     def test_an_unsafe_method_with_the_matching_token_passes(self) -> None:
         verify_csrf(self._request("POST", "token"), hashlib.sha256(b"token").digest())
+
+
+class TestDeclarationIsEnforced:
+    """Declaring a permission must actually deny, not merely describe.
+
+    The import-time guard proves every route *names* a permission. For a while nothing
+    consulted that name per request, so every authenticated caller reached every endpoint
+    regardless of role — a bare Member could list the organisation's people. Declared,
+    documented, tested for presence, and completely inert.
+
+    That is the same failure shape as ADR 0003's row-level security: a control that looks
+    enforced because the machinery around it exists. These tests check the machinery
+    actually bites.
+    """
+
+    def test_every_permissioned_route_resolves_the_principal(self) -> None:
+        """Enforcement lives in `get_principal`, so a route must depend on it.
+
+        A handler that declares a permission but takes no principal would sail straight
+        past the check. Presence of the dependency is what makes the declaration binding,
+        so it is asserted rather than assumed.
+        """
+        app = create_app()
+
+        missing = []
+        for route in iter_api_routes(app):
+            declaration = declaration_of(route.endpoint)
+            if declaration is None or declaration.permission is None:
+                continue
+            resolves = any(
+                dependency.call is get_principal for dependency in route.dependant.dependencies
+            ) or _depends_on_principal(route.dependant)
+            if not resolves:
+                missing.append(route.path)
+
+        assert not missing, (
+            f"routes declaring a permission but never resolving a principal: {missing}. "
+            "The declaration is inert on those — add the CurrentPrincipal dependency."
+        )
+
+
+def _depends_on_principal(dependant: object, depth: int = 0) -> bool:
+    """Walk the dependency tree looking for `get_principal`.
+
+    Recursive because the principal is usually reached through an annotated alias rather
+    than declared directly, so it sits one or more levels down the graph.
+    """
+    if depth > 6:
+        return False
+    for dependency in getattr(dependant, "dependencies", []):
+        if getattr(dependency, "call", None) is get_principal:
+            return True
+        if _depends_on_principal(dependency, depth + 1):
+            return True
+    return False

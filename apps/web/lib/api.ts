@@ -111,6 +111,19 @@ type MeResponse = paths["/v1/me"]["get"]["responses"][200]["content"]["applicati
 type OrganisationResponse =
   paths["/v1/orgs/current"]["get"]["responses"][200]["content"]["application/json"];
 
+type EmployeePage =
+  paths["/v1/employees"]["get"]["responses"][200]["content"]["application/json"];
+
+type InviteBody =
+  paths["/v1/employees/invitations"]["post"]["requestBody"]["content"]["application/json"];
+type InviteResponse =
+  paths["/v1/employees/invitations"]["post"]["responses"][202]["content"]["application/json"];
+
+type AcceptBody =
+  paths["/v1/invitations/accept"]["post"]["requestBody"]["content"]["application/json"];
+type AcceptResponse =
+  paths["/v1/invitations/accept"]["post"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -134,6 +147,26 @@ export const api = {
 
   currentOrganisation: () =>
     call<OrganisationResponse>("/v1/orgs/current", { method: "GET" }),
+
+  employees: (params: { cursor?: string | null; q?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    if (params.q) search.set("q", params.q);
+    const suffix = search.size ? `?${search}` : "";
+    return call<EmployeePage>(`/v1/employees${suffix}`, { method: "GET" });
+  },
+
+  invite: (body: InviteBody) =>
+    call<InviteResponse>("/v1/employees/invitations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  acceptInvitation: (body: AcceptBody) =>
+    call<AcceptResponse>("/v1/invitations/accept", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

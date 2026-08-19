@@ -67,7 +67,7 @@ class VerifyResult(BaseModel):
     destination: str
 
 
-def _set_session_cookies(
+def set_session_cookies(
     response: Response, *, token: str, csrf_token: str, settings: Settings
 ) -> None:
     """The session handle is httpOnly; its CSRF partner deliberately is not.
@@ -144,7 +144,7 @@ async def verify(
     credentials = await open_session(
         session, identity_id=identity_id, user_id=user_id, org_id=org_id
     )
-    _set_session_cookies(
+    set_session_cookies(
         response,
         token=credentials.token,
         csrf_token=credentials.csrf_token,

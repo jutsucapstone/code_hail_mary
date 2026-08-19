@@ -35,7 +35,12 @@ from jutsu_api.auth_service import ChallengePurpose, email_hmac, issue_challenge
 from jutsu_api.config import Settings
 from jutsu_api.email import EmailSender
 
-__all__ = ["RegistrationOutcome", "RegistrationRequest", "register_organisation"]
+__all__ = [
+    "RegistrationOutcome",
+    "RegistrationRequest",
+    "allocate_jutsu_id",
+    "register_organisation",
+]
 
 #: Attempts before allocation is treated as broken rather than unlucky.
 #:
@@ -76,8 +81,12 @@ class RegistrationOutcome:
     jutsu_id: str | None
 
 
-async def _allocate_jutsu_id(session: AsyncSession, *, org_id: UUID, kind: JutsuIdKind) -> str:
+async def allocate_jutsu_id(session: AsyncSession, *, org_id: UUID, kind: JutsuIdKind) -> str:
     """Reserve an unused id from the ledger.
+
+    Shared by registration and by invitation acceptance — the two paths that bring a
+    person into existence. Keeping one implementation means the retry bound, the typed
+    exhaustion error and the ON CONFLICT semantics cannot diverge between them.
 
     `auth.reserve_jutsu_id` uses ON CONFLICT DO NOTHING, so a taken id returns NULL rather
     than raising. That distinction is what makes this loop safe inside the registration
@@ -145,7 +154,7 @@ async def register_organisation(
         )
         return RegistrationOutcome(created=False, org_id=None, user_id=None, jutsu_id=None)
 
-    jutsu_id = await _allocate_jutsu_id(session, org_id=org_id, kind=JutsuIdKind.ADMIN)
+    jutsu_id = await allocate_jutsu_id(session, org_id=org_id, kind=JutsuIdKind.ADMIN)
 
     user_id = uuid4()
     now = datetime.now(UTC)

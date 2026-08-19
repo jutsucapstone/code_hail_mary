@@ -87,11 +87,23 @@ class TestCatalogueInvariants:
     def test_every_role_can_manage_its_own_profile(self) -> None:
         """Self-service is not a privilege; a Member with no other power still has it."""
         for role, permissions in ROLE_PERMISSIONS.items():
+            assert Permission.PROFILE_SELF_READ in permissions, role
             assert Permission.PROFILE_SELF_UPDATE in permissions, role
             assert Permission.INTEGRATION_SELF_MANAGE in permissions, role
 
+    def test_every_role_can_read_its_own_identity(self) -> None:
+        """GET /v1/me must work for a bare Member.
+
+        It was gated on ORG_READ, which `member` does not hold — so an invited employee
+        could sign in successfully and then be refused the identity the shell needs
+        before it can render at all.
+        """
+        for role, permissions in ROLE_PERMISSIONS.items():
+            assert Permission.PROFILE_SELF_READ in permissions, role
+
     def test_member_has_nothing_but_self_service(self) -> None:
         assert ROLE_PERMISSIONS[Role.MEMBER] == {
+            Permission.PROFILE_SELF_READ,
             Permission.PROFILE_SELF_UPDATE,
             Permission.INTEGRATION_SELF_MANAGE,
         }

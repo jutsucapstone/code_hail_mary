@@ -41,7 +41,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     name: "Employees",
     description: "Invite people, issue JUTSU IDs, and manage access.",
     permission: "member:read",
-    status: "pending",
+    status: "live",
     slice: "P1",
   },
   {

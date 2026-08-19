@@ -109,6 +109,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/employees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Employees
+         * @description Everyone in the caller's organisation.
+         *
+         *     The organisation is never a parameter. It comes from the session, and row-level
+         *     security scopes the query — so there is no combination of arguments that returns
+         *     another tenant's people.
+         */
+        get: operations["read_employees_v1_employees_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/employees/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Invitation */
+        post: operations["create_invitation_v1_employees_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept
+         * @description Join an organisation, and sign in.
+         *
+         *     No second code is sent. The token reached the invited address and nowhere else, so
+         *     holding it already proves the same thing an emailed code would — sending another
+         *     would be ceremony, not security.
+         */
+        post: operations["accept_v1_invitations_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me": {
         parameters: {
             query?: never;
@@ -179,6 +244,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AcceptPayload */
+        AcceptPayload: {
+            /** Full Name */
+            full_name: string;
+            /** Token */
+            token: string;
+        };
+        /** AcceptResult */
+        AcceptResult: {
+            /** Destination */
+            destination: string;
+            /** Jutsu Id */
+            jutsu_id: string;
+        };
         /**
          * Capabilities
          * @description The caller's own identity and permission set.
@@ -218,10 +297,62 @@ export interface components {
              */
             email: string;
         };
+        /** Employee */
+        Employee: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string;
+            /** Id */
+            id: string;
+            /** Jutsu Id */
+            jutsu_id: string | null;
+            /** Last Activity At */
+            last_activity_at: string | null;
+            role: components["schemas"]["Role"] | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * EmployeePage
+         * @description A page of people, plus the cursor for the next one.
+         *
+         *     `next_cursor` is opaque and keyset-based rather than a page number. Offset paging over
+         *     a table being written to skips and duplicates rows between pages — and this table is
+         *     written to exactly when an admin is looking at it, because that is when they invite.
+         */
+        EmployeePage: {
+            /** Items */
+            items: components["schemas"]["Employee"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** InvitationAccepted */
+        InvitationAccepted: {
+            /**
+             * Status
+             * @default sent
+             */
+            status: string;
+        };
+        /** InvitePayload */
+        InvitePayload: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            role: components["schemas"]["Role"];
         };
         /**
          * MemberCounts
@@ -267,7 +398,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_update" | "integration:self_manage";
+        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage";
         /** RegisterPayload */
         RegisterPayload: {
             /** Company Domain */
@@ -454,6 +585,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_employees_v1_employees_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                q?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invitation_v1_employees_invitations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_v1_invitations_accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptResult"];
                 };
             };
             /** @description Validation Error */

@@ -52,9 +52,15 @@ class Permission(StrEnum):
 
     AUDIT_READ = "audit:read"
 
-    #: Held by every role, including `member`. These are the two things a person may
-    #: always do to their *own* record — the resource check, not the permission, is what
-    #: stops them doing it to someone else's.
+    #: Held by every role, including `member`. These are the things a person may always
+    #: do to their *own* record — the resource check, not the permission, is what stops
+    #: them doing it to someone else's.
+    #:
+    #: PROFILE_SELF_READ gates GET /v1/me. It exists because that endpoint was gated on
+    #: ORG_READ, which `member` does not hold, so an invited employee could authenticate
+    #: and then be refused their own identity. Reading who you are is not an
+    #: organisational privilege.
+    PROFILE_SELF_READ = "profile:self_read"
     PROFILE_SELF_UPDATE = "profile:self_update"
     INTEGRATION_SELF_MANAGE = "integration:self_manage"
 
@@ -88,7 +94,11 @@ ROLE_RANKS: Final[MappingProxyType[Role, int]] = MappingProxyType(
     }
 )
 
-_EVERYONE = (Permission.PROFILE_SELF_UPDATE, Permission.INTEGRATION_SELF_MANAGE)
+_EVERYONE = (
+    Permission.PROFILE_SELF_READ,
+    Permission.PROFILE_SELF_UPDATE,
+    Permission.INTEGRATION_SELF_MANAGE,
+)
 
 ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = MappingProxyType(
     {

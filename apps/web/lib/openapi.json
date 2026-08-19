@@ -1,6 +1,47 @@
 {
   "components": {
     "schemas": {
+      "AcceptPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "full_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "full_name"
+        ],
+        "title": "AcceptPayload",
+        "type": "object"
+      },
+      "AcceptResult": {
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "jutsu_id": {
+            "title": "Jutsu Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jutsu_id",
+          "destination"
+        ],
+        "title": "AcceptResult",
+        "type": "object"
+      },
       "Capabilities": {
         "description": "The caller's own identity and permission set.\n\n`org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they\ndescribe, and they are what the UI uses for its own routing \u2014 but they are never\naccepted back as an authorisation input, which is why no endpoint takes an org id\nfrom the client.",
         "properties": {
@@ -71,6 +112,112 @@
         "title": "ChallengeRequest",
         "type": "object"
       },
+      "Employee": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "jutsu_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jutsu Id"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "jutsu_id",
+          "status",
+          "role",
+          "created_at",
+          "last_activity_at"
+        ],
+        "title": "Employee",
+        "type": "object"
+      },
+      "EmployeePage": {
+        "description": "A page of people, plus the cursor for the next one.\n\n`next_cursor` is opaque and keyset-based rather than a page number. Offset paging over\na table being written to skips and duplicates rows between pages \u2014 and this table is\nwritten to exactly when an admin is looking at it, because that is when they invite.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Employee"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "EmployeePage",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -82,6 +229,36 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InvitationAccepted": {
+        "properties": {
+          "status": {
+            "default": "sent",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "InvitationAccepted",
+        "type": "object"
+      },
+      "InvitePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        },
+        "required": [
+          "email",
+          "role"
+        ],
+        "title": "InvitePayload",
         "type": "object"
       },
       "MemberCounts": {
@@ -189,6 +366,7 @@
           "integration:connect",
           "integration:revoke",
           "audit:read",
+          "profile:self_read",
           "profile:self_update",
           "integration:self_manage"
         ],
@@ -497,6 +675,169 @@
         "summary": "Verify",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/v1/employees": {
+      "get": {
+        "description": "Everyone in the caller's organisation.\n\nThe organisation is never a parameter. It comes from the session, and row-level\nsecurity scopes the query \u2014 so there is no combination of arguments that returns\nanother tenant's people.",
+        "operationId": "read_employees_v1_employees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmployeePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Employees",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/v1/employees/invitations": {
+      "post": {
+        "operationId": "create_invitation_v1_employees_invitations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Invitation",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/v1/invitations/accept": {
+      "post": {
+        "description": "Join an organisation, and sign in.\n\nNo second code is sent. The token reached the invited address and nowhere else, so\nholding it already proves the same thing an emailed code would \u2014 sending another\nwould be ceremony, not security.",
+        "operationId": "accept_v1_invitations_accept_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept",
+        "tags": [
+          "employees"
         ]
       }
     },
