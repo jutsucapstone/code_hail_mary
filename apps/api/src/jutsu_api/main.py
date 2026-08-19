@@ -10,6 +10,7 @@ propagation. The `/v1` surface in §15 lands slice by slice from S7 onward.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,6 +19,8 @@ from typing import Any, Final
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from jutsu_core import JutsuError
+
+from jutsu_api.security import public
 
 REQUEST_ID_HEADER: Final = "x-request-id"
 
@@ -43,12 +46,18 @@ def _configure_logging() -> None:
 def create_app() -> FastAPI:
     _configure_logging()
 
+    # The interactive docs and the schema are a complete map of every endpoint and
+    # payload. Useful in development, and free enumeration for an attacker in
+    # production, so they are served only outside it.
+    expose_schema = os.environ.get("JUTSU_ENV", "dev") != "prod"
+
     app = FastAPI(
         title="JUTSU API",
         version="0.1.0",
         description="Enterprise Memory OS gateway",
-        docs_url="/docs",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if expose_schema else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if expose_schema else None,
     )
 
     @app.middleware("http")
@@ -74,11 +83,13 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=exc.envelope(request_id))
 
     @app.get("/healthz", tags=["ops"])
+    @public("Liveness must answer before, and independently of, any session machinery.")
     async def healthz(request: Request) -> dict[str, Any]:
         """Liveness. Answers whether the process is up, nothing more."""
         return {"status": "ok", "request_id": getattr(request.state, "request_id", "unknown")}
 
     @app.get("/readyz", tags=["ops"])
+    @public("Readiness is polled by the platform, which holds no session.")
     async def readyz(request: Request) -> dict[str, Any]:
         """Readiness — whether dependencies are reachable.
 

@@ -1,0 +1,153 @@
+"""Roles and permissions — the control plane.
+
+**Roles gate features; ACLs gate data. Never conflate them** (§17). Nothing in
+`Permission` grants a document read, and nothing here can. An Organization Owner with no
+ACL grant still sees zero evidence, because visibility is decided by
+`document_acl.principal_id` matching `users.external_id` — a mechanism this module cannot
+reach. That omission is deliberate and load-bearing: there is no `memory:read_all` to
+hand out by accident, which is the most likely way an onboarding feature could quietly
+breach the product invariant.
+
+This module is the *authoring* copy. Migration 0002 seeds the same values into Postgres
+and then revokes write access to those tables from the application role, so the database
+is the runtime authority and a compromised request path cannot mint a role or widen a
+permission — only a migration can. `test_rbac_catalogue.py` asserts the two are
+identical, so they cannot drift.
+
+Routes declare a `Permission`, never a `Role`. A route that names a role has to be
+revisited every time the role list changes; a route that names a permission does not.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Final
+
+__all__ = [
+    "ROLE_PERMISSIONS",
+    "ROLE_RANKS",
+    "Permission",
+    "Role",
+    "outranks",
+    "permissions_for",
+]
+
+
+class Permission(StrEnum):
+    """What a caller may do. Namespaced `subject:verb` so the set stays readable."""
+
+    ORG_READ = "org:read"
+    ORG_UPDATE = "org:update"
+    ORG_DELETE = "org:delete"
+
+    MEMBER_READ = "member:read"
+    MEMBER_INVITE = "member:invite"
+    MEMBER_UPDATE = "member:update"
+    MEMBER_ASSIGN_ROLE = "member:assign_role"
+
+    INTEGRATION_READ = "integration:read"
+    INTEGRATION_CONNECT = "integration:connect"
+    INTEGRATION_REVOKE = "integration:revoke"
+
+    AUDIT_READ = "audit:read"
+
+    #: Held by every role, including `member`. These are the two things a person may
+    #: always do to their *own* record — the resource check, not the permission, is what
+    #: stops them doing it to someone else's.
+    PROFILE_SELF_UPDATE = "profile:self_update"
+    INTEGRATION_SELF_MANAGE = "integration:self_manage"
+
+
+class Role(StrEnum):
+    OWNER = "owner"
+    SUPER_ADMIN = "super_admin"
+    HR_ADMIN = "hr_admin"
+    IT_ADMIN = "it_admin"
+    ANALYST = "analyst"
+    VIEWER = "viewer"
+    MEMBER = "member"
+
+
+#: Spaced, and deliberately NOT unique.
+#:
+#: The escalation rule is strict — an actor may only grant a role ranked *below* their
+#: own — so equal ranks express genuine peers. HR Admin and IT Admin have disjoint powers
+#: and neither may promote anyone into the other. Forcing a unique rank would invent a
+#: total order that does not exist and hand one of them authority over the other. The
+#: gaps leave room to insert a role later without renumbering every row.
+ROLE_RANKS: Final[MappingProxyType[Role, int]] = MappingProxyType(
+    {
+        Role.OWNER: 100,
+        Role.SUPER_ADMIN: 80,
+        Role.HR_ADMIN: 60,
+        Role.IT_ADMIN: 60,
+        Role.ANALYST: 40,
+        Role.VIEWER: 20,
+        Role.MEMBER: 10,
+    }
+)
+
+_EVERYONE = (Permission.PROFILE_SELF_UPDATE, Permission.INTEGRATION_SELF_MANAGE)
+
+ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = MappingProxyType(
+    {
+        Role.OWNER: frozenset(Permission),
+        # Everything the owner has except closing the organisation — the one power the
+        # role exists to withhold.
+        Role.SUPER_ADMIN: frozenset(set(Permission) - {Permission.ORG_DELETE}),
+        Role.HR_ADMIN: frozenset(
+            {
+                Permission.ORG_READ,
+                Permission.MEMBER_READ,
+                Permission.MEMBER_INVITE,
+                Permission.MEMBER_UPDATE,
+                Permission.MEMBER_ASSIGN_ROLE,
+                Permission.AUDIT_READ,
+                *_EVERYONE,
+            }
+        ),
+        Role.IT_ADMIN: frozenset(
+            {
+                Permission.ORG_READ,
+                Permission.ORG_UPDATE,
+                Permission.MEMBER_READ,
+                Permission.INTEGRATION_READ,
+                Permission.INTEGRATION_CONNECT,
+                Permission.INTEGRATION_REVOKE,
+                Permission.AUDIT_READ,
+                *_EVERYONE,
+            }
+        ),
+        Role.ANALYST: frozenset(
+            {
+                Permission.ORG_READ,
+                Permission.MEMBER_READ,
+                Permission.INTEGRATION_READ,
+                *_EVERYONE,
+            }
+        ),
+        Role.VIEWER: frozenset({Permission.ORG_READ, *_EVERYONE}),
+        Role.MEMBER: frozenset(_EVERYONE),
+    }
+)
+
+
+def permissions_for(role: Role) -> frozenset[Permission]:
+    """What a role may do. The runtime check reads the database, not this."""
+    return ROLE_PERMISSIONS[role]
+
+
+def outranks(actor: Role, target: Role) -> bool:
+    """Whether `actor` may act on someone holding `target`.
+
+    STRICTLY greater, so peers cannot act on each other and nobody can act on their own
+    level. This is what stops an HR Admin deactivating an IT Admin, and — more
+    importantly — what stops any admin promoting someone to their own rank and then being
+    outranked by them.
+
+    Note the caller still has to *use* this. It is needed in assign-role, deactivate,
+    update, invite and revoke; a route that loads a target member and forgets the check
+    is the escalation bug, not a missing rule.
+    """
+    return ROLE_RANKS[actor] > ROLE_RANKS[target]

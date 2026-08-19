@@ -14,11 +14,15 @@ from typing import Any
 
 __all__ = [
     "AclDenied",
+    "Conflict",
     "ExtractionRejected",
     "InsufficientEvidence",
     "JutsuError",
     "NotFound",
+    "PermissionDenied",
     "RateLimited",
+    "ServiceUnavailable",
+    "Unauthenticated",
     "ValidationFailed",
 ]
 
@@ -90,3 +94,56 @@ class ExtractionRejected(JutsuError):
 
     status_code = 422
     code = "extraction_rejected"
+
+
+class Unauthenticated(JutsuError):
+    """No usable session on a route that requires one.
+
+    Distinct from `PermissionDenied`: this says "we do not know who you are", which the
+    frontend answers by sending the caller to sign in. A caller we *do* know, who simply
+    may not do this, must never be sent round the sign-in loop — that is a 403.
+    """
+
+    status_code = 401
+    code = "unauthenticated"
+
+
+class PermissionDenied(JutsuError):
+    """Authenticated, inside the tenant, and lacking the permission.
+
+    403 rather than 404 is correct *here* and only here. `AclDenied` returns 404 because
+    the existence of a document is itself the secret. The existence of an admin screen is
+    not: the caller already knows they are in this organisation, so hiding it would only
+    make the product feel broken while protecting nothing.
+
+    A cross-tenant reference is different again, and never reaches this class — row-level
+    security returns zero rows, so it surfaces as `NotFound` without any code deciding to
+    hide it.
+    """
+
+    status_code = 403
+    code = "permission_denied"
+
+
+class Conflict(JutsuError):
+    """The request is well-formed but the current state refuses it.
+
+    Duplicate organisation domain, an invitation that was already accepted, a JUTSU ID
+    already claimed. Carries no detail about the conflicting row by default: on the
+    registration path that detail is another tenant's existence.
+    """
+
+    status_code = 409
+    code = "conflict"
+
+
+class ServiceUnavailable(JutsuError):
+    """A dependency this request needs is not answering.
+
+    Used where failing CLOSED is the correct trade — rate limiting on an authentication
+    endpoint, for instance, where an unreachable limiter must not silently become no
+    limiter at all.
+    """
+
+    status_code = 503
+    code = "service_unavailable"
