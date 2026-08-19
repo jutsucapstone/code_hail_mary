@@ -13,12 +13,32 @@ concurrency:
 env:
   # Keeps robots.txt, sitemap.xml and OG tags from being built against localhost.
   NEXT_PUBLIC_SITE_URL: https://jutsu.dev
+  JUTSU_TEST_DATABASE_URL: postgresql+asyncpg://jutsu:jutsu_ci@localhost:5432/jutsu_test
+  DATABASE_URL: postgresql+asyncpg://jutsu:jutsu_ci@localhost:5432/jutsu_test
 
 jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    # A real Postgres, not a stand-in. pgvector, RLS and FORCE ROW LEVEL SECURITY have
+    # no in-memory equivalent, so without this the packages/db suite would skip and CI
+    # would be green on untested tenant isolation.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: jutsu
+          POSTGRES_PASSWORD: jutsu_ci
+          POSTGRES_DB: jutsu_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jutsu -d jutsu_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +84,11 @@ jobs:
 
       - name: Test (python)
         run: uv run pytest -q
+
+      # The DB suite must actually run. A skip here means tenant isolation is
+      # unverified, which is exactly the failure this job exists to catch.
+      - name: Assert database tests were not skipped
+        run: uv run pytest packages/db -q --no-header -p no:randomly | tee /tmp/db.txt && ! grep -q 'skipped' /tmp/db.txt
 
       # The build is the real gate for the web app — lint and tsc both pass on things
       # that fail to compile under Turbopack.

@@ -11,6 +11,7 @@ exclude = ["packages/ui"]
 
 [tool.uv.sources]
 jutsu-core = { workspace = true }
+jutsu-db = { workspace = true }
 jutsu-graph = { workspace = true }
 jutsu-retrieval = { workspace = true }
 jutsu-agents = { workspace = true }

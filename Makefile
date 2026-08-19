@@ -7,7 +7,7 @@
 # Targets for slices that have not landed yet fail loudly and name the slice,
 # rather than silently succeeding and letting a gate pass on nothing.
 
-.PHONY: help dev api worker up down migrate seed test preflight eval gate deploy clean
+.PHONY: help dev api worker up down migrate migrate-down migrate-rev psql seed test preflight eval gate deploy clean
 
 help:
 	@echo "JUTSU targets"
@@ -16,7 +16,9 @@ help:
 	@echo "  make worker     arq worker"
 	@echo "  make up         start Postgres + Neo4j + Redis (needs Docker)"
 	@echo "  make down       stop them"
-	@echo "  make migrate    apply Postgres + Neo4j migrations      [S1/S2]"
+	@echo "  make migrate    apply Postgres migrations (Neo4j at S2)"
+	@echo "  make migrate-down  roll Postgres back to base"
+	@echo "  make psql       psql shell into the dev database"
 	@echo "  make seed       ingest the pilot corpus                [S3]"
 	@echo "  make test       full test suite"
 	@echo "  make preflight  lint + typecheck + tests  (required before commit, §4.15)"
@@ -69,11 +71,21 @@ test: test-hooks test-py
 preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-py test-py
 	@echo "preflight OK"
 
-# ---------------------------------------------------------------- not yet implemented
+# ---------------------------------------------------------------- schema
 
 migrate:
-	@echo "migrate is implemented in S1 (Postgres) and S2 (Neo4j). See docs/plan-phase-1.md"
-	@exit 1
+	uv run --package jutsu-db alembic -c packages/db/alembic.ini upgrade head
+
+migrate-down:
+	uv run --package jutsu-db alembic -c packages/db/alembic.ini downgrade base
+
+migrate-rev:
+	uv run --package jutsu-db alembic -c packages/db/alembic.ini revision --autogenerate -m "$(m)"
+
+psql:
+	docker compose -f infra/docker/compose.yml exec postgres psql -U jutsu -d jutsu
+
+# ---------------------------------------------------------------- not yet implemented
 
 seed:
 	@echo "seed is implemented in S3. See docs/plan-phase-1.md"
