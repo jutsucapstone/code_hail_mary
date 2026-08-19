@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, Building2, IdCard, Lock, type LucideIcon } from "lucide-react";
 
+import { IllustrationReel } from "@/components/pilot/illustration-reel";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { pilot, siteConfig } from "@/lib/content";
 
@@ -14,6 +15,20 @@ const PATH_ICONS: Record<string, LucideIcon> = {
   org: Building2,
   employee: IdCard,
 };
+
+/**
+ * The illustration reel shown in the brand panel.
+ *
+ * Listed here rather than globbed from the directory so the order is deliberate and a
+ * missing file is a visible 404 during review rather than a silently shorter loop.
+ */
+const PILOT_ILLUSTRATIONS = [
+  { src: "/illustrations/pilot-01.png", width: 227, height: 207 },
+  { src: "/illustrations/pilot-02.png", width: 222, height: 205 },
+  { src: "/illustrations/pilot-03.png", width: 197, height: 212 },
+  { src: "/illustrations/pilot-04.png", width: 248, height: 302 },
+  { src: "/illustrations/pilot-05.png", width: 302, height: 307 },
+] as const;
 
 export default function PilotPage() {
   return (
@@ -34,15 +49,27 @@ export default function PilotPage() {
           <span className="sr-only">{siteConfig.name} home</span>
         </Link>
 
-        <div className="mt-auto pt-16">
+        {/* The reel sits between the lockup and the tagline, taking the space the
+            description used to. It is decorative and carries no copy, so nothing that
+            was being read is lost — the two choice cards opposite are what this page is
+            for, and a paragraph of product prose here competed with them. */}
+        <div className="flex min-h-0 flex-1 items-center justify-center py-10">
+          {/* 15rem, not larger. The source artwork is 197-307px on its longest side, so
+              a wider stage upscales it and the line work goes soft — the frame is sized
+              to the art rather than the art stretched to the frame. */}
+          <IllustrationReel
+            illustrations={PILOT_ILLUSTRATIONS}
+            className="max-w-[15rem]"
+            sizes="(min-width: 1024px) 15rem, 0px"
+          />
+        </div>
+
+        <div>
           <p className="display text-pretty text-3xl font-semibold leading-[1.1]">
             {siteConfig.tagline}
           </p>
-          <p className="mt-5 max-w-sm text-pretty text-sm leading-relaxed text-muted-foreground">
-            {siteConfig.description}
-          </p>
 
-          <ul className="mt-10 flex flex-col gap-3 border-t border-hairline pt-8">
+          <ul className="mt-8 flex flex-col gap-3 border-t border-hairline pt-8">
             {pilot.reassurance.map((line) => (
               <li key={line} className="flex items-start gap-3">
                 <Lock
