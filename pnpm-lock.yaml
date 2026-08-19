@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@jutsu/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -71,6 +74,8 @@ importers:
       typescript:
         specifier: ^5
         version: 5.9.3
+
+  packages/ui: {}
 
 packages:
 

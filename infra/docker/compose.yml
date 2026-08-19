@@ -1,0 +1,76 @@
+# Local dev data layer (spec §5, §20).
+#
+# dev is local Compose; staging and prod are GCP and differ in data and scale only,
+# never in configuration shape. Versions here are pinned to match the managed services
+# they stand in for: Cloud SQL Postgres 16, Neo4j AuraDB 5.
+#
+#   make up     start
+#   make down   stop
+#
+# Healthchecks matter more than usual here: `make migrate` runs straight after `make up`
+# in CI, and Postgres accepts TCP connections several seconds before it will accept a
+# CREATE EXTENSION.
+
+name: jutsu
+
+services:
+  postgres:
+    # pgvector on top of Postgres 16 — the extension is not in the stock image.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jutsu
+      POSTGRES_PASSWORD: jutsu_dev_only
+      POSTGRES_DB: jutsu
+      # Deterministic collation so ORDER BY matches Cloud SQL rather than the host locale.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jutsu -d jutsu"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/jutsu_dev_only
+      # APOC is used by the migration runner for batched writes.
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_server_memory_heap_max__size: 1G
+    ports:
+      - "7474:7474" # browser
+      - "7687:7687" # bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    # Backs arq in dev. Prod uses Cloud Tasks behind the same queue interface.
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:

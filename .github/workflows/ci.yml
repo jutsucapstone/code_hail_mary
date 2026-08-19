@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch makes the in-flight run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keeps robots.txt, sitemap.xml and OG tags from being built against localhost.
+  NEXT_PUBLIC_SITE_URL: https://jutsu.dev
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --all-packages --frozen
+
+      # Mirrors `make preflight` step by step rather than shelling out to make, so a
+      # failure names the stage that broke instead of one opaque exit code.
+      - name: Lint (web)
+        run: pnpm --filter web lint
+
+      - name: Typecheck (web)
+        run: pnpm --filter web typecheck
+
+      - name: Test (commit hook)
+        run: node scripts/hooks/preflight-on-commit.test.mjs
+
+      - name: Lint (python)
+        run: uv run ruff check .
+
+      - name: Format check (python)
+        run: uv run ruff format --check .
+
+      - name: Typecheck (python)
+        run: uv run mypy packages apps
+
+      - name: Test (python)
+        run: uv run pytest -q
+
+      # The build is the real gate for the web app — lint and tsc both pass on things
+      # that fail to compile under Turbopack.
+      - name: Build (web)
+        run: pnpm --filter web build
