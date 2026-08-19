@@ -17,8 +17,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from jutsu_core import JutsuError
+from jutsu_core import JutsuError, ValidationFailed
 
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import me as me_router
@@ -84,6 +85,35 @@ def create_app() -> FastAPI:
         request_id = getattr(request.state, "request_id", "unknown")
         logger.warning("%s", exc.code)
         return JSONResponse(status_code=exc.status_code, content=exc.envelope(request_id))
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Rejected input, in the one envelope, with the values stripped out.
+
+        FastAPI default is to return {"detail": [...]} with an "input" key holding the
+        value that failed. Two problems, both real. It is not the §15 envelope, so a
+        client needs a second code path for exactly the responses it is most likely to
+        hit. And it reflects the submitted value: on /v1/auth/request that is an email
+        address echoed straight back to whoever posted it, which §4.9 forbids.
+
+        Only the field location and the rule that failed are returned. That is what a
+        form needs to mark the right input; the value is already in the caller hands.
+        """
+        request_id = getattr(request.state, "request_id", "unknown")
+        fields = [
+            {
+                "field": ".".join(str(part) for part in error["loc"][1:]) or "body",
+                "rule": error["type"],
+            }
+            for error in exc.errors()
+        ]
+        error = ValidationFailed("Some of the details you entered are not valid.")
+        envelope = error.envelope(request_id)
+        envelope["error"]["details"] = {"fields": fields}
+        logger.warning("validation_failed")
+        return JSONResponse(status_code=error.status_code, content=envelope)
 
     @app.get("/healthz", tags=["ops"])
     @public("Liveness must answer before, and independently of, any session machinery.")

@@ -217,3 +217,36 @@ class TestProtectedEndpoint:
         # Clearing the cookie is not enough on its own — the handle must stop working
         # even for someone who captured it before sign-out.
         assert (await client.get("/v1/me")).status_code == 401
+
+
+class TestValidationEnvelope:
+    """Rejected input must use the one envelope and reflect nothing back.
+
+    FastAPI's default handler returns `{"detail": [...]}` with an `input` key holding the
+    value that failed. That is two defects at once: a second response shape for exactly
+    the case clients hit most, and — on the auth endpoints — an email address echoed
+    straight back to whoever posted it, which §4.9 forbids.
+
+    Found by running the real form, not by review: the browser surfaced a generic
+    "service is not responding" because the client could not parse the default shape.
+    """
+
+    async def test_a_rejected_field_uses_the_standard_envelope(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/v1/orgs/register", json={**REGISTRATION, "work_email": "not-an-email"}
+        )
+
+        assert response.status_code == 422
+        body = response.json()
+        assert body["error"]["code"] == "validation_failed"
+        assert "request_id" in body
+        assert body["error"]["details"]["fields"] == [
+            {"field": "work_email", "rule": "value_error"}
+        ]
+
+    async def test_the_submitted_value_is_never_reflected(self, client: AsyncClient) -> None:
+        """The specific thing that would leak an address on the sign-in endpoint."""
+        response = await client.post("/v1/auth/request", json={"email": "secret.person@invalid"})
+
+        assert response.status_code == 422
+        assert "secret.person" not in response.text

@@ -13,10 +13,12 @@
       "runtimeArgs": [
         "run",
         "--package",
-        "api",
+        "jutsu-api",
         "uvicorn",
         "jutsu_api.main:app",
         "--reload",
+        "--env-file",
+        ".env",
         "--port",
         "8000"
       ],
