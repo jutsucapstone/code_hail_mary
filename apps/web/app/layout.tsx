@@ -5,6 +5,7 @@ import { WordmarkGradientDefs } from "@/components/site/wordmark-art";
 import { ThemeProvider } from "@/components/theme-provider";
 import { faq, siteConfig } from "@/lib/content";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
+import { OPENING_SEEN_SCRIPT } from "@/lib/opening";
 
 import "./globals.css";
 
@@ -123,6 +124,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="grain flex min-h-full flex-col bg-background text-foreground">
+        {/* Runs synchronously, before anything below it is parsed, so the cold open is
+            already hidden in the first paint for a returning visitor. Same technique
+            next-themes uses to avoid a theme flash, and load-bearing for the same reason:
+            deciding this in React would render the section and then remove it. */}
+        <script dangerouslySetInnerHTML={{ __html: OPENING_SEEN_SCRIPT }} />
         <a
           href={`#${MAIN_CONTENT_ID}`}
           className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:left-4 focus-visible:top-4 focus-visible:z-100 focus-visible:rounded-md focus-visible:bg-brand focus-visible:px-4 focus-visible:py-2 focus-visible:text-sm focus-visible:font-medium focus-visible:text-brand-foreground"

@@ -1,7 +1,9 @@
 import { ChevronRight } from "lucide-react";
 
+import { OpeningSeenMarker } from "@/components/site/opening-seen-marker";
 import { TextRevealByWord } from "@/components/ui/text-reveal";
 import { manifesto } from "@/lib/content";
+import { OPENING_SECTION_ID } from "@/lib/opening";
 
 /**
  * The cold open. Nothing but the thesis, revealed word by word as you scroll.
@@ -13,13 +15,21 @@ import { manifesto } from "@/lib/content";
  */
 export function OpeningStatement() {
   return (
-    <section id="manifesto" aria-label="Why JUTSU exists" className="relative isolate">
+    <section
+      id={OPENING_SECTION_ID}
+      aria-label="Why JUTSU exists"
+      className="relative isolate"
+    >
       <div aria-hidden="true" className="hairline-grid radial-fade absolute inset-0" />
       <div aria-hidden="true" className="absolute inset-0 overflow-clip">
         <div className="glow-warm absolute -top-32 left-1/2 h-[38rem] w-[70rem] max-w-[140vw] -translate-x-1/2 rounded-[50%] blur-[120px]" />
       </div>
 
       <TextRevealByWord text={manifesto.line} className="h-[220vh]" />
+
+      {/* Reaching this means the reveal has run its course, so the cold open is marked
+          seen and the next visit opens straight on the hero. */}
+      <OpeningSeenMarker />
 
       {/* Pinned frame: sits above the reveal, never intercepts pointer events. */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10">

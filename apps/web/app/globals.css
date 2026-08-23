@@ -34,6 +34,16 @@
     scroll-margin-top: calc(var(--chrome-h, 4.5rem) + 1.5rem);
   }
 
+  /* The cold open shows once per visitor.
+
+     Hidden by CSS keyed off an attribute a synchronous inline script stamps on <html>
+     during parse, so a returning visitor never sees 220vh of manifesto render and then
+     vanish. `display: none` rather than visibility or opacity: the section must leave the
+     flow entirely, or the page would open on a screen of blank space. */
+  :root[data-opening-seen] #manifesto {
+    display: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     html {
       scroll-behavior: auto;
@@ -172,6 +182,36 @@
 
   .mask-fade-x {
     mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+  }
+
+  /* With the cold open gone, the hero is the first thing in `main` — and `main`
+     starts at y=0, because the site chrome is a fixed overlay rather than a flow
+     element. The hero's own `pt-14` was sized as a gap below the preceding section,
+     not as clearance for a 109px bar, so its eyebrow rendered underneath the nav.
+
+     In `utilities`, not `base`: `pt-12 lg:pt-14` is itself a utility, and Tailwind's
+     cascade layers settle that by layer before specificity — a base rule loses to it
+     however specific it is. Same layer, higher specificity, so this wins honestly
+     without `!important`.
+
+     Scoped to the returning-visitor state on purpose: while the manifesto leads, its
+     sticky full-height frame already clears the chrome, and padding the hero there
+     would open a gap in the middle of the page. `--chrome-h` is measured and
+     published by SiteChrome; the fallback covers first paint before that effect runs
+     and is close enough to the measured height that nothing visibly settles. */
+  :root[data-opening-seen] #hero {
+    padding-top: calc(var(--chrome-h, 6.8rem) + 3.5rem);
+  }
+
+  /* The clearance itself is not negotiable — it is however tall the chrome measures —
+     but the breathing room under it is. On a short viewport those 56px are the
+     difference between the primary call to action sitting above the fold and below it,
+     which matters more here than the gap does. Same `max-height` idiom the admin and
+     pilot shells use. */
+  @media (max-height: 820px) {
+    :root[data-opening-seen] #hero {
+      padding-top: calc(var(--chrome-h, 6.8rem) + 1.5rem);
+    }
   }
 }
 

@@ -42,7 +42,13 @@ export function Reveal({
       className={cn(className)}
       initial={{ opacity: 0, y }}
       whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "-12% 0px -12% 0px" }}
+      // Bottom inset only. A negative *top* inset also shrinks the root from above, so
+      // anything already sitting in the first 12% of the viewport on load never
+      // intersects — and scrolling down only carries it further up, so it stays at
+      // `opacity: 0` permanently. That went unnoticed while the cold open pushed the
+      // hero down the page; the moment a returning visitor landed on the hero directly,
+      // its eyebrow vanished. Revealing late from below is the useful half of this.
+      viewport={{ once: true, margin: "0px 0px -12% 0px" }}
       transition={{ duration: 0.6, delay, ease: [0.22, 1, 0.36, 1] }}
     >
       {children}
