@@ -1,9 +1,14 @@
 name: CI
 
+# Deliberately NOT `push: branches: [main]`. Deploy runs on that push and calls this
+# workflow as its gate, so triggering here as well would run the whole suite twice for
+# every merge — once uselessly.
 on:
-  push:
-    branches: [main]
   pull_request:
+  # Callable, so deploy.yml gates on this exact job rather than re-listing the checks.
+  # A copy of the gate is a gate that drifts, and it drifts silently — the deploy keeps
+  # passing while the thing it claims to have verified has changed.
+  workflow_call:
 
 # A newer push to the same branch makes the in-flight run irrelevant.
 concurrency:
@@ -94,8 +99,15 @@ jobs:
       - name: Format check (python)
         run: uv run ruff format --check .
 
+      # One invocation per tree, matching `make typecheck-py`. A single
+      # `mypy packages apps` sees several modules named "conftest" — mypy derives module
+      # names from the nearest directory without an __init__.py — calls it ambiguous and
+      # refuses to check anything at all, which is a green step that checked nothing.
       - name: Typecheck (python)
-        run: uv run mypy packages apps
+        run: |
+          uv run mypy packages
+          uv run mypy apps
+          uv run mypy conftest.py
 
       - name: Test (python)
         run: uv run pytest -q

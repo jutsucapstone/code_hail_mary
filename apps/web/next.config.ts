@@ -12,6 +12,11 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(import.meta.dirname, "../.."),
   },
+  // Cloud Run runs this as a container, and the default build expects the whole
+  // node_modules tree beside it. "standalone" emits a self-contained server with only
+  // the files actually reached, which is the difference between a ~1GB image and a
+  // small one — and this repo has already had one argument about deploy weight.
+  output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
   async headers() {

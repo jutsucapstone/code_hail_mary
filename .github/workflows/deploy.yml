@@ -1,0 +1,271 @@
+name: Deploy
+
+# Only `main`, and only behind a green CI. The gate is `needs:` on the reusable workflow
+# rather than a copy of its steps: a duplicated gate drifts, and it drifts silently — the
+# deploy keeps passing while what it claims to have verified has changed underneath.
+#
+# `workflow_dispatch` is here for a redeploy of an unchanged commit (a rollback, or a
+# revision lost to a bad config change) without pushing an empty commit to trigger it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Deploys are not worth racing. Unlike CI, in-flight runs are *not* cancelled: killing a
+# deploy between "migrations applied" and "new revision serving" leaves a schema the
+# running code has never seen.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGION: asia-south1
+  REPOSITORY: jutsu
+  # Cloud Run service names. Kept here because three jobs and the migration step all
+  # have to agree on them.
+  API_SERVICE: jutsu-api
+  WEB_SERVICE: jutsu-web
+  WORKER_SERVICE: jutsu-worker
+  MIGRATE_JOB: jutsu-migrate
+
+jobs:
+  # ------------------------------------------------------------------ gate
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # ------------------------------------------------------------------ build
+  build:
+    name: build and push images
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Scoped to this job, not the workflow. `id-token: write` is what lets a run mint a
+    # Google credential, so it is granted where it is needed and nowhere else — a
+    # workflow-wide grant would hand the same power to every future job added here.
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: meta
+        # The commit SHA, never `latest`. A mutable tag makes "which code is running"
+        # unanswerable and makes rollback a rebuild rather than a redeploy.
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      # Workload Identity Federation, so no service-account JSON key exists to leak.
+      # GitHub mints a short-lived OIDC token, Google exchanges it for an access token
+      # scoped to this repository, and it expires with the job. A downloaded key would be
+      # a permanent credential sitting in repository secrets, which §4.10 rules out.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate Docker to Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      # One step per image rather than a matrix: they have different contexts, different
+      # build arguments and different cache scopes, and a matrix that has to branch on the
+      # target for each of those is harder to read than three explicit blocks.
+      - name: Build and push the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          push: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/api:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Build and push the worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/worker.Dockerfile
+          push: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/worker:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+
+      - name: Build and push the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          push: true
+          # Baked in, not injected at runtime: `NEXT_PUBLIC_*` is inlined by the compiler,
+          # so a Cloud Run variable set later is ignored and canonical URLs, sitemap and
+          # OG tags would all point at localhost.
+          build-args: |
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL }}
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/web:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  # ------------------------------------------------------------------ migrate
+  migrate:
+    name: migrate the database
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      id-token: write
+
+    # A GitHub environment, so a reviewer can be required before production schema
+    # changes. Everything else here is reversible by redeploying the previous image;
+    # this step is the one that is not.
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Before the services, never after. The new revision expects the new schema, so
+      # deploying first means every request between the two steps hits code whose tables
+      # do not exist yet.
+      #
+      # This ordering is only safe for migrations that are additive — a column dropped
+      # here breaks the revision still serving traffic. Destructive changes go out as two
+      # deploys: stop using the column, ship, then drop it.
+      #
+      # A Cloud Run job rather than a step running alembic directly, because the job runs
+      # inside the VPC with the Cloud SQL connector attached. Reaching the database from a
+      # GitHub runner would mean exposing it to the internet or shipping a proxy and a
+      # credential into CI.
+      - name: Update the migration job to this revision
+        run: |
+          gcloud run jobs update "${MIGRATE_JOB}" \
+            --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
+            --region "${REGION}" \
+            --command uv \
+            --args "run,--package,jutsu-db,alembic,-c,packages/db/alembic.ini,upgrade,head" \
+            --quiet
+
+      # `MIGRATION_DATABASE_URL`, which is the owner. The application connects as
+      # `jutsu_app` (NOSUPERUSER NOBYPASSRLS) and deliberately cannot run DDL — pointing
+      # migrations at the app role fails, and pointing the app at the owner would make
+      # every row-level security policy inert while every isolation test still passed.
+      - name: Run the migrations
+        run: |
+          gcloud run jobs execute "${MIGRATE_JOB}" \
+            --region "${REGION}" \
+            --wait \
+            --quiet
+
+  # ------------------------------------------------------------------ deploy
+  deploy:
+    name: deploy to Cloud Run
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      id-token: write
+
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Secrets are referenced, never passed. `--set-secrets` mounts them from Secret
+      # Manager at start, so nothing sensitive appears in the workflow, in a Cloud Run
+      # environment variable, or in `gcloud run services describe` output (§4.10).
+      - name: Deploy the API
+        run: |
+          gcloud run deploy "${API_SERVICE}" \
+            --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
+            --region "${REGION}" \
+            --platform managed \
+            --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
+            --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO" \
+            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest" \
+            --min-instances 0 \
+            --max-instances 10 \
+            --no-allow-unauthenticated \
+            --quiet
+
+      # A service, not a job, and never idled. arq's cron scheduler lives in the process,
+      # so the container has to keep running for `reap_expired_registrations` to fire at
+      # all. With CPU throttling on, Cloud Run freezes it between requests — and a worker
+      # that receives no requests is frozen permanently, which looks exactly like having
+      # no reaper.
+      - name: Deploy the worker
+        run: |
+          gcloud run deploy "${WORKER_SERVICE}" \
+            --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/worker:${{ needs.build.outputs.image_tag }}" \
+            --region "${REGION}" \
+            --platform managed \
+            --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
+            --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO" \
+            --set-secrets "DATABASE_URL=jutsu-database-url:latest,REDIS_URL=jutsu-redis-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest" \
+            --min-instances 1 \
+            --max-instances 1 \
+            --no-cpu-throttling \
+            --no-allow-unauthenticated \
+            --quiet
+
+      - name: Deploy the web app
+        run: |
+          gcloud run deploy "${WEB_SERVICE}" \
+            --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/web:${{ needs.build.outputs.image_tag }}" \
+            --region "${REGION}" \
+            --platform managed \
+            --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
+            --set-env-vars "JUTSU_API_ORIGIN=${{ vars.JUTSU_API_ORIGIN }}" \
+            --min-instances 0 \
+            --max-instances 10 \
+            --allow-unauthenticated \
+            --quiet
+
+      # The deploy is not finished because gcloud exited zero. A revision can be created
+      # and still fail its first request — a missing secret, a bad DSN — and without this
+      # the pipeline reports success while the site is down.
+      - name: Verify the new revisions actually serve
+        run: |
+          set -euo pipefail
+          web_url="$(gcloud run services describe "${WEB_SERVICE}" --region "${REGION}" --format 'value(status.url)')"
+          echo "checking ${web_url}"
+          for attempt in $(seq 1 10); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' "${web_url}/" || true)"
+            if [ "${code}" = "200" ]; then
+              echo "web is serving (HTTP ${code})"
+              exit 0
+            fi
+            echo "attempt ${attempt}: HTTP ${code}, retrying"
+            sleep 6
+          done
+          echo "web never returned 200 — rolling back"
+          gcloud run services update-traffic "${WEB_SERVICE}" --region "${REGION}" --to-revisions LATEST=0 --quiet
+          exit 1

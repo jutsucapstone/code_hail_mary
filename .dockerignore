@@ -1,0 +1,58 @@
+# What must never enter a build context.
+#
+# `web.Dockerfile` does `COPY . .` for the build stage, so without this file `.env` would
+# be baked into an image layer. Multi-stage does not save you: the runtime image is clean,
+# but the intermediate layer still holds the secret and anyone who can pull the build
+# cache can read it. `.gitignore` has no bearing on Docker at all — the two lists are
+# unrelated, and assuming otherwise is the usual way credentials reach a registry.
+#
+# Everything below is also a build-speed measure: the context is uploaded to the daemon
+# before the first instruction runs, and node_modules alone is hundreds of megabytes.
+
+# ---------------------------------------------------------------- secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*-key.json
+gha-creds-*.json
+service-account*.json
+
+# ---------------------------------------------------------------- vcs and tooling
+.git
+.gitignore
+.github
+.claude
+.vscode
+.idea
+
+# ---------------------------------------------------------------- dependencies
+node_modules
+**/node_modules
+.venv
+**/.venv
+.pnpm-store
+__pycache__
+**/__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# ---------------------------------------------------------------- build output
+.next
+**/.next
+dist
+**/dist
+coverage
+**/coverage
+
+# ---------------------------------------------------------------- not needed at build
+docs
+scripts/hooks
+**/*.md
+!README.md
+# Full-resolution source art, deliberately unserved — ~900KB that would otherwise ride
+# along in every image.
+apps/web/assets
