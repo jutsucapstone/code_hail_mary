@@ -3,7 +3,8 @@ name = "jutsu-worker"
 version = "0.1.0"
 description = "JUTSU ingestion, extraction and batch worker"
 requires-python = ">=3.12,<3.13"
-dependencies = ["jutsu-core", "arq>=0.26"]
+# jutsu-db, because the reaper in main.py is the first job that touches Postgres.
+dependencies = ["jutsu-core", "jutsu-db", "arq>=0.26"]
 
 [build-system]
 requires = ["hatchling"]

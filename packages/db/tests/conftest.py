@@ -34,10 +34,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 TEST_DB_ENV = "JUTSU_TEST_DATABASE_URL"
 MIGRATION_DB_ENV = "JUTSU_TEST_MIGRATION_URL"
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get(TEST_DB_ENV),
-    reason=f"{TEST_DB_ENV} is unset — start Postgres with `make up` and export it",
-)
+
+#: Why this is a helper and not a `pytestmark`: a module-level `pytestmark` in a
+#: **conftest** is inert. pytest honours it in test modules and classes only, so the one
+#: that sat here for six migrations skipped nothing — the skips everyone saw came from
+#: `pytest.skip()` inside the `database_url` fixture below, which is the mechanism that
+#: actually works. Discovered when the guard was changed and the suite kept erroring.
+def _skip_without_database() -> None:
+    """Skip unless something is really listening.
+
+    "Is the variable set" stopped being the same question once the root conftest began
+    loading `.env`: the variable is now always set, so a stopped Postgres turned a clean
+    skip into a hundred connection errors — which also blocked every commit, because the
+    pre-commit hook runs preflight. The root conftest probes once and publishes the answer.
+    """
+    if os.environ.get("JUTSU_DB_REACHABLE") != "1":
+        pytest.skip(f"nothing listening at {TEST_DB_ENV} — start Postgres with `make up`")
 
 
 async def run_alembic(cfg: Config, direction: str, revision: str) -> None:
@@ -67,6 +79,7 @@ def alembic_config(url: str) -> Config:
 @pytest.fixture(scope="session")
 def database_url() -> str:
     """Connection as the restricted application role — what RLS is tested through."""
+    _skip_without_database()
     url = os.environ.get(TEST_DB_ENV)
     if not url:
         pytest.skip(f"{TEST_DB_ENV} is unset")

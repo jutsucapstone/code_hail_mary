@@ -458,12 +458,14 @@ source = { editable = "apps/worker" }
 dependencies = [
     { name = "arq" },
     { name = "jutsu-core" },
+    { name = "jutsu-db" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "arq", specifier = ">=0.26" },
     { name = "jutsu-core", editable = "packages/core" },
+    { name = "jutsu-db", editable = "packages/db" },
 ]
 
 [[package]]

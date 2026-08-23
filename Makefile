@@ -56,14 +56,21 @@ lint-py:
 format-check-py:
 	uv run ruff format --check .
 
-# Checked in two passes, not one. packages/db/tests and apps/api/tests each hold a
-# conftest.py, and mypy derives module names from the nearest directory without an
-# __init__.py — so a single invocation sees two modules called "conftest", calls it
-# ambiguous, and refuses to check anything at all. Splitting the runs keeps every file
-# checked without scattering __init__.py through a src-layout tree.
+# Checked one tree per pass, not all at once. Every test directory holds a conftest.py,
+# and mypy derives module names from the nearest directory without an __init__.py — so a
+# single invocation sees several modules called "conftest", calls it ambiguous, and
+# refuses to check anything at all. Splitting the runs keeps every file checked without
+# scattering __init__.py through a src-layout tree.
+#
+# The root conftest.py needs its own line: it sits outside both trees, and it is the
+# file that loads .env for the test suite, so an error in it silently disables 112 tests.
+#
+# Only ONE conftest.py may exist under apps/ — a second one collides and mypy checks
+# nothing. Per-app fixtures therefore live in their test module, not beside it.
 typecheck-py:
 	uv run mypy packages
 	uv run mypy apps
+	uv run mypy conftest.py
 
 test-py:
 	uv run pytest -q
