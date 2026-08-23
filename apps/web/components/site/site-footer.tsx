@@ -66,7 +66,10 @@ export function SiteFooter() {
 
         <div className="mt-14 flex flex-col gap-4 border-t border-hairline pt-7 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground/80">
-            © {year} {siteConfig.legalName}. All rights reserved.
+            {/* The team, not `legalName` — that one is the product's alternate name and
+                still feeds `alternateName` in the JSON-LD, where a team name would be
+                wrong. */}
+            © {year} {siteConfig.org.team}. All rights reserved.
           </p>
           <p className="font-mono text-xs text-muted-foreground/80">
             {siteConfig.org.institution} · {siteConfig.org.program}
