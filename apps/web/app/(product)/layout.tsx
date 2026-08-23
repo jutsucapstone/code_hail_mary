@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Logo, Wordmark } from "@/components/site/logo";
+import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 
 import { SURFACES } from "@/lib/surfaces";
@@ -52,6 +53,7 @@ export default function ProductLayout({ children }: { children: React.ReactNode 
                 it to read. Surfacing it here means asking GET /v1/me, which these six
                 surfaces do not do yet, so the badge is simply absent rather than showing
                 a placeholder that would be indistinguishable from real data (§4.11). */}
+            <FeedbackToggle />
             <ThemeToggle />
           </div>
         </div>

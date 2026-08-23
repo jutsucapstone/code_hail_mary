@@ -5,6 +5,7 @@ import { Menu, X } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ScrollProgress } from "@/components/site/scroll-progress";
+import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { contact, nav, siteConfig } from "@/lib/content";
@@ -77,6 +78,7 @@ export function SiteHeader() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <FeedbackToggle className="hidden sm:inline-flex" />
           <ThemeToggle className="hidden sm:inline-flex" />
           <Button
             asChild
@@ -127,6 +129,12 @@ export function SiteHeader() {
           <div className="mt-6 flex items-center justify-between gap-4">
             <span className="eyebrow text-muted-foreground">Theme</span>
             <ThemeToggle />
+          </div>
+          {/* The menu is the only place these reach a phone, which is the one device
+              where the haptics half of them is real. */}
+          <div className="mt-3 flex items-center justify-between gap-4">
+            <span className="eyebrow text-muted-foreground">Feedback</span>
+            <FeedbackToggle />
           </div>
           <Button
             asChild

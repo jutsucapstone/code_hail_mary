@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
 
+import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { ADMIN_SECTIONS, adminHref } from "@/lib/admin-nav";
@@ -113,6 +114,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 {capabilities.jutsu_id ?? capabilities.role}
               </span>
             ) : null}
+            <FeedbackToggle className="hidden sm:inline-flex" />
             <ThemeToggle />
             <button
               type="button"
