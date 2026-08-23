@@ -1,10 +1,21 @@
-"""Organisation registration.
+"""Organisation registration, in two halves separated by proof of a mailbox.
 
-One transaction creates the tenant, its first administrator, that person's role, their
-JUTSU ID, the org-less membership index entry and the audit record. Partially applying
-that set is worse than failing it: an organisation with no owner cannot be administered
-by anyone, and a JUTSU ID bound to a user that was rolled back is an id permanently spent
-on nobody.
+**Nothing durable is created until the code comes back.** Staging writes one row in
+`auth.pending_registrations` and sends a message; the organisation, its owner, that
+person's role and their JUTSU ID all come into existence in a single transaction on the
+verify side, and only if the redeemed challenge is the one the staged payload was bound
+to. Before this split, registration created the whole tenant first and mailed afterwards,
+which meant an unauthenticated caller could claim any domain — `microsoft.com` with
+`eve@evil.example` — read the code in their own inbox, and hold Owner over it forever,
+because `uq_orgs_domain_active` then turned the real company away.
+
+**The staged payload is reachable only with the emailed token.** The row is keyed on
+`token_digest(token)`, the same value `auth.invitation_tokens` uses for the same reason.
+That is what makes the domain check mean something: both operands were supplied by one
+anonymous request, so the only thing separating a claim from a proof is that the payload
+cannot be unlocked without the message. Keying on the address or the identity instead
+would let a stranger's later staging POST overwrite a victim's pending row, terms
+acceptance included.
 
 **The scope is set before the organisation exists.** `orgs` carries a `WITH CHECK` policy
 on `id`, so an unscoped INSERT is rejected — and a row cannot be scoped to itself before
@@ -12,18 +23,22 @@ it is written. The id is therefore minted here and the GUC set to it first. That
 looks odd until you try it the other way round, which is why the fixture in
 `packages/db/tests/conftest.py` has the same shape.
 
-**A duplicate domain never changes the HTTP response.** Telling the caller "that company
-is already registered" is a customer-enumeration oracle: anyone could probe domains to
-learn who uses JUTSU. The request returns the same 202 either way, and the difference is
-carried in the email — which only reaches someone who controls that address.
+**A duplicate domain never changes the HTTP response at staging.** Telling an anonymous
+caller "that company is already registered" is a customer-enumeration oracle. At verify
+it is safe and useful: whoever is reading holds a mailbox at that exact domain, so they
+already know the company exists — and leaving them at a generic failure means the real
+answer ("ask your administrator for an invitation") never reaches the one person who
+needs it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
+import json
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from jutsu_core.domains import DomainError, canonical_domain, domain_of, normalise_email
 from jutsu_core.errors import JutsuError
 from jutsu_core.ids import JutsuIdKind, generate_jutsu_id
 from jutsu_core.rbac import Role
@@ -31,15 +46,30 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jutsu_api.auth_service import ChallengePurpose, email_hmac, issue_challenge
-from jutsu_api.config import Settings
+from jutsu_api.auth_service import (
+    ChallengePurpose,
+    email_hmac,
+    issue_challenge,
+    token_digest,
+)
+from jutsu_api.config import (
+    CHALLENGE_TTL_SECONDS,
+    REGISTRATION_BUDGET_LIMIT,
+    REGISTRATION_BUDGET_WINDOW_SECONDS,
+    TERMS_DOCUMENTS,
+    Settings,
+)
 from jutsu_api.email import EmailSender
 
 __all__ = [
+    "DomainMismatch",
+    "PendingRegistration",
     "RegistrationOutcome",
     "RegistrationRequest",
+    "TooManyRegistrations",
     "allocate_jutsu_id",
-    "register_organisation",
+    "complete_registration",
+    "stage_registration",
 ]
 
 #: Attempts before allocation is treated as broken rather than unlucky.
@@ -51,10 +81,33 @@ __all__ = [
 #: that must surface rather than be papered over with a longer id.
 JUTSU_ID_ATTEMPTS = 5
 
+#: The constraint that decides who owns a domain. Branching on the name rather than on
+#: `IntegrityError` matters: a JUTSU ID collision inside the same transaction is also an
+#: IntegrityError, and reporting it as "that domain is taken" would send someone away
+#: from a domain that is in fact free.
+DOMAIN_CONSTRAINT = "uq_orgs_domain_active"
+
 
 class JutsuIdAllocationExhausted(JutsuError):
     status_code = 503
     code = "service_unavailable"
+
+
+class DomainMismatch(JutsuError):
+    """The work address is not at the domain being claimed.
+
+    A 422 rather than a 403: nothing is forbidden, the two fields simply disagree, and
+    the caller can fix it. Safe to state plainly — both values came from this same
+    request, so it discloses nothing the caller did not already type.
+    """
+
+    status_code = 422
+    code = "domain_mismatch"
+
+
+class TooManyRegistrations(JutsuError):
+    status_code = 429
+    code = "rate_limited"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,15 +118,23 @@ class RegistrationRequest:
     company_domain: str
     job_title: str
     org_size: str
+    #: Optional. Nothing reads them yet; they are collected because onboarding is the
+    #: only moment anyone will answer, and timezone/residency work needs them later.
+    country: str | None = None
+    industry: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRegistration:
+    """A staged registration, before anyone has proved anything."""
+
+    token: str
+    challenge_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
 class RegistrationOutcome:
-    """What happened, for the caller's logging — never for the response body.
-
-    `created` is False when the domain was already registered. The route must render an
-    identical response either way.
-    """
+    """What happened. Safe to return from the verify side, never from staging."""
 
     created: bool
     org_id: UUID | None
@@ -107,57 +168,214 @@ async def allocate_jutsu_id(session: AsyncSession, *, org_id: UUID, kind: JutsuI
     raise JutsuIdAllocationExhausted("Could not allocate an identifier. Please try again.")
 
 
-async def register_organisation(
+async def _record_event(
+    session: AsyncSession, *, digest: bytes, domain: str | None, outcome: str
+) -> None:
+    """The trail for everything that happens before an organisation exists.
+
+    `audit_log.org_id` is NOT NULL under FORCE RLS, so nothing can be written there yet.
+    This sink holds the HMAC and the claimed domain and nothing else — never a name and
+    never an address (§4.9).
+    """
+    await session.execute(
+        text("SELECT auth.record_registration_event(:d, :dom, :o)"),
+        {"d": digest, "dom": domain, "o": outcome},
+    )
+
+
+async def stage_registration(
     session: AsyncSession,
     request: RegistrationRequest,
     *,
     settings: Settings,
     sender: EmailSender,
-) -> RegistrationOutcome:
-    digest = email_hmac(request.work_email, settings)
-    identity_id = (
-        await session.execute(text("SELECT auth.upsert_identity(:d)"), {"d": digest})
+) -> PendingRegistration:
+    """Record the intent, send the code. Creates no organisation and no user.
+
+    The domain check runs here as well as at verify. It is a pure function of two strings
+    the caller just typed, so running it early leaks nothing and spares them ten minutes
+    and an email for a typo — `ada@acme.co.uk` against `acme.com` is the common case, not
+    the tail. It runs again at verify because a check that happens only on the way in is
+    not a control: any future path that stages a row another way would bypass it.
+    """
+    email = normalise_email(request.work_email)
+    domain = canonical_domain(request.company_domain)
+
+    if domain_of(email) != domain:
+        raise DomainMismatch("Your work email must be at the organisation domain you entered.")
+
+    digest = email_hmac(email, settings)
+
+    # Before any mail is sent. Staging delivers a message to an address the caller names,
+    # which without a budget is an open relay — and each one also writes an identity row
+    # and a staged payload. Keyed on the HMAC, so the ledger never becomes a list of
+    # addresses by another name.
+    remaining = (
+        await session.execute(
+            text("SELECT auth.spend_registration_budget(:s, :w, :l)"),
+            {
+                "s": digest,
+                "w": timedelta(seconds=REGISTRATION_BUDGET_WINDOW_SECONDS),
+                "l": REGISTRATION_BUDGET_LIMIT,
+            },
+        )
     ).scalar_one()
+    if remaining < 0:
+        await _record_event(session, digest=digest, domain=domain, outcome="throttled")
+        raise TooManyRegistrations("Too many attempts for this address. Please try again later.")
+
+    # `known_account=True` unconditionally: a registrant needs the code, and branching on
+    # whether the address already has a membership would make the message body an
+    # account-existence oracle that the identical 202 was designed to close.
+    issued = await issue_challenge(
+        session,
+        address=email,
+        purpose=ChallengePurpose.REGISTER,
+        settings=settings,
+        sender=sender,
+        known_account=True,
+    )
+
+    accepted_at = datetime.now(UTC)
+    payload = {
+        **asdict(request),
+        "work_email": email,
+        "company_domain": domain,
+        # The moment the box was ticked, carried forward so the acceptance record can
+        # state when consent happened rather than when it was persisted. The versions are
+        # server constants — a client-supplied version would let the browser name a
+        # document it never showed.
+        "terms": {
+            "accepted_at": accepted_at.isoformat(),
+            "documents": TERMS_DOCUMENTS,
+        },
+    }
+
+    await session.execute(
+        text("SELECT auth.stage_registration(:t, :c, :d, :dom, CAST(:p AS jsonb), :exp)"),
+        {
+            "t": token_digest(issued.token),
+            "c": issued.challenge_id,
+            "d": digest,
+            "dom": domain,
+            "p": json.dumps(payload),
+            "exp": accepted_at + timedelta(seconds=CHALLENGE_TTL_SECONDS),
+        },
+    )
+
+    await _record_event(session, digest=digest, domain=domain, outcome="staged")
+    return PendingRegistration(token=issued.token, challenge_id=issued.challenge_id)
+
+
+async def complete_registration(
+    session: AsyncSession,
+    *,
+    token: str,
+    identity_id: UUID,
+    challenge_id: UUID,
+    settings: Settings,
+) -> RegistrationOutcome:
+    """Create the tenant, atomically, for a challenge that has just been redeemed.
+
+    Called only after `verify_challenge(..., expected_purpose=REGISTER)` has succeeded,
+    so mailbox control at the address is established before the first row is written.
+
+    Partially applying this set is worse than failing it: an organisation with no owner
+    cannot be administered by anyone, and a JUTSU ID bound to a user that was rolled back
+    is an id permanently spent on nobody.
+    """
+    staged = (
+        await session.execute(
+            text(
+                "SELECT challenge_id, email_hmac, domain, payload "
+                "FROM auth.consume_pending_registration(:t)"
+            ),
+            {"t": token_digest(token)},
+        )
+    ).first()
+
+    # Zero rows is the rejection, and it covers expired, already consumed, and never
+    # existed alike. Single-use is enforced by the UPDATE itself, so a resend that
+    # produced a second live challenge cannot mint a second organisation.
+    if staged is None:
+        raise NoPendingRegistration("That registration link is no longer valid.")
+
+    staged_challenge_id, staged_digest, domain, payload = staged
+
+    # The payload is bound to one challenge and one identity. Neither can differ here
+    # unless something has separated the token from the challenge that issued it, which
+    # would be a bug rather than a user error — refuse rather than guess.
+    if UUID(str(staged_challenge_id)) != challenge_id:
+        raise NoPendingRegistration("That registration link is no longer valid.")
+
+    request = RegistrationRequest(
+        full_name=payload["full_name"],
+        work_email=payload["work_email"],
+        company_name=payload["company_name"],
+        company_domain=payload["company_domain"],
+        job_title=payload["job_title"],
+        org_size=payload["org_size"],
+        country=payload.get("country"),
+        industry=payload.get("industry"),
+    )
+
+    # Re-run the equality against the consumed row, not against anything this request
+    # carried. A check performed only at staging is bypassed by any future path that
+    # writes a pending row, so it is not a control on its own.
+    try:
+        if domain_of(request.work_email) != canonical_domain(domain):
+            await _record_event(
+                session, digest=bytes(staged_digest), domain=domain, outcome="mismatch"
+            )
+            raise DomainMismatch("Your work email must be at the organisation domain you entered.")
+    except DomainError as exc:
+        raise DomainMismatch("That does not look like a valid organisation domain.") from exc
 
     org_id = uuid4()
     await session.execute(
         text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
     )
 
-    domain = request.company_domain.strip().lower()
+    now = datetime.now(UTC)
 
-    # A savepoint, because a unique violation would otherwise poison the whole
-    # registration transaction and take the identity upsert with it.
+    # A savepoint around the `orgs` INSERT alone. A unique violation would otherwise
+    # poison the whole transaction, and widening the savepoint would let an unrelated
+    # conflict be mislabelled as a duplicate domain.
     try:
         async with session.begin_nested():
             await session.execute(
                 text(
-                    "INSERT INTO orgs (id, name, domain, size_band, status) "
-                    "VALUES (:id, :name, :domain, :size, 'active')"
+                    "INSERT INTO orgs (id, name, domain, size_band, status, country, "
+                    "industry, domain_verified_at) "
+                    "VALUES (:id, :name, :domain, :size, 'active', :country, :industry, :now)"
                 ),
                 {
                     "id": org_id,
                     "name": request.company_name.strip(),
                     "domain": domain,
                     "size": request.org_size,
+                    "country": request.country,
+                    "industry": request.industry,
+                    "now": now,
                 },
             )
-    except IntegrityError:
-        # The domain is already registered. Say nothing over HTTP; the email tells the
-        # person what to do, and only they can read it.
-        await issue_challenge(
-            session,
-            address=request.work_email,
-            purpose=ChallengePurpose.SIGN_IN,
-            settings=settings,
-            sender=sender,
-        )
-        return RegistrationOutcome(created=False, org_id=None, user_id=None, jutsu_id=None)
+    except IntegrityError as exc:
+        if _is_domain_conflict(exc):
+            await _record_event(
+                session, digest=bytes(staged_digest), domain=domain, outcome="duplicate"
+            )
+            # Safe to say plainly: whoever is reading proved a mailbox at this exact
+            # domain moments ago, so the existence of the organisation is not news to
+            # them. No session and no membership — joining someone to a tenant they were
+            # never invited to would be a far worse answer than a dead end.
+            raise DomainAlreadyRegistered(
+                f"{domain} is already registered. Ask an administrator there for an invitation."
+            ) from exc
+        raise
 
     jutsu_id = await allocate_jutsu_id(session, org_id=org_id, kind=JutsuIdKind.ADMIN)
 
     user_id = uuid4()
-    now = datetime.now(UTC)
     await session.execute(
         text(
             "INSERT INTO users (id, org_id, email, display_name, identity_id, jutsu_id, "
@@ -167,7 +385,7 @@ async def register_organisation(
         {
             "id": user_id,
             "org": org_id,
-            "email": request.work_email.strip().lower(),
+            "email": request.work_email,
             "name": request.full_name.strip(),
             "identity": identity_id,
             "jid": jutsu_id,
@@ -193,6 +411,26 @@ async def register_organisation(
         {"identity": identity_id, "org": org_id, "user": user_id},
     )
 
+    # `accepted_at` from the staged row, `recorded_at` from the database clock. Keeping
+    # them separate is the difference between a record that says when someone consented
+    # and one that says when we got round to writing it down.
+    accepted_at = datetime.fromisoformat(payload["terms"]["accepted_at"])
+    for document, version in payload["terms"]["documents"].items():
+        await session.execute(
+            text(
+                "INSERT INTO terms_acceptances (id, org_id, user_id, document, version, "
+                "accepted_at) VALUES (:id, :org, :user, :doc, :ver, :at)"
+            ),
+            {
+                "id": uuid4(),
+                "org": org_id,
+                "user": user_id,
+                "doc": document,
+                "ver": version,
+                "at": accepted_at,
+            },
+        )
+
     # `actor_id` is the opaque user id, never the email or the name (§4.9).
     await session.execute(
         text(
@@ -203,13 +441,35 @@ async def register_organisation(
         {"org": org_id, "actor": str(user_id), "rid": str(org_id)},
     )
 
-    await issue_challenge(
-        session,
-        address=request.work_email,
-        purpose=ChallengePurpose.REGISTER,
-        settings=settings,
-        sender=sender,
-        known_account=True,
-    )
+    await _record_event(session, digest=bytes(staged_digest), domain=domain, outcome="created")
 
     return RegistrationOutcome(created=True, org_id=org_id, user_id=user_id, jutsu_id=jutsu_id)
+
+
+class NoPendingRegistration(JutsuError):
+    """The token resolves to no live staged registration.
+
+    Deliberately the same status and shape as an invalid code: expired, already used and
+    never existed are one answer, because telling them apart says which half to work on.
+    """
+
+    status_code = 401
+    code = "unauthenticated"
+
+
+class DomainAlreadyRegistered(JutsuError):
+    status_code = 409
+    code = "domain_registered"
+
+
+def _is_domain_conflict(exc: IntegrityError) -> bool:
+    """Whether this violation is the domain index and not something else.
+
+    asyncpg surfaces the constraint name on the wrapped error. Falling back to a string
+    search keeps the check working if the driver ever stops exposing it, without ever
+    treating an unrelated conflict as a duplicate domain.
+    """
+    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+    if constraint is not None:
+        return bool(constraint == DOMAIN_CONSTRAINT)
+    return DOMAIN_CONSTRAINT in str(exc)

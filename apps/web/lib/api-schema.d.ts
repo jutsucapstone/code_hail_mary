@@ -232,8 +232,43 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register */
+        /**
+         * Register
+         * @description Stage the registration and send a code. Creates no organisation.
+         *
+         *     A mismatch between the work address and the claimed domain is answered plainly — both
+         *     values came from this request, so saying so discloses nothing — but whether the domain
+         *     is already registered is not, and cannot be reached from here at all: that answer is
+         *     only produced after someone proves a mailbox at it.
+         */
         post: operations["register_v1_orgs_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/register/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register Verify
+         * @description Redeem a registration code and create the organisation.
+         *
+         *     Separate from `/v1/auth/verify` deliberately. That route documents "the same error for
+         *     every rejection" and folds "valid code, but no membership" into it — and a brand-new
+         *     registrant is exactly that case, so merging the two would either break its uniformity
+         *     or make registration unreachable. Keeping them apart lets each stay absolute:
+         *     `expected_purpose` means a sign-in code cannot complete a registration here, and a
+         *     registration code cannot open a session there.
+         */
+        post: operations["register_verify_v1_orgs_register_verify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -405,17 +440,33 @@ export interface components {
             company_domain: string;
             /** Company Name */
             company_name: string;
+            /** Country */
+            country?: string | null;
             /** Full Name */
             full_name: string;
+            /** Industry */
+            industry?: ("consulting" | "technology" | "finance" | "healthcare" | "manufacturing" | "government" | "other") | null;
             /** Job Title */
             job_title: string;
             /** Org Size */
             org_size: string;
             /**
+             * Terms Accepted
+             * @constant
+             */
+            terms_accepted: true;
+            /**
              * Work Email
              * Format: email
              */
             work_email: string;
+        };
+        /** RegisterVerifyPayload */
+        RegisterVerifyPayload: {
+            /** Code */
+            code: string;
+            /** Token */
+            token: string;
         };
         /**
          * RegistrationAccepted
@@ -430,6 +481,11 @@ export interface components {
              * @default check_your_email
              */
             status: string;
+        };
+        /** RegistrationComplete */
+        RegistrationComplete: {
+            /** Destination */
+            destination: string;
         };
         /**
          * Role
@@ -757,6 +813,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RegistrationAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_verify_v1_orgs_register_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterVerifyPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationComplete"];
                 };
             };
             /** @description Validation Error */

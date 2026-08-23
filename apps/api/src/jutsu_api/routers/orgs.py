@@ -11,18 +11,24 @@ endpoint — without it, anyone could probe domains to learn which companies use
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from jutsu_core.errors import NotFound
 from jutsu_core.rbac import Permission
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
-from jutsu_api.config import Settings, get_settings
+from jutsu_api.auth_service import ChallengePurpose, open_session, verify_challenge
+from jutsu_api.config import OTP_DIGITS, Settings, get_settings
 from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
 from jutsu_api.email import EmailSender
-from jutsu_api.registration import RegistrationRequest, register_organisation
+from jutsu_api.registration import (
+    RegistrationRequest,
+    complete_registration,
+    stage_registration,
+)
+from jutsu_api.routers.auth import set_session_cookies
 from jutsu_api.security import GuardedAPIRoute, public, requires
 
 router = APIRouter(prefix="/v1/orgs", tags=["orgs"], route_class=GuardedAPIRoute)
@@ -45,6 +51,26 @@ class RegisterPayload(BaseModel):
     job_title: str = Field(min_length=1, max_length=128)
     org_size: str = Field(min_length=1, max_length=16)
 
+    #: Optional, and genuinely so — a caller may omit them entirely.
+    country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    industry: (
+        Literal[
+            "consulting",
+            "technology",
+            "finance",
+            "healthcare",
+            "manufacturing",
+            "government",
+            "other",
+        ]
+        | None
+    ) = None
+
+    #: `Literal[True]`, so an unticked box is a 422 rather than a silently stored `false`.
+    #: There is no version field on purpose: the documents and their versions are server
+    #: constants, because a client that names what it agreed to can name anything.
+    terms_accepted: Literal[True]
+
 
 class RegistrationAccepted(BaseModel):
     """Deliberately says nothing about what happened.
@@ -64,7 +90,14 @@ async def register(
     settings: SettingsDep,
     sender: SenderDep,
 ) -> RegistrationAccepted:
-    await register_organisation(
+    """Stage the registration and send a code. Creates no organisation.
+
+    A mismatch between the work address and the claimed domain is answered plainly — both
+    values came from this request, so saying so discloses nothing — but whether the domain
+    is already registered is not, and cannot be reached from here at all: that answer is
+    only produced after someone proves a mailbox at it.
+    """
+    await stage_registration(
         session,
         RegistrationRequest(
             full_name=payload.full_name,
@@ -73,13 +106,77 @@ async def register(
             company_domain=payload.company_domain,
             job_title=payload.job_title,
             org_size=payload.org_size,
+            country=payload.country,
+            industry=payload.industry,
         ),
         settings=settings,
         sender=sender,
     )
-    # The outcome is deliberately discarded rather than returned: whether an organisation
-    # was created is exactly the fact this endpoint must not disclose.
+    # The pending registration is deliberately discarded rather than returned: the token
+    # belongs in the inbox and nowhere else.
     return RegistrationAccepted()
+
+
+class RegisterVerifyPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    token: str = Field(min_length=16, max_length=128)
+    code: str = Field(min_length=OTP_DIGITS, max_length=OTP_DIGITS)
+
+
+class RegistrationComplete(BaseModel):
+    #: Chosen by the server, never by the client, for the same reason `/v1/auth/verify`
+    #: does it: a `next` parameter honoured here would be an open redirect with a fresh
+    #: session attached.
+    destination: str
+
+
+@router.post("/register/verify")
+@public("Completing a registration is what brings the first session into existence.")
+async def register_verify(
+    payload: RegisterVerifyPayload,
+    response: Response,
+    session: Db,
+    settings: SettingsDep,
+) -> RegistrationComplete:
+    """Redeem a registration code and create the organisation.
+
+    Separate from `/v1/auth/verify` deliberately. That route documents "the same error for
+    every rejection" and folds "valid code, but no membership" into it — and a brand-new
+    registrant is exactly that case, so merging the two would either break its uniformity
+    or make registration unreachable. Keeping them apart lets each stay absolute:
+    `expected_purpose` means a sign-in code cannot complete a registration here, and a
+    registration code cannot open a session there.
+    """
+    redeemed = await verify_challenge(
+        session,
+        token=payload.token,
+        code=payload.code,
+        expected_purpose=ChallengePurpose.REGISTER,
+    )
+
+    outcome = await complete_registration(
+        session,
+        token=payload.token,
+        identity_id=redeemed.identity_id,
+        challenge_id=redeemed.challenge_id,
+        settings=settings,
+    )
+    assert outcome.org_id is not None and outcome.user_id is not None  # noqa: S101
+
+    credentials = await open_session(
+        session,
+        identity_id=redeemed.identity_id,
+        user_id=outcome.user_id,
+        org_id=outcome.org_id,
+    )
+    set_session_cookies(
+        response,
+        token=credentials.token,
+        csrf_token=credentials.csrf_token,
+        settings=settings,
+    )
+    return RegistrationComplete(destination="/admin")
 
 
 class MemberCounts(BaseModel):

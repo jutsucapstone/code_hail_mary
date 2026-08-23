@@ -45,6 +45,7 @@ from jutsu_api.security import Principal
 __all__ = [
     "ChallengePurpose",
     "IssuedChallenge",
+    "RedeemedChallenge",
     "SessionCredentials",
     "email_hmac",
     "issue_challenge",
@@ -52,11 +53,14 @@ __all__ = [
     "open_session",
     "resolve_principal",
     "revoke_session",
+    "token_digest",
     "verify_challenge",
 ]
 
 
 class ChallengePurpose:
+    #: Mirrored by `ck_login_challenges_purpose` in migration 0007. A value that is not
+    #: one of these is a write failure rather than a row nothing will ever match.
     SIGN_IN = "sign_in"
     REGISTER = "register"
 
@@ -68,6 +72,21 @@ class IssuedChallenge:
     #: placed in a response body and never logged.
     token: str
     code: str
+
+
+@dataclass(frozen=True, slots=True)
+class RedeemedChallenge:
+    """What a successful redemption proves.
+
+    The challenge id is returned, not just the identity, because it is the only value
+    that ties this redemption to one specific issued challenge. Registration keys its
+    staged payload on the token that produced this, and an identity is far too broad a
+    key: two challenges for one address would otherwise be interchangeable.
+    """
+
+    identity_id: UUID
+    challenge_id: UUID
+    purpose: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +125,18 @@ def _hash(value: str) -> bytes:
     the guessing bound is enforced by the database rather than by hashing cost.
     """
     return hashlib.sha256(value.encode("ascii")).digest()
+
+
+def token_digest(token: str) -> bytes:
+    """The stored form of a magic-link token.
+
+    Public because registration keys its staged payload on exactly this value: the row is
+    reachable only by someone holding the token the message carried. Sharing one
+    implementation is the point — a second hash of the same token computed slightly
+    differently would silently never match, and the symptom would be "your code is not
+    valid" for every legitimate registrant.
+    """
+    return _hash(token)
 
 
 def _generate_code() -> str:
@@ -188,28 +219,53 @@ async def issue_challenge(
     return IssuedChallenge(challenge_id=challenge_id, token=token, code=code)
 
 
-async def verify_challenge(session: AsyncSession, *, token: str, code: str) -> UUID:
-    """Spend one attempt, check the code, and consume the challenge. Returns the identity.
+async def verify_challenge(
+    session: AsyncSession, *, token: str, code: str, expected_purpose: str
+) -> RedeemedChallenge:
+    """Spend one attempt, check the code, and consume the challenge.
 
     Three statements, each a single atomic operation, in this order for a reason: the
     attempt is spent *before* the comparison, so a wrong guess costs the attacker budget
     whatever happens next. Doing it the other way round — compare, then record a failure
     — lets a client that disconnects mid-request guess for free.
+
+    **The spend is committed before the rejection is raised, and that is the whole
+    control.** `get_db` wraps each request in a single transaction, so raising out of
+    here rolled `auth.consume_attempt` back with everything else and the budget never
+    depleted — six digits with unlimited guesses is a five-minute brute force. The
+    existing test passed only because it committed by hand between attempts, which
+    production does not do. Committing here costs nothing else: at this point in a
+    request the transaction contains the attempt spend and nothing more.
+
+    `expected_purpose` is mandatory rather than defaulted. Sign-in and registration now
+    redeem from one challenge namespace, and a default would silently hand whichever
+    caller forgot to pass it the right to consume the other's codes. The refusal is the
+    same sentence as every other, or the error itself would reveal which challenges are
+    registrations.
     """
     attempt = (
         await session.execute(
-            text("SELECT challenge_id, identity_id, code_hash FROM auth.consume_attempt(:t)"),
+            text(
+                "SELECT challenge_id, identity_id, code_hash, purpose FROM auth.consume_attempt(:t)"
+            ),
             {"t": _hash(token)},
         )
     ).first()
 
-    # One error for every rejection: unknown token, already used, expired, or out of
-    # attempts. Distinguishing them would tell an attacker which half to work on.
+    # One error for every rejection: unknown token, already used, expired, out of
+    # attempts, or issued for something else. Distinguishing them would tell an attacker
+    # which half to work on.
     if attempt is None:
         raise Unauthenticated("That code is not valid.")
 
-    challenge_id, identity_id, code_hash = attempt
-    if not hmac.compare_digest(bytes(code_hash), _hash(code)):
+    challenge_id, identity_id, code_hash, purpose = attempt
+
+    if not hmac.compare_digest(bytes(code_hash), _hash(code)) or not hmac.compare_digest(
+        str(purpose).encode(), expected_purpose.encode()
+    ):
+        # Persist the spent attempt before unwinding. Without this the budget is a
+        # decoration; see the docstring.
+        await session.commit()
         raise Unauthenticated("That code is not valid.")
 
     consumed = (
@@ -220,7 +276,11 @@ async def verify_challenge(session: AsyncSession, *, token: str, code: str) -> U
         # request got the session; this one must not also get one.
         raise Unauthenticated("That code is not valid.")
 
-    return UUID(str(identity_id))
+    return RedeemedChallenge(
+        identity_id=UUID(str(identity_id)),
+        challenge_id=UUID(str(challenge_id)),
+        purpose=str(purpose),
+    )
 
 
 async def open_session(

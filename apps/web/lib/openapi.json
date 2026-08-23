@@ -388,11 +388,43 @@
             "title": "Company Name",
             "type": "string"
           },
+          "country": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
           "full_name": {
             "maxLength": 255,
             "minLength": 1,
             "title": "Full Name",
             "type": "string"
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "enum": [
+                  "consulting",
+                  "technology",
+                  "finance",
+                  "healthcare",
+                  "manufacturing",
+                  "government",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry"
           },
           "job_title": {
             "maxLength": 128,
@@ -406,6 +438,11 @@
             "title": "Org Size",
             "type": "string"
           },
+          "terms_accepted": {
+            "const": true,
+            "title": "Terms Accepted",
+            "type": "boolean"
+          },
           "work_email": {
             "format": "email",
             "title": "Work Email",
@@ -418,9 +455,33 @@
           "company_name",
           "company_domain",
           "job_title",
-          "org_size"
+          "org_size",
+          "terms_accepted"
         ],
         "title": "RegisterPayload",
+        "type": "object"
+      },
+      "RegisterVerifyPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 6,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "code"
+        ],
+        "title": "RegisterVerifyPayload",
         "type": "object"
       },
       "RegistrationAccepted": {
@@ -433,6 +494,19 @@
           }
         },
         "title": "RegistrationAccepted",
+        "type": "object"
+      },
+      "RegistrationComplete": {
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination"
+        ],
+        "title": "RegistrationComplete",
         "type": "object"
       },
       "Role": {
@@ -887,6 +961,7 @@
     },
     "/v1/orgs/register": {
       "post": {
+        "description": "Stage the registration and send a code. Creates no organisation.\n\nA mismatch between the work address and the claimed domain is answered plainly \u2014 both\nvalues came from this request, so saying so discloses nothing \u2014 but whether the domain\nis already registered is not, and cannot be reached from here at all: that answer is\nonly produced after someone proves a mailbox at it.",
         "operationId": "register_v1_orgs_register_post",
         "requestBody": {
           "content": {
@@ -921,6 +996,48 @@
           }
         },
         "summary": "Register",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/v1/orgs/register/verify": {
+      "post": {
+        "description": "Redeem a registration code and create the organisation.\n\nSeparate from `/v1/auth/verify` deliberately. That route documents \"the same error for\nevery rejection\" and folds \"valid code, but no membership\" into it \u2014 and a brand-new\nregistrant is exactly that case, so merging the two would either break its uniformity\nor make registration unreachable. Keeping them apart lets each stay absolute:\n`expected_purpose` means a sign-in code cannot complete a registration here, and a\nregistration code cannot open a session there.",
+        "operationId": "register_verify_v1_orgs_register_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterVerifyPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationComplete"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Verify",
         "tags": [
           "orgs"
         ]

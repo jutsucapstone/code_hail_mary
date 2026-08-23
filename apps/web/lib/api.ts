@@ -106,6 +106,11 @@ type VerifyBody =
 type VerifyResponse =
   paths["/v1/auth/verify"]["post"]["responses"][200]["content"]["application/json"];
 
+type RegisterVerifyBody =
+  paths["/v1/orgs/register/verify"]["post"]["requestBody"]["content"]["application/json"];
+type RegisterVerifyResponse =
+  paths["/v1/orgs/register/verify"]["post"]["responses"][200]["content"]["application/json"];
+
 type MeResponse = paths["/v1/me"]["get"]["responses"][200]["content"]["application/json"];
 
 type OrganisationResponse =
@@ -139,6 +144,19 @@ export const api = {
 
   verify: (body: VerifyBody) =>
     call<VerifyResponse>("/v1/auth/verify", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Completes a registration and opens the first session.
+   *
+   * Separate from `verify` on purpose. The two redeem from one challenge namespace but
+   * assert different purposes server-side, so a sign-in code cannot create an
+   * organisation and a registration code cannot open a session on an existing one.
+   */
+  completeRegistration: (body: RegisterVerifyBody) =>
+    call<RegisterVerifyResponse>("/v1/orgs/register/verify", {
       method: "POST",
       body: JSON.stringify(body),
     }),

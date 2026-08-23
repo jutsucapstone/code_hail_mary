@@ -30,10 +30,16 @@ function VerifyForm() {
     null,
   );
 
-  // Both arrive in the URL: `token` from the emailed link, `to` from the previous step so
-  // this page can say where the code went. Neither is trusted — the server decides.
+  // All three arrive in the URL: `token` from the emailed link, `to` from the previous
+  // step so this page can say where the code went, and `flow` so it knows which endpoint
+  // completes this. None is trusted — the server decides in every case.
+  //
+  // `flow` selects a *route*, not a permission. Both endpoints assert the challenge's
+  // purpose server-side, so pointing this at the wrong one yields the same refusal as a
+  // wrong code rather than crossing the two flows over.
   const token = params.get("token") ?? "";
   const sentTo = params.get("to");
+  const registering = params.get("flow") === "register";
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -43,10 +49,15 @@ function VerifyForm() {
     const form = new FormData(event.currentTarget);
 
     try {
-      const result = await api.verify({
+      const credentials = {
         token: String(form.get("token") ?? ""),
         code: String(form.get("code") ?? ""),
-      });
+      };
+      // Completing a registration is what creates the organisation — nothing exists
+      // until this call succeeds.
+      const result = registering
+        ? await api.completeRegistration(credentials)
+        : await api.verify(credentials);
 
       // The destination comes from the server. A `next` parameter honoured here would be
       // an open redirect with a freshly minted session attached, so the server chooses

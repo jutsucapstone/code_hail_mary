@@ -28,6 +28,25 @@ OTP_MAX_ATTEMPTS: Final = 5
 #: interception opportunity rather than about guessing.
 CHALLENGE_TTL_SECONDS: Final = 10 * 60
 
+#: Staging a registration sends mail to an address the caller names, so it is an open
+#: relay without a budget — and each attempt also writes an identity row and a staged
+#: payload. Five in an hour is far above any honest use (a person mistypes once or twice
+#: and asks for one resend) and far below what makes bulk mailing worthwhile.
+REGISTRATION_BUDGET_LIMIT: Final = 5
+REGISTRATION_BUDGET_WINDOW_SECONDS: Final = 60 * 60
+
+#: The documents a registrant accepts, and the versions they accept.
+#:
+#: Server-side constants, never taken from the request. `extra="forbid"` blocks fields
+#: the model does not declare, not values within ones it does — so a declared
+#: `terms_version` would let the browser name a document it never rendered, and a stale
+#: cached bundle would keep naming it for weeks. Date-stamped rather than semver: the
+#: question a dispute asks is "which text was published then", and a date answers it.
+TERMS_DOCUMENTS: Final[dict[str, str]] = {
+    "terms": "2026-08-20",
+    "privacy": "2026-08-20",
+}
+
 #: An admin console holding a whole tenant's OAuth tokens. Absolute lifetime is a hard
 #: ceiling; idle expiry is what actually protects a shared machine.
 SESSION_ABSOLUTE_TTL_SECONDS: Final = 12 * 60 * 60

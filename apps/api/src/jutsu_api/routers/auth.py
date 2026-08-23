@@ -122,7 +122,16 @@ async def verify(
     session: Db,
     settings: SettingsDep,
 ) -> VerifyResult:
-    identity_id = await verify_challenge(session, token=payload.token, code=payload.code)
+    # `SIGN_IN` only. A registration code redeemed here would find no membership and be
+    # refused anyway, but relying on that is relying on a side effect — once the two
+    # flows share one challenge namespace, the purpose has to be checked, not inferred.
+    redeemed = await verify_challenge(
+        session,
+        token=payload.token,
+        code=payload.code,
+        expected_purpose=ChallengePurpose.SIGN_IN,
+    )
+    identity_id = redeemed.identity_id
 
     memberships = (
         await session.execute(

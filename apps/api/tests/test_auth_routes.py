@@ -29,7 +29,23 @@ REGISTRATION = {
     "company_domain": "example.com",
     "job_title": "Head of Engineering",
     "org_size": "51-200",
+    "terms_accepted": True,
 }
+
+
+async def complete_registration(client: AsyncClient, mailbox: RecordingEmailSender) -> None:
+    """Stage a registration and redeem it, leaving a real organisation and a session.
+
+    Two calls, because the organisation does not exist until the code comes back. The
+    second one is `/v1/orgs/register/verify` and not `/v1/auth/verify`: the challenge
+    carries `purpose = register`, and the sign-in route refuses it by design.
+    """
+    await client.post("/v1/orgs/register", json=REGISTRATION)
+    delivered = mailbox.last.secrets
+    await client.post(
+        "/v1/orgs/register/verify",
+        json={"token": delivered["token"], "code": delivered["code"]},
+    )
 
 
 @pytest.fixture
@@ -99,10 +115,20 @@ class TestChallengeEndpoint:
 
 
 class TestVerifyEndpoint:
+    """The sign-in verify endpoint. Registration completes elsewhere now."""
+
     async def _register(
         self, client: AsyncClient, mailbox: RecordingEmailSender
     ) -> tuple[str, str]:
-        await client.post("/v1/orgs/register", json=REGISTRATION)
+        """Create the organisation, then ask for an ordinary sign-in code.
+
+        Two challenges, not one. The registration code carries `purpose = register` and
+        this endpoint refuses it — asserted directly in `test_registration_flow.py` —
+        so signing in means requesting a fresh challenge against the account that now
+        exists.
+        """
+        await complete_registration(client, mailbox)
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
         delivered = mailbox.last.secrets
         return delivered["token"], delivered["code"]
 
@@ -161,12 +187,7 @@ class TestVerifyEndpoint:
 
 class TestProtectedEndpoint:
     async def _sign_in(self, client: AsyncClient, mailbox: RecordingEmailSender) -> None:
-        await client.post("/v1/orgs/register", json=REGISTRATION)
-        delivered = mailbox.last.secrets
-        await client.post(
-            "/v1/auth/verify",
-            json={"token": delivered["token"], "code": delivered["code"]},
-        )
+        await complete_registration(client, mailbox)
 
     async def test_without_a_session_it_is_401(self, client: AsyncClient) -> None:
         response = await client.get("/v1/me")
@@ -256,12 +277,7 @@ class TestCurrentOrganisation:
     """The overview's data, and the tenancy property that makes it safe."""
 
     async def _sign_in(self, client: AsyncClient, mailbox: RecordingEmailSender) -> None:
-        await client.post("/v1/orgs/register", json=REGISTRATION)
-        delivered = mailbox.last.secrets
-        await client.post(
-            "/v1/auth/verify",
-            json={"token": delivered["token"], "code": delivered["code"]},
-        )
+        await complete_registration(client, mailbox)
 
     async def test_requires_a_session(self, client: AsyncClient) -> None:
         response = await client.get("/v1/orgs/current")
@@ -329,12 +345,7 @@ class TestInvitationLifecycle:
     """
 
     async def _owner(self, client: AsyncClient, mailbox: RecordingEmailSender) -> None:
-        await client.post("/v1/orgs/register", json=REGISTRATION)
-        delivered = mailbox.last.secrets
-        await client.post(
-            "/v1/auth/verify",
-            json={"token": delivered["token"], "code": delivered["code"]},
-        )
+        await complete_registration(client, mailbox)
 
     async def _invite_and_accept(
         self, client: AsyncClient, mailbox: RecordingEmailSender, *, role: str = "member"
