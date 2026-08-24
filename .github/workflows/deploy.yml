@@ -107,9 +107,17 @@ jobs:
           push: true
           # Baked in, not injected at runtime: `NEXT_PUBLIC_*` is inlined by the compiler,
           # so a Cloud Run variable set later is ignored and canonical URLs, sitemap and
-          # OG tags would all point at localhost.
+          # OG tags would all point somewhere else.
+          #
+          # Written here rather than read from `vars.`, deliberately. This value ships
+          # inside the JavaScript bundle, so it is public whatever we do with it, and the
+          # deployment has exactly one public origin. Holding it out of band bought
+          # nothing and cost something real: the variable was set to the run.app hostname
+          # and silently outranked every default underneath it, so the site kept building
+          # with the wrong canonical host and the workflow looked correct while it did.
+          # One origin, in version control, where a diff shows it changing.
           build-args: |
-            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL || 'https://jutsu.co.in' }}
+            NEXT_PUBLIC_SITE_URL=https://jutsu.co.in
           tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/web:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max

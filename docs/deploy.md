@@ -311,6 +311,59 @@ process that is running anyway, and this job can be deleted.
 
 ---
 
+### 9. The custom domain
+
+`jutsu.co.in`, mapped straight onto the web service. No load balancer: a global external
+ALB is the textbook answer and costs about $18/month in forwarding rules alone, which is
+more than the rest of this deployment, to terminate TLS for one hostname. Cloud Run domain
+mappings are free, are supported in `asia-south1`, and issue and renew a managed
+certificate themselves.
+
+The price is a verification step that cannot be automated, because it proves a human
+controls the domain — which is the entire point of it.
+
+**1. Verify the domain.** This must be done as the same Google account `gcloud` is
+authenticated as, or Cloud Run will not see the verification:
+
+```bash
+gcloud config get-value account   # must match the Search Console account
+gcloud domains verify jutsu.co.in
+```
+
+That opens Search Console. Add `jutsu.co.in` as a **Domain** property (not a URL-prefix
+property — the domain property is what covers every subdomain and both schemes), take the
+TXT record it offers, and add it at the registrar. The nameservers are
+`ns21/ns22.domaincontrol.com`, so that is GoDaddy → Domain → DNS → Add record.
+
+**2. Create the mapping**, once verification succeeds:
+
+```bash
+gcloud beta run domain-mappings create --service=jutsu-web   --domain=jutsu.co.in --region=asia-south1
+```
+
+It prints the A and AAAA records to add. **Read them from that output rather than copying
+them from anywhere else** — they are Google's anycast addresses and they are not the same
+set for every mapping.
+
+**3. Replace the parking records.** The domain currently answers on GoDaddy's parking IPs;
+those A records have to go, or DNS will round-robin between the real site and a parked
+page and roughly half of all visitors will see the wrong one.
+
+**4. Wait for the certificate.** Provisioning takes anywhere from fifteen minutes to a day
+after DNS propagates. `gcloud beta run domain-mappings describe --domain=jutsu.co.in
+--region=asia-south1` reports the state; `CertificatePending` is normal, and the site
+answers on HTTPS only once it clears.
+
+**5. Only then submit the sitemap** in Search Console and request indexing for the root.
+Doing it earlier asks Google to crawl a hostname that does not resolve yet, and a failed
+fetch is remembered for longer than it takes to do this in the right order.
+
+Appearing in search is not a deployment step and cannot be forced. Indexing a new domain
+with no inbound links usually takes days to weeks. Searching `site:jutsu.co.in` is the way
+to check whether Google has it at all, separately from where it ranks for anything.
+
+---
+
 ## GitHub configuration
 
 **Secrets** (Settings → Secrets and variables → Actions → Secrets):
@@ -323,14 +376,19 @@ process that is running anyway, and this job can be deleted.
 | `GCP_RUNTIME_SERVICE_ACCOUNT` | `jutsu-runtime@PROJECT.iam.gserviceaccount.com` |
 | `CLOUD_SQL_INSTANCE` | `PROJECT:REGION:jutsu` |
 
-**Variables** (same page → Variables). These are not secrets and are deliberately not
-stored as such — `NEXT_PUBLIC_SITE_URL` is compiled into the client bundle and served to
-every visitor, so treating it as a secret would be theatre:
+**Variables**: none are required, and `NEXT_PUBLIC_SITE_URL` should be **deleted** if it
+exists.
 
-| Name | Value |
-|---|---|
-| `NEXT_PUBLIC_SITE_URL` | `https://jutsu.dev` |
-| `JUTSU_API_URL` | the API service's Cloud Run URL |
+It used to live here. The trouble is that it is compiled into the client bundle, so it was
+never a secret and never varied — one deployment, one public origin — and holding it out
+of band meant the workflow could not show what it was building with. It was set to the
+`run.app` hostname, which silently outranked the default beneath it, so every canonical
+tag, OG URL and sitemap entry named the wrong host while the pipeline stayed green. It is
+now written in `deploy.yml`, where changing it is a reviewable diff.
+
+`JUTSU_API_URL` is optional. Left unset, the deploy job reads the URL off the API service
+it deployed moments earlier, which is correct by construction and survives a fork. Set it
+only to point the web app somewhere the pipeline did not just deploy.
 
 **Environment**: create one named `production` (Settings → Environments) and add required
 reviewers. The `migrate` and `deploy` jobs both target it, so a schema change waits for a
