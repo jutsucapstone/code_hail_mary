@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import alembic_config, run_alembic
 from jutsu_db import EMBEDDING_DIM
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+
+from conftest import alembic_config, run_alembic
 
 # Columns, constraints, indexes, enum labels and policies — everything a downgrade
 # could plausibly leave behind. Ordered so the comparison is stable across runs.

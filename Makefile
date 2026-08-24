@@ -50,8 +50,15 @@ lint-web:
 typecheck-web:
 	pnpm --filter web typecheck
 
+# --no-cache, and it is not paranoia. Ruff caches per file, keyed on that file content
+# and the config — so a change elsewhere that alters how an import is *classified* leaves
+# the cached verdict in place. Adding a root conftest.py did exactly that: `make
+# preflight` reported clean while CI, which is always a fresh checkout, failed on an
+# unsorted import in a file nobody had touched. A gate that can answer from a stale cache
+# is a gate that can be green about code it did not look at. The suite is 57 files; the
+# cache was buying milliseconds.
 lint-py:
-	uv run ruff check .
+	uv run ruff check --no-cache .
 
 format-check-py:
 	uv run ruff format --check .
