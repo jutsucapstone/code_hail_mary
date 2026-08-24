@@ -29,7 +29,12 @@ export const siteConfig = {
    * Set NEXT_PUBLIC_SITE_URL at build time; the fallback only serves local dev
    * and must not be what ships to production.
    */
-  url: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3210",
+  // `||`, not `??`. A Docker `ARG` that was never given a value arrives as an empty
+  // string rather than as undefined, and `??` passes it straight through — so
+  // `metadataBase: new URL("")` throws `ERR_INVALID_URL` and the whole build dies on
+  // `/_not-found`, with nothing in the message naming the variable. An unset build
+  // argument should behave like an unset variable.
+  url: process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3210",
   org: {
     team: "Code Hail Mary",
     institution: "Manipal University Jaipur",
