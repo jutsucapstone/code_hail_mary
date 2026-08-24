@@ -14,8 +14,12 @@ stronger case, because the value is a live credential.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import smtplib
+import ssl
 from dataclasses import dataclass, field
+from email.message import EmailMessage as MimeMessage
 from typing import Protocol
 
 __all__ = [
@@ -23,6 +27,8 @@ __all__ = [
     "EmailMessage",
     "EmailSender",
     "RecordingEmailSender",
+    "SmtpEmailSender",
+    "SmtpSettings",
 ]
 
 logger = logging.getLogger("jutsu.email")
@@ -96,3 +102,87 @@ class RecordingEmailSender:
         if not self.messages:
             raise AssertionError("no email was sent")
         return self.messages[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class SmtpSettings:
+    """Everything the transport needs, and nothing it does not.
+
+    `password` is an application password, never an account password. Gmail rejects the
+    latter for SMTP outright, and an account password in Secret Manager would be a
+    credential to the whole mailbox rather than to sending alone.
+    """
+
+    host: str
+    port: int
+    username: str
+    password: str
+    sender: str
+
+    @property
+    def uses_starttls(self) -> bool:
+        """587 is the submission port and upgrades in-band; 465 is TLS from the first byte.
+
+        Getting this backwards does not degrade gracefully — it hangs until the socket
+        times out, which reads like a network problem rather than a configuration one.
+        """
+        return self.port != 465
+
+
+class SmtpEmailSender:
+    """Delivers over SMTP, for any provider that speaks submission — Gmail included.
+
+    **The one-time secrets are rendered into the body here and nowhere else.** They travel
+    on `EmailMessage.secrets` precisely so no transport can splice them into a diagnostic
+    dump by accident; this is the single place they are allowed to become text, and it is
+    the message itself.
+
+    `smtplib` is synchronous and the send happens on a request path, so it runs in a
+    worker thread. Calling it inline would block the event loop for the whole SMTP
+    conversation — connect, STARTTLS, auth, DATA — which on a slow provider is hundreds of
+    milliseconds during which the process serves nobody.
+    """
+
+    def __init__(self, settings: SmtpSettings) -> None:
+        self._settings = settings
+
+    def _render(self, message: EmailMessage) -> MimeMessage:
+        body = message.body
+        if message.secrets:
+            rendered = "\n".join(f"  {name}: {value}" for name, value in message.secrets.items())
+            body = f"{body}\n\n{rendered}\n"
+
+        mime = MimeMessage()
+        mime["From"] = self._settings.sender
+        mime["To"] = message.to
+        mime["Subject"] = message.subject
+        # An automated one-time code should not generate an out-of-office reply, and it
+        # should not be filed as a conversation to reply into.
+        mime["Auto-Submitted"] = "auto-generated"
+        mime.set_content(body)
+        return mime
+
+    def _deliver(self, mime: MimeMessage) -> None:
+        context = ssl.create_default_context()
+        settings = self._settings
+
+        if settings.uses_starttls:
+            with smtplib.SMTP(settings.host, settings.port, timeout=20) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=context)
+                smtp.ehlo()
+                smtp.login(settings.username, settings.password)
+                smtp.send_message(mime)
+        else:
+            with smtplib.SMTP_SSL(
+                settings.host, settings.port, timeout=20, context=context
+            ) as smtp:
+                smtp.login(settings.username, settings.password)
+                smtp.send_message(mime)
+
+    async def send(self, message: EmailMessage) -> None:
+        await asyncio.to_thread(self._deliver, self._render(message))
+        # What was sent, never to whom and never what it contained. An address here would
+        # put the customer list in the log aggregator (§4.9); the code would put a live
+        # credential there.
+        logger.info("email_sent")

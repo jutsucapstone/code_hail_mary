@@ -185,6 +185,30 @@ python -c "import secrets; print(secrets.token_urlsafe(32))" \
 printf '%s' 'redis://HOST:6379' | gcloud secrets create jutsu-redis-url --data-file=-
 ```
 
+### 6a. The mail transport
+
+Passwordless sign-in cannot deliver a code without one, so **production refuses to start
+until both of these exist** — `get_settings` raises rather than falling back to a
+transport that prints to stdout and authenticates nobody.
+
+```bash
+printf '%s' 'jutsucapstone@gmail.com' | gcloud secrets create jutsu-smtp-username --data-file=-
+
+# An APP password, not the account password. Gmail rejects the account password for SMTP
+# outright, and storing one would put a credential to the entire mailbox in Secret
+# Manager rather than a credential to sending alone. Generate one at
+# https://myaccount.google.com/apppasswords — it requires 2-step verification.
+printf '%s' 'xxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-smtp-password --data-file=-
+```
+
+`SMTP_HOST` and `SMTP_PORT` default to `smtp.gmail.com:587` and need no secret. `SMTP_FROM`
+defaults to the username, which is what Gmail requires anyway — it rewrites a From address
+it has not verified.
+
+Gmail's free tier caps sending at roughly 500 messages a day. Ample for a pilot, and the
+reason the transport is an interface rather than an inlined SMTP call: moving to a
+dedicated sender later is a new class, not a rewrite.
+
 **Generate the pepper once and never rotate it casually.** It keys the HMAC standing in
 for email addresses in the org-less `auth` schema; changing it orphans every existing
 identity, and every account silently stops resolving.

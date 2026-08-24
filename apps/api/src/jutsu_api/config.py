@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Final
 
+from jutsu_api.email import SmtpSettings
+
 __all__ = ["Settings", "get_settings"]
 
 #: Six digits over a 10-symbol alphabet is a 1,000,000-wide space. With the attempt
@@ -61,10 +63,19 @@ class MissingSecret(RuntimeError):
     """A required secret is absent. Raised at first use, never defaulted."""
 
 
+#: Gmail's submission endpoint. Overridable, because the transport is provider-agnostic
+#: and a pilot may well move to a dedicated sender once volume justifies one.
+DEFAULT_SMTP_HOST: Final = "smtp.gmail.com"
+DEFAULT_SMTP_PORT: Final = 587
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     email_pepper: bytes
     environment: str
+    #: None when no transport is configured. Absence is meaningful rather than an error:
+    #: development runs happily without one, and production refuses to start without one.
+    smtp: SmtpSettings | None = None
 
     @property
     def is_production(self) -> bool:
@@ -100,7 +111,44 @@ def get_settings() -> Settings:
             "development, and take it from Secret Manager everywhere else."
         )
 
+    environment = os.environ.get("JUTSU_ENV", "dev")
     return Settings(
         email_pepper=pepper.encode("utf-8"),
-        environment=os.environ.get("JUTSU_ENV", "dev"),
+        environment=environment,
+        smtp=_smtp_settings(environment),
+    )
+
+
+def _smtp_settings(environment: str) -> SmtpSettings | None:
+    """The mail transport, or None when there is not one.
+
+    Username and password are the whole configuration: the host and port have sensible
+    defaults, and an address is only useful with a credential to send from it.
+
+    **Production refuses to start without one**, rather than falling through to a
+    transport that prints to stdout. Passwordless auth puts email on the critical path
+    for every sign-in, so a deployment that cannot send mail cannot authenticate anyone —
+    and discovering that from a customer is far worse than refusing to boot.
+    """
+    username = os.environ.get("SMTP_USERNAME")
+    password = os.environ.get("SMTP_PASSWORD")
+
+    if not username or not password:
+        if environment == "prod":
+            raise MissingSecret(
+                "SMTP_USERNAME and SMTP_PASSWORD are not set. Passwordless sign-in "
+                "cannot deliver a code without a mail transport, so production will not "
+                "start without one. Use an application password, never an account "
+                "password, and take both from Secret Manager."
+            )
+        return None
+
+    return SmtpSettings(
+        host=os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST),
+        port=int(os.environ.get("SMTP_PORT", DEFAULT_SMTP_PORT)),
+        username=username,
+        password=password,
+        # Falls back to the account being authenticated as, which is what most providers
+        # require anyway — Gmail rewrites a From it has not verified.
+        sender=os.environ.get("SMTP_FROM", username),
     )

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.auth_service import load_csrf_hash, resolve_principal
 from jutsu_api.config import Settings, get_settings
-from jutsu_api.email import ConsoleEmailSender, EmailSender
+from jutsu_api.email import ConsoleEmailSender, EmailSender, SmtpEmailSender
 from jutsu_api.security import (
     SESSION_COOKIE,
     Principal,
@@ -53,11 +53,19 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 def get_email_sender(settings: SettingsDep) -> EmailSender:
     """The transport for outbound mail.
 
-    Development gets the console. There is no production implementation yet, and
-    `ConsoleEmailSender` refuses to construct outside development rather than silently
-    discarding messages — a sender that swallows mail would make every sign-in fail with
-    no error recorded anywhere, which is the worst failure shape an auth system can have.
+    SMTP when one is configured, the console otherwise. The choice is made on whether a
+    credential exists rather than on the environment name, so a staging deployment that
+    has been given one really does deliver — and a developer who has not configured
+    anything still gets a working sign-in with the code on stdout.
+
+    `ConsoleEmailSender` refuses to construct in production, so the fallback cannot
+    silently become the transport there: `get_settings` raises first for a missing
+    credential, and this would raise second. A sender that swallows mail would make every
+    sign-in fail with no error recorded anywhere, which is the worst failure shape an
+    authentication system can have.
     """
+    if settings.smtp is not None:
+        return SmtpEmailSender(settings.smtp)
     return ConsoleEmailSender(environment=settings.environment)
 
 
