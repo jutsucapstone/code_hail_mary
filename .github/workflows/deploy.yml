@@ -157,6 +157,10 @@ jobs:
       # the runtime stage puts the venv on PATH. `--command uv` fails with "executable
       # file not found", which the first real migration run against Cloud Run proved.
       #
+      # `--args=` with an equals sign, not a space. The value begins with `-c`, and
+      # gcloud's parser reads a space-separated value starting with a dash as the next
+      # flag — "argument --args: expected one argument". The equals form binds it.
+      #
       # Note for anyone editing the block below: a `#` comment inside a backslash-continued
       # command **breaks it**. The continuation ends at the comment and the next line
       # starts a new command, so `--command alembic` is run as a program and the step exits
@@ -166,8 +170,8 @@ jobs:
           gcloud run jobs update "${MIGRATE_JOB}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
-            --command alembic \
-            --args "-c,packages/db/alembic.ini,upgrade,head" \
+            --command=alembic \
+            --args="-c,packages/db/alembic.ini,upgrade,head" \
             --quiet
 
       # `MIGRATION_DATABASE_URL`, which is the owner. The application connects as
