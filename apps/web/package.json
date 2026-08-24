@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -p 3210",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
