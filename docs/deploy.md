@@ -205,6 +205,28 @@ printf '%s' 'xxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-smtp-password --dat
 defaults to the username, which is what Gmail requires anyway — it rewrites a From address
 it has not verified.
 
+**If the secret already exists, add a version — do not re-`create`.** `secrets create`
+fails on an existing name, and the deployed revision reads `latest`, so a new version is
+picked up on the next request without a redeploy:
+
+```bash
+printf '%s' 'xxxxxxxxxxxxxxxx'   | gcloud secrets versions add jutsu-smtp-password --data-file=-
+```
+
+A wrong or placeholder password is not a startup failure — the credential is only exercised
+when mail is first sent, so the service comes up healthy and `/readyz` passes. The symptom
+is a 500 on `POST /v1/orgs/register` with this in the logs, and a response body carrying
+nothing beyond the standard envelope:
+
+```
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted.')
+```
+
+Nothing is persisted when this happens. The budget is spent and the challenge issued before
+the send, and the staged registration is written after it, so the exception rolls the whole
+request transaction back — no organisation, no pending row, no stored name or address. The
+registrant sees a failure and can retry once the credential is fixed.
+
 Gmail's free tier caps sending at roughly 500 messages a day. Ample for a pilot, and the
 reason the transport is an interface rather than an inlined SMTP call: moving to a
 dedicated sender later is a new class, not a rewrite.
