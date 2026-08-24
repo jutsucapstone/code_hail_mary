@@ -109,7 +109,7 @@ jobs:
           # so a Cloud Run variable set later is ignored and canonical URLs, sitemap and
           # OG tags would all point at localhost.
           build-args: |
-            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL }}
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL || 'https://jutsu.co.in' }}
           tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/web:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
@@ -256,13 +256,29 @@ jobs:
             --quiet
 
       - name: Deploy the web app
+        env:
+          API_URL_OVERRIDE: ${{ vars.JUTSU_API_URL }}
         run: |
+          # Read off the service deployed two steps ago rather than written
+          # down. A Cloud Run hostname carries the project *number*, so a
+          # literal here would aim a fork's deploy at this project's API and
+          # still look like it worked.
+          #
+          # `:-` rather than `-`: an unset repository variable arrives as an
+          # empty string, not as absent, so `${VAR-default}` would accept the
+          # empty one and set JUTSU_API_URL to nothing at all.
+          API_URL="${API_URL_OVERRIDE:-$(gcloud run services describe \
+            "${API_SERVICE}" --region "${REGION}" \
+            --format 'value(status.url)')}"
+          test -n "${API_URL}" || { echo "no API URL resolved"; exit 1; }
+          echo "web will proxy to ${API_URL}"
+
           gcloud run deploy "${WEB_SERVICE}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/web:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
-            --set-env-vars "JUTSU_API_URL=${{ vars.JUTSU_API_URL }}" \
+            --set-env-vars "JUTSU_API_URL=${API_URL}" \
             --min-instances 0 \
             --max-instances 10 \
             --allow-unauthenticated \
