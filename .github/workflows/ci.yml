@@ -17,7 +17,9 @@ concurrency:
 
 env:
   # Keeps robots.txt, sitemap.xml and OG tags from being built against localhost.
-  NEXT_PUBLIC_SITE_URL: https://jutsu.dev
+  # The same origin the deploy workflow builds with, so CI compiles the artefact that
+  # actually ships rather than a near-miss of it.
+  NEXT_PUBLIC_SITE_URL: https://jutsu.co.in
   # Two roles, deliberately. The application role is NOSUPERUSER NOBYPASSRLS, because
   # a superuser bypasses row-level security unconditionally and the whole isolation
   # suite would pass against policies that never engage. Only the owner can run DDL.
