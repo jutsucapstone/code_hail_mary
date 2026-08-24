@@ -158,8 +158,11 @@ jobs:
           gcloud run jobs update "${MIGRATE_JOB}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
-            --command uv \
-            --args "run,--package,jutsu-db,alembic,-c,packages/db/alembic.ini,upgrade,head" \
+            # `alembic` directly. `uv` exists only in the build stage; the runtime image
+            # puts the venv on PATH. `--command uv` fails with "executable file not
+            # found", which the first real migration run against Cloud Run proved.
+            --command alembic \
+            --args "-c,packages/db/alembic.ini,upgrade,head" \
             --quiet
 
       # `MIGRATION_DATABASE_URL`, which is the owner. The application connects as
@@ -212,7 +215,12 @@ jobs:
             --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest" \
             --min-instances 0 \
             --max-instances 10 \
-            --no-allow-unauthenticated \
+            # The Next proxy calls this over the public URL carrying no Google credential,
+            # so --no-allow-unauthenticated rejects every request a browser makes. Closing
+            # it properly means granting the web service account `run.invoker` and having
+            # the proxy attach an identity token — a real improvement, and not one to make
+            # blind on a first deploy. Recorded here rather than quietly left private.
+            --allow-unauthenticated \
             --quiet
 
       # A service, not a job, and never idled. arq's cron scheduler lives in the process,
@@ -243,7 +251,7 @@ jobs:
             --region "${REGION}" \
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
-            --set-env-vars "JUTSU_API_ORIGIN=${{ vars.JUTSU_API_ORIGIN }}" \
+            --set-env-vars "JUTSU_API_URL=${{ vars.JUTSU_API_URL }}" \
             --min-instances 0 \
             --max-instances 10 \
             --allow-unauthenticated \
