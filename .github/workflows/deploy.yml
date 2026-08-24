@@ -153,14 +153,19 @@ jobs:
       # inside the VPC with the Cloud SQL connector attached. Reaching the database from a
       # GitHub runner would mean exposing it to the internet or shipping a proxy and a
       # credential into CI.
+      # `--command alembic`, not `uv`: uv exists only in the build stage of the image, and
+      # the runtime stage puts the venv on PATH. `--command uv` fails with "executable
+      # file not found", which the first real migration run against Cloud Run proved.
+      #
+      # Note for anyone editing the block below: a `#` comment inside a backslash-continued
+      # command **breaks it**. The continuation ends at the comment and the next line
+      # starts a new command, so `--command alembic` is run as a program and the step exits
+      # 127. Every note about these commands therefore lives above the step, not inside it.
       - name: Update the migration job to this revision
         run: |
           gcloud run jobs update "${MIGRATE_JOB}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
-            # `alembic` directly. `uv` exists only in the build stage; the runtime image
-            # puts the venv on PATH. `--command uv` fails with "executable file not
-            # found", which the first real migration run against Cloud Run proved.
             --command alembic \
             --args "-c,packages/db/alembic.ini,upgrade,head" \
             --quiet
@@ -203,6 +208,11 @@ jobs:
       # Secrets are referenced, never passed. `--set-secrets` mounts them from Secret
       # Manager at start, so nothing sensitive appears in the workflow, in a Cloud Run
       # environment variable, or in `gcloud run services describe` output (§4.10).
+      # `--allow-unauthenticated`, deliberately. The Next proxy calls this over the public
+      # URL carrying no Google credential, so a private service rejects every request a
+      # browser makes. Closing it properly means granting the web service account
+      # `run.invoker` and having the proxy attach an identity token — a real improvement,
+      # and not one to make blind. Recorded rather than quietly left looking intentional.
       - name: Deploy the API
         run: |
           gcloud run deploy "${API_SERVICE}" \
@@ -215,11 +225,6 @@ jobs:
             --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest" \
             --min-instances 0 \
             --max-instances 10 \
-            # The Next proxy calls this over the public URL carrying no Google credential,
-            # so --no-allow-unauthenticated rejects every request a browser makes. Closing
-            # it properly means granting the web service account `run.invoker` and having
-            # the proxy attach an identity token — a real improvement, and not one to make
-            # blind on a first deploy. Recorded here rather than quietly left private.
             --allow-unauthenticated \
             --quiet
 
