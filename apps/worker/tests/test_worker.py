@@ -151,8 +151,16 @@ class TestReaperBehaviour:
     """
 
     async def test_it_removes_expired_rows_and_leaves_live_ones(self, worker_db_url: str) -> None:
+        """Fresh token hashes each run, because the fixture migrates forward and never
+        tears down — fixed keys collided on `pk_pending_registrations` the second time
+        this ran, which looks like a reaper bug and is a test that cannot repeat."""
+        import secrets
+
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        expired_token = secrets.token_bytes(32)
+        live_token = secrets.token_bytes(32)
 
         engine = create_async_engine(worker_db_url)
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -164,18 +172,20 @@ class TestReaperBehaviour:
                 await session.execute(
                     text(
                         "SELECT auth.stage_registration("
-                        "  decode(repeat('a1', 32), 'hex'), gen_random_uuid(), "
+                        "  :expired, gen_random_uuid(), "
                         "  decode(repeat('b2', 32), 'hex'), 'expired.example', "
                         "  '{}'::jsonb, now() - interval '1 hour')"
-                    )
+                    ),
+                    {"expired": expired_token},
                 )
                 await session.execute(
                     text(
                         "SELECT auth.stage_registration("
-                        "  decode(repeat('c3', 32), 'hex'), gen_random_uuid(), "
+                        "  :live, gen_random_uuid(), "
                         "  decode(repeat('d4', 32), 'hex'), 'live.example', "
                         "  '{}'::jsonb, now() + interval '1 hour')"
-                    )
+                    ),
+                    {"live": live_token},
                 )
                 await session.commit()
 
@@ -189,10 +199,8 @@ class TestReaperBehaviour:
                 # The live one survives, and is still consumable.
                 survived = (
                     await session.execute(
-                        text(
-                            "SELECT domain FROM auth.consume_pending_registration("
-                            "  decode(repeat('c3', 32), 'hex'))"
-                        )
+                        text("SELECT domain FROM auth.consume_pending_registration(  :live)"),
+                        {"live": live_token},
                     )
                 ).scalar_one_or_none()
                 assert survived == "live.example"
@@ -200,13 +208,54 @@ class TestReaperBehaviour:
                 # The expired one is gone, not merely unusable.
                 gone = (
                     await session.execute(
-                        text(
-                            "SELECT domain FROM auth.consume_pending_registration("
-                            "  decode(repeat('a1', 32), 'hex'))"
-                        )
+                        text("SELECT domain FROM auth.consume_pending_registration(  :expired)"),
+                        {"expired": expired_token},
                     )
                 ).scalar_one_or_none()
                 assert gone is None
                 await session.commit()
         finally:
             await engine.dispose()
+
+
+class TestReaperJobEntrypoint:
+    """The one-shot path, which is how the reaper actually runs in production.
+
+    Deployed as a scheduled Cloud Run job rather than as the arq worker: the scheduler
+    lives inside the arq process, so running it on Cloud Run means a container that never
+    idles plus Redis for arq to talk to — more cost than everything else here combined, to
+    delete a few rows every five minutes.
+    """
+
+    def test_it_reports_success_through_the_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jutsu_worker import reap
+
+        async def _reaped(_ctx: object) -> int:
+            return 3
+
+        monkeypatch.setattr(reap, "reap_expired_registrations", _reaped)
+        assert reap.main() == 0
+
+    def test_a_failure_is_a_non_zero_exit_and_not_a_traceback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cloud Run retries a non-zero exit. An unhandled exception instead prints a
+        crash, which reads like the container failing to start rather than the job
+        failing to do its work."""
+        from jutsu_worker import reap
+
+        async def _exploded(_ctx: object) -> int:
+            raise RuntimeError("database unreachable")
+
+        monkeypatch.setattr(reap, "reap_expired_registrations", _exploded)
+        assert reap.main() == 1
+
+    def test_both_paths_call_the_same_function(self) -> None:
+        """Two ways to invoke it, never two implementations — otherwise the scheduled
+        job and the cron drift and only one of them is ever exercised."""
+        from jutsu_worker import main as worker_main
+        from jutsu_worker import reap
+
+        assert reap.reap_expired_registrations is worker_main.reap_expired_registrations

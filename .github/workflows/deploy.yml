@@ -25,7 +25,7 @@ env:
   # have to agree on them.
   API_SERVICE: jutsu-api
   WEB_SERVICE: jutsu-web
-  WORKER_SERVICE: jutsu-worker
+  REAP_JOB: jutsu-reap
   MIGRATE_JOB: jutsu-migrate
 
 jobs:
@@ -232,25 +232,27 @@ jobs:
             --allow-unauthenticated \
             --quiet
 
-      # A service, not a job, and never idled. arq's cron scheduler lives in the process,
-      # so the container has to keep running for `reap_expired_registrations` to fire at
-      # all. With CPU throttling on, Cloud Run freezes it between requests — and a worker
-      # that receives no requests is frozen permanently, which looks exactly like having
-      # no reaper.
-      - name: Deploy the worker
+      # A scheduled job, not a running service, and that is a cost decision with a
+      # correctness consequence attached.
+      #
+      # arq's cron scheduler lives inside the worker process, so running it on Cloud Run
+      # means a container that never idles — min-instances=1 with CPU throttling off,
+      # billed continuously — plus Redis for arq to talk to. Memorystore alone would cost
+      # more than every other piece of this deployment put together, to delete a handful
+      # of rows every five minutes.
+      #
+      # Cloud Scheduler invokes this job instead: nothing runs at idle and there is no
+      # broker. The arq cron stays in the code for the moment S8 puts a worker on Cloud
+      # Run for the ingestion queue's own reasons, at which point the reaper is already
+      # wired into the thing that is running and this job can go.
+      #
+      # The schedule itself is created once, out of band — see docs/deploy.md. The
+      # pipeline only points the job at the image it just built.
+      - name: Point the reaper job at this revision
         run: |
-          gcloud run deploy "${WORKER_SERVICE}" \
+          gcloud run jobs update "${REAP_JOB}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/worker:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
-            --platform managed \
-            --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
-            --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
-            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO" \
-            --set-secrets "DATABASE_URL=jutsu-database-url:latest,REDIS_URL=jutsu-redis-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest" \
-            --min-instances 1 \
-            --max-instances 1 \
-            --no-cpu-throttling \
-            --no-allow-unauthenticated \
             --quiet
 
       - name: Deploy the web app

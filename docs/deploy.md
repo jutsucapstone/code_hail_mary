@@ -236,6 +236,57 @@ back to it.
 runtime stage puts the venv on `PATH`, so the entrypoint is `alembic` itself — `uv` fails
 with "executable file not found", which is what the first real migration run produced.
 
+### 8. The reaper job and its schedule
+
+`auth.pending_registrations` holds a name, a work address and a job title for ten minutes.
+An expiry column with nothing deleting it is a comment, not a control — so something has
+to run `auth.reap_expired_registrations()`.
+
+**A scheduled job, not the arq worker.** arq's cron scheduler lives inside the process, so
+running it on Cloud Run means `--min-instances=1 --no-cpu-throttling` — a container billed
+continuously — plus Redis for arq to talk to. Memorystore alone costs more than every other
+piece of this deployment put together, to delete a handful of rows every five minutes.
+
+```bash
+gcloud run jobs create jutsu-reap \
+  --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/jutsu/api:bootstrap" \
+  --region="$REGION" \
+  --service-account="jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --set-cloudsql-instances="${PROJECT_ID}:${REGION}:jutsu" \
+  --set-secrets="DATABASE_URL=jutsu-database-url:latest" \
+  --command=python --args="-m,jutsu_worker.reap" \
+  --max-retries=2 --task-timeout=5m
+```
+
+The API image, not a separate one: it carries `jutsu_worker` too, because one base image
+for both is less to keep patched than two that drift.
+
+Then a schedule, and a service account allowed to invoke it:
+
+```bash
+gcloud iam service-accounts create jutsu-scheduler --display-name="Cloud Scheduler invoker"
+
+gcloud run jobs add-iam-policy-binding jutsu-reap --region="$REGION" \
+  --member="serviceAccount:jutsu-scheduler@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/run.invoker
+
+gcloud scheduler jobs create http jutsu-reap-schedule \
+  --location="$REGION" \
+  --schedule="*/5 * * * *" \
+  --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/jutsu-reap:run" \
+  --http-method=POST \
+  --oauth-service-account-email="jutsu-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+Every five minutes against a ten-minute TTL, so an abandoned registration's details exist
+for at most about a quarter of an hour. The work is one indexed DELETE against a table
+that is usually empty, and Cloud Scheduler's free tier covers three jobs.
+
+The arq cron in `main.py` stays. It is the right shape once S8 puts a worker on Cloud Run
+for the ingestion queue's own reasons — at that point the reaper is already wired into a
+process that is running anyway, and this job can be deleted.
+
+
 ---
 
 ## GitHub configuration
