@@ -17,6 +17,7 @@ __all__ = [
     "Conflict",
     "ExtractionRejected",
     "InsufficientEvidence",
+    "InternalError",
     "JutsuError",
     "NotFound",
     "PermissionDenied",
@@ -147,3 +148,19 @@ class ServiceUnavailable(JutsuError):
 
     status_code = 503
     code = "service_unavailable"
+
+
+class InternalError(JutsuError):
+    """A defect on our side. The catch-all, so nothing escapes the envelope.
+
+    500 rather than 503: 503 tells the caller to retry, and a retry against a bug just
+    reproduces it. Distinguishing the two is the difference between a client backing off
+    politely and a client hammering a broken endpoint.
+
+    The message is fixed and says nothing about what failed. Whatever raised is in the
+    log against the request id; the exception text is not safe to return, because on this
+    service it can carry a connection string (§4.9).
+    """
+
+    status_code = 500
+    code = "internal_error"

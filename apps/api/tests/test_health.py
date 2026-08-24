@@ -77,3 +77,52 @@ class TestErrorEnvelope:
 
         assert denied.status_code == missing.status_code == 404
         assert denied.json()["error"]["code"] == missing.json()["error"]["code"] == "not_found"
+
+
+class TestUnhandledErrors:
+    """Nothing escapes the envelope, including what nobody anticipated.
+
+    Found by running the built container with no database attached:
+    `/v1/orgs/register` answered a plain-text "Internal Server Error" while every other
+    failure on the service answers as JSON. A caller then has no `request_id` to quote
+    and the request cannot be found in the logs.
+    """
+
+    @staticmethod
+    def _app_raising(exc: Exception) -> TestClient:
+        app: FastAPI = create_app()
+
+        @app.get("/boom")
+        async def boom() -> None:
+            raise exc
+
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_an_unexpected_exception_still_returns_the_envelope(self) -> None:
+        response = self._app_raising(RuntimeError("connection string in here")).get("/boom")
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["error"]["code"] == "internal_error"
+        assert body["request_id"]
+
+    def test_the_exception_text_never_reaches_the_caller(self) -> None:
+        """§4.9. The message a bug raises is not vetted for what it carries.
+
+        `DATABASE_URL is not set` is the harmless version; the same path can raise with a
+        DSN, a host name or a stack trace naming every internal package.
+        """
+        secret = "postgresql://user:hunter2@internal-host/db"
+        response = self._app_raising(RuntimeError(secret)).get("/boom")
+
+        assert secret not in response.text
+        assert "hunter2" not in response.text
+        assert "Traceback" not in response.text
+
+    def test_the_request_id_is_the_one_the_caller_sent(self) -> None:
+        """So the id in a bug report matches the id in the logs."""
+        client = self._app_raising(RuntimeError("boom"))
+        response = client.get("/boom", headers={"x-request-id": "trace-me"})
+
+        assert response.json()["request_id"] == "trace-me"
+        assert response.headers["x-request-id"] == "trace-me"

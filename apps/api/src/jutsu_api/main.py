@@ -19,7 +19,7 @@ from typing import Any, Final
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from jutsu_core import JutsuError, ValidationFailed
+from jutsu_core import InternalError, JutsuError, ValidationFailed
 
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import employees as employees_router
@@ -115,6 +115,36 @@ def create_app() -> FastAPI:
         envelope["error"]["details"] = {"fields": fields}
         logger.warning("validation_failed")
         return JSONResponse(status_code=error.status_code, content=envelope)
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        """Anything nobody anticipated, still in the one envelope (§15).
+
+        Without this, an unexpected exception falls through to Starlette's plain-text
+        "Internal Server Error": not the envelope, and — the part that actually costs
+        time — carrying no `request_id`. Someone reporting "it broke" then has nothing to
+        quote, and there is no way to find their request among the logs.
+
+        Found by running the built image with no database attached: `/v1/orgs/register`
+        answered `Internal Server Error` as bare text while every other failure on the
+        service answers as JSON.
+
+        `exc_info` goes to the log and never to the client. A stack trace in a response
+        names internal paths and library versions, and on this service it could carry a
+        connection string; the caller gets the id and nothing else (§4.9).
+        """
+        request_id = getattr(request.state, "request_id", "unknown")
+        logger.exception("unhandled_error", extra={"request_id": request_id})
+        error = InternalError("Something went wrong on our side.")
+        return JSONResponse(
+            status_code=error.status_code,
+            content=error.envelope(request_id),
+            # Set here, not left to `request_id_middleware`. Starlette handles `Exception`
+            # in `ServerErrorMiddleware`, which sits *outside* user middleware — so a 500
+            # never passes back through the middleware that attaches this header, and the
+            # one response a caller most needs to trace was the only one without it.
+            headers={REQUEST_ID_HEADER: request_id},
+        )
 
     @app.get("/healthz", tags=["ops"])
     @public("Liveness must answer before, and independently of, any session machinery.")

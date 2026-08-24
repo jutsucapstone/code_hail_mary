@@ -33,18 +33,23 @@ COPY packages/evals/pyproject.toml packages/evals/
 COPY apps/api/pyproject.toml apps/api/
 COPY apps/worker/pyproject.toml apps/worker/
 
-# `--no-install-workspace` installs only third-party dependencies here. The workspace
+# `--all-packages` is not optional. The root pyproject is a workspace root with no
+# dependencies of its own, so a plain `uv sync` resolves to nothing and builds a venv
+# holding Python and not one package — the container then dies on "exec: uvicorn: not
+# found". Found by running the image, not by reading it.
+#
+# `--no-install-workspace` keeps our own packages out of this layer. The workspace
 # members are installed after the source is copied, so editing our own code does not
 # invalidate the layer holding several hundred megabytes of wheels.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-workspace
+    uv sync --frozen --no-dev --all-packages --no-install-workspace
 
 COPY packages/ packages/
 COPY apps/api/ apps/api/
 COPY apps/worker/ apps/worker/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --all-packages
 
 # ---------------------------------------------------------------- runtime
 FROM python:3.12-slim AS runtime
