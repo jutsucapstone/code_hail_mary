@@ -917,7 +917,7 @@
     },
     "/v1/me": {
       "get": {
-        "description": "Requires `org:read`, which every role holds except a bare Member.\n\nA Member reaching this gets a 403 rather than an empty response: they have a session\nbut no place in the admin surface, and saying so plainly is better than rendering a\ndashboard with everything hidden.",
+        "description": "Requires `profile:self_read`, which every role holds including a bare Member.\n\nDeliberately the most permissive gate in the catalogue, and the docstring here used\nto claim the opposite \u2014 that it required `org:read` and refused a Member. It does\nnot, and it must not: this endpoint is how a client learns which surface it is\nallowed to render, so gating it on an admin permission would leave a Member unable\nto discover that they are a Member.",
         "operationId": "read_me_v1_me_get",
         "responses": {
           "200": {

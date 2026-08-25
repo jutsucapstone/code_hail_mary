@@ -60,6 +60,10 @@ class AcceptedInvitation:
     org_id: UUID
     identity_id: UUID
     jutsu_id: str
+    #: The role the invitation conferred. Carried out of here because the caller has to
+    #: decide where to send this person, and re-reading it from `user_roles` afterwards
+    #: would be a second query for something this function already had in hand.
+    role: Role
 
 
 def _hash(value: str) -> bytes:
@@ -252,7 +256,11 @@ async def accept_invitation(
     )
 
     return AcceptedInvitation(
-        user_id=user_id, org_id=org_id, identity_id=identity_id, jutsu_id=jutsu_id
+        user_id=user_id,
+        org_id=org_id,
+        identity_id=identity_id,
+        jutsu_id=jutsu_id,
+        role=Role(role_key),
     )
 
 

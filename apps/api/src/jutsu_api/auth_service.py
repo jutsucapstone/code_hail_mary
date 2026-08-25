@@ -313,6 +313,32 @@ async def open_session(
     return SessionCredentials(token=token, csrf_token=csrf_token, expires_at=expires_at)
 
 
+async def scoped_role(session: AsyncSession, *, org_id: object, user_id: object) -> Role:
+    """The role a user holds, read inside the tenant scope that makes it meaningful.
+
+    The two statements are ordered, and the order is the tenancy guarantee rather than a
+    style preference: `user_roles` is behind RLS keyed on `app.current_org_id`, so reading
+    a role before the GUC is set reads it across every tenant. Anything that needs a role
+    goes through here so that ordering exists once instead of at each call site — sign-in
+    needs it to decide where to send someone, and that is exactly the kind of second
+    implementation that drifts away from the first.
+    """
+    await session.execute(
+        text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
+    )
+    role_key = (
+        await session.execute(
+            text("SELECT role_key FROM user_roles WHERE user_id = :u"), {"u": user_id}
+        )
+    ).scalar_one_or_none()
+    if role_key is None:
+        # A user with no role is not a caller we can authorise. It means the membership
+        # was removed, or a registration failed part-way — either way, refuse rather than
+        # defaulting to something.
+        raise Unauthenticated("Your access has been withdrawn.")
+    return Role(role_key)
+
+
 async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     """Turn an opaque handle into an authenticated caller.
 
@@ -334,22 +360,7 @@ async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
 
     session_id, identity_id, user_id, org_id, _csrf_hash = row
 
-    await session.execute(
-        text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
-    )
-
-    role_key = (
-        await session.execute(
-            text("SELECT role_key FROM user_roles WHERE user_id = :u"), {"u": user_id}
-        )
-    ).scalar_one_or_none()
-    if role_key is None:
-        # A session whose user has no role is not a caller we can authorise. It means the
-        # membership was removed, or a registration failed part-way — either way, refuse
-        # rather than defaulting to something.
-        raise Unauthenticated("Your access has been withdrawn.")
-
-    role = Role(role_key)
+    role = await scoped_role(session, org_id=org_id, user_id=user_id)
     return Principal(
         session_id=UUID(str(session_id)),
         identity_id=UUID(str(identity_id)),

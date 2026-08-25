@@ -36,7 +36,7 @@ from uuid import UUID
 from fastapi import Request
 from fastapi.routing import APIRoute
 from jutsu_core.errors import PermissionDenied, Unauthenticated
-from jutsu_core.rbac import Permission, Role
+from jutsu_core.rbac import Permission, Role, permissions_for
 
 __all__ = [
     "GuardedAPIRoute",
@@ -166,6 +166,27 @@ class Principal:
             # tenant, so the *shape* of the permission model is not secret, but naming
             # the missing permission turns a denial into a map of the admin surface.
             raise PermissionDenied("You do not have permission to perform this action.")
+
+
+#: Where a caller belongs once they are authenticated.
+#:
+#: Keyed on a permission rather than a list of roles, so adding a role to the RBAC table
+#: routes it correctly without anyone remembering to edit this. `ORG_READ` is the line
+#: that matters: every role holds it except a bare Member, and it is precisely the right
+#: to see anything about the organisation rather than only about yourself.
+_ADMIN_SURFACE: Final = Permission.ORG_READ
+
+
+def destination_for(role: Role) -> str:
+    """The path to send someone to after a session opens.
+
+    This existed three times as a literal and was wrong in one of them: sign-in returned
+    `/admin` for everybody, so an invited Member landed on a dashboard where every call
+    they could make answered 403. The rule belongs in one place because the three call
+    sites — registration, invitation acceptance, sign-in — are the same decision reached
+    by different routes.
+    """
+    return "/admin" if _ADMIN_SURFACE in permissions_for(role) else "/me"
 
 
 def session_token_hash(token: str) -> bytes:

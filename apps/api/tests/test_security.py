@@ -25,6 +25,7 @@ from jutsu_api.security import (
     Principal,
     UndeclaredRoute,
     declaration_of,
+    destination_for,
     iter_api_routes,
     public,
     requires,
@@ -258,3 +259,46 @@ def _depends_on_principal(dependant: object, depth: int = 0) -> bool:
         if _depends_on_principal(dependency, depth + 1):
             return True
     return False
+
+
+class TestDestination:
+    """Where a session lands, which was wrong for the people it mattered most to.
+
+    Sign-in returned `/admin` for every role. An invited Member — the majority of anyone
+    who will ever use this — verified their code, arrived at the admin dashboard, and got
+    403 from every call it made. The API was behaving correctly and the product looked
+    broken, which is the worst combination to debug from a bug report.
+    """
+
+    @pytest.mark.parametrize(
+        "role",
+        [Role.OWNER, Role.SUPER_ADMIN, Role.HR_ADMIN, Role.IT_ADMIN, Role.ANALYST, Role.VIEWER],
+    )
+    def test_roles_with_org_read_go_to_the_admin_surface(self, role: Role) -> None:
+        assert destination_for(role) == "/admin"
+
+    def test_a_bare_member_goes_to_their_own_page(self) -> None:
+        assert destination_for(Role.MEMBER) == "/me"
+
+    def test_every_role_is_covered(self) -> None:
+        """A new role must not silently fall into a default.
+
+        Parametrised lists above go stale the moment someone adds a role, and the failure
+        would be a redirect nobody notices. This asserts the function is total over the
+        enum instead of over a list written by hand.
+        """
+        for role in Role:
+            assert destination_for(role) in {"/admin", "/me"}
+
+    def test_the_rule_matches_what_the_dashboard_actually_needs(self) -> None:
+        """The landing page at /admin calls GET /v1/orgs/current, which requires
+        `org:read`. Keying the redirect on the same permission is what makes the two agree
+        — a role sent to /admin can, by construction, load it.
+
+        A Viewer is the case that proves this is not merely `is this person an admin`:
+        they hold `org:read` and not `member:read`, so they belong on the dashboard and
+        are correctly refused the employee roster once there.
+        """
+        for role in Role:
+            expected = "/admin" if Permission.ORG_READ in permissions_for(role) else "/me"
+            assert destination_for(role) == expected

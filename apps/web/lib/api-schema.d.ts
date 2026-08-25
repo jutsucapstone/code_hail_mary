@@ -183,11 +183,13 @@ export interface paths {
         };
         /**
          * Read Me
-         * @description Requires `org:read`, which every role holds except a bare Member.
+         * @description Requires `profile:self_read`, which every role holds including a bare Member.
          *
-         *     A Member reaching this gets a 403 rather than an empty response: they have a session
-         *     but no place in the admin surface, and saying so plainly is better than rendering a
-         *     dashboard with everything hidden.
+         *     Deliberately the most permissive gate in the catalogue, and the docstring here used
+         *     to claim the opposite — that it required `org:read` and refused a Member. It does
+         *     not, and it must not: this endpoint is how a client learns which surface it is
+         *     allowed to render, so gating it on an admin permission would leave a Member unable
+         *     to discover that they are a Member.
          */
         get: operations["read_me_v1_me_get"];
         put?: never;

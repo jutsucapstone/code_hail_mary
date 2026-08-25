@@ -23,7 +23,7 @@ from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
 from jutsu_api.email import EmailSender
 from jutsu_api.invitations import accept_invitation, invite_employee, list_employees
 from jutsu_api.routers.auth import set_session_cookies
-from jutsu_api.security import GuardedAPIRoute, public, requires
+from jutsu_api.security import GuardedAPIRoute, destination_for, public, requires
 
 router = APIRouter(prefix="/v1", tags=["employees"], route_class=GuardedAPIRoute)
 
@@ -155,4 +155,4 @@ async def accept(
 
     # Chosen by the server. A destination from the request would be an open redirect with
     # a freshly minted session attached.
-    return AcceptResult(jutsu_id=accepted.jutsu_id, destination="/me")
+    return AcceptResult(jutsu_id=accepted.jutsu_id, destination=destination_for(accepted.role))

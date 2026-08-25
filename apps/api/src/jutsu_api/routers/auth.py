@@ -24,6 +24,7 @@ from jutsu_api.auth_service import (
     issue_challenge,
     open_session,
     revoke_session,
+    scoped_role,
     verify_challenge,
 )
 from jutsu_api.config import (
@@ -34,7 +35,13 @@ from jutsu_api.config import (
 )
 from jutsu_api.deps import Db, get_email_sender
 from jutsu_api.email import EmailSender
-from jutsu_api.security import CSRF_COOKIE, SESSION_COOKIE, GuardedAPIRoute, public
+from jutsu_api.security import (
+    CSRF_COOKIE,
+    SESSION_COOKIE,
+    GuardedAPIRoute,
+    destination_for,
+    public,
+)
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"], route_class=GuardedAPIRoute)
 
@@ -159,7 +166,14 @@ async def verify(
         csrf_token=credentials.csrf_token,
         settings=settings,
     )
-    return VerifyResult(destination="/admin")
+
+    # Read after the membership is known, and inside the org scope — `scoped_role` sets
+    # the GUC first for that reason. Sending everyone to /admin was the old behaviour and
+    # it was wrong for exactly the people this flow exists to serve: an invited Member
+    # signed in successfully and arrived at a dashboard that answered 403 to every
+    # request it made, which reads like a broken product rather than a wrong redirect.
+    role = await scoped_role(session, org_id=org_id, user_id=user_id)
+    return VerifyResult(destination=destination_for(role))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

@@ -47,11 +47,13 @@ class Capabilities(BaseModel):
 @router.get("")
 @requires(Permission.PROFILE_SELF_READ)
 async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
-    """Requires `org:read`, which every role holds except a bare Member.
+    """Requires `profile:self_read`, which every role holds including a bare Member.
 
-    A Member reaching this gets a 403 rather than an empty response: they have a session
-    but no place in the admin surface, and saying so plainly is better than rendering a
-    dashboard with everything hidden.
+    Deliberately the most permissive gate in the catalogue, and the docstring here used
+    to claim the opposite — that it required `org:read` and refused a Member. It does
+    not, and it must not: this endpoint is how a client learns which surface it is
+    allowed to render, so gating it on an admin permission would leave a Member unable
+    to discover that they are a Member.
     """
     jutsu_id = (
         await session.execute(
