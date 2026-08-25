@@ -15,6 +15,15 @@ import { INDUSTRIES, countryOptions } from "@/lib/onboarding";
 type RegisterBody = components["schemas"]["RegisterPayload"];
 
 /**
+ * The one error code this screen routes to a specific field.
+ *
+ * Matched on the stable `code`, never on the message — the prose is user-facing copy and
+ * is expected to be reworded, and a comparison against it would break silently on the
+ * day someone does, degrading to a form-level box rather than an error anyone notices.
+ */
+const DOMAIN_MISMATCH = "domain_mismatch";
+
+/**
  * Organisation registration — the first step of the admin path.
  *
  * **Two panes, one route, one submission.** The form outgrew a single screen: nine
@@ -67,6 +76,8 @@ export default function AdminRegistrationPage() {
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(
     null,
   );
+  // Held apart from `failure` so a field-level rejection renders on the field.
+  const [emailError, setEmailError] = useState<string | null>(null);
 
   // Client-only, and memoised so it is not recomputed on every keystroke.
   //
@@ -137,6 +148,21 @@ export default function AdminRegistrationPage() {
       // this: a registration code cannot open a session, and vice versa.
       router.push(`/pilot/verify?flow=register&to=${encodeURIComponent(email)}`);
     } catch (error) {
+      // `domain_mismatch` is about one field, so it is shown on that field rather than
+      // in the form-level box at the bottom. The box is correct for failures that belong
+      // to the submission as a whole — it is the wrong place for "this input is wrong",
+      // because the reader has to carry the sentence back up the form and work out which
+      // of three inputs it meant.
+      //
+      // Still the server's error, not a rule restated here. The API stays the only
+      // authority on what a valid pairing is; this only decides where its answer lands.
+      if (error instanceof ApiError && error.code === DOMAIN_MISMATCH) {
+        setEmailError(error.message);
+        setFailure(null);
+        setPending(false);
+        return;
+      }
+
       const message =
         error instanceof ApiError
           ? error.message
@@ -286,6 +312,11 @@ export default function AdminRegistrationPage() {
           autoComplete="work email"
           required
           maxLength={320}
+          error={emailError ?? undefined}
+          // Cleared on edit rather than left until the next submit. A red field beside
+          // an address the reader has already corrected says the correction did not
+          // take, and the usual next move is to change something that was right.
+          onChange={() => setEmailError(null)}
         />
 
         <Field
