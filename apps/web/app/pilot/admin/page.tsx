@@ -88,7 +88,10 @@ export default function AdminRegistrationPage() {
     const trimmed = (field: string) => String(form.get(field) ?? "").trim();
     setDetails({
       company_name: trimmed("company_name"),
-      company_domain: trimmed("company_domain"),
+      // Lower-cased here as well as on the server. `canonical_domain` will store it this
+      // way regardless, so echoing back the capitals someone happened to type — "Must be
+      // at DEMO.COM" — promises a domain that is not the one being created.
+      company_domain: trimmed("company_domain").toLowerCase(),
       org_size: trimmed("org_size"),
       country: trimmed("country"),
       industry: trimmed("industry"),
