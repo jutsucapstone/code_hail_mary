@@ -20,3 +20,27 @@ export type Permission = Capabilities["permissions"][number];
 export function can(capabilities: Capabilities | null, permission: Permission): boolean {
   return capabilities?.permissions.includes(permission) ?? false;
 }
+
+/** One role, as the API spells it. */
+export type Role = Capabilities["role"];
+
+/**
+ * Human labels for roles.
+ *
+ * Typed as a total record over `Role` rather than `Record<string, string>`, so adding a
+ * role to the API and regenerating the schema fails the build here instead of rendering
+ * the raw enum value — `hr_admin` in the middle of a sentence is the kind of thing that
+ * ships because nobody owned the mapping.
+ *
+ * Shared rather than re-declared: this was private to the employees table, and the
+ * member page needs the same words for the same values.
+ */
+export const ROLE_LABELS: Record<Role, string> = {
+  owner: "Organisation owner",
+  super_admin: "Super admin",
+  hr_admin: "HR admin",
+  it_admin: "IT admin",
+  analyst: "Analyst",
+  viewer: "Viewer",
+  member: "Member",
+};

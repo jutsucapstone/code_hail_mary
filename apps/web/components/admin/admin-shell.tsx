@@ -134,6 +134,30 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             {visible.map((section) => {
               const href = adminHref(section.slug);
               const current = pathname === href;
+
+              // A pending section has no route, so linking it produces a 404. The
+              // header comment on ADMIN_SECTIONS claims "a section cannot be linked
+              // without also being routed" — that was the intent and not the behaviour:
+              // four of the six rendered as links to pages that do not exist. It is
+              // still listed, because showing the shape of the product is the point of
+              // the `status` field, but it is listed as text with the slice that
+              // delivers it rather than as a door onto nothing (§4.11).
+              if (section.status === "pending") {
+                return (
+                  <li key={section.slug || "overview"} className="shrink-0">
+                    <span
+                      className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-muted-foreground/55"
+                      title={`${section.description} Arrives in ${section.slice}.`}
+                    >
+                      {section.name}
+                      <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/45">
+                        {section.slice}
+                      </span>
+                    </span>
+                  </li>
+                );
+              }
+
               return (
                 <li key={section.slug || "overview"} className="shrink-0">
                   <Link

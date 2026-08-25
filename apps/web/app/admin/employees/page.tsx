@@ -8,7 +8,7 @@ import { Field } from "@/components/pilot/field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
 import type { components } from "@/lib/api-schema";
-import { can } from "@/lib/permissions";
+import { ROLE_LABELS, can } from "@/lib/permissions";
 
 type Employee = components["schemas"]["Employee"];
 type Role = components["schemas"]["Role"];
@@ -26,8 +26,12 @@ type Role = components["schemas"]["Role"];
  * a courtesy that keeps the form honest about what will succeed.
  */
 
-/** Ranks mirror the seeded catalogue. Used only to decide what to offer. */
-const ROLE_RANKS: Record<string, number> = {
+/** Ranks mirror the seeded catalogue. Used only to decide what to offer.
+ *
+ * Total over `Role`, like the labels, so a role added to the API cannot quietly get no
+ * rank — `undefined < actorRank` is false, and the new role would silently vanish from
+ * the invite dropdown with nothing failing. */
+const ROLE_RANKS: Record<Role, number> = {
   owner: 100,
   super_admin: 80,
   hr_admin: 60,
@@ -35,16 +39,6 @@ const ROLE_RANKS: Record<string, number> = {
   analyst: 40,
   viewer: 20,
   member: 10,
-};
-
-const ROLE_LABELS: Record<string, string> = {
-  owner: "Organisation owner",
-  super_admin: "Super admin",
-  hr_admin: "HR admin",
-  it_admin: "IT admin",
-  analyst: "Analyst",
-  viewer: "Viewer",
-  member: "Member",
 };
 
 function StatusPill({ status }: { status: string }) {
@@ -139,7 +133,13 @@ export default function EmployeesPage() {
   }
 
   const actorRank = ROLE_RANKS[capabilities.role] ?? 0;
-  const grantable = Object.keys(ROLE_RANKS).filter((role) => ROLE_RANKS[role] < actorRank);
+  // `Object.keys` is typed as `string[]` regardless of the record's key type — a
+  // deliberate looseness in the standard library, since a value may carry extra keys at
+  // runtime. This object is a literal declared above, so the assertion is sound, and it
+  // is what lets the label lookup below stay exhaustive rather than falling back.
+  const grantable = (Object.keys(ROLE_RANKS) as Role[]).filter(
+    (role) => ROLE_RANKS[role] < actorRank,
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-10 [@media(max-height:820px)]:gap-6">

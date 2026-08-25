@@ -180,10 +180,11 @@ export default function AdminOverviewPage() {
             What happens next
           </h2>
           <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            Inviting people and connecting your tools are the next two steps. Neither is
-            built yet — the sections are listed so you can see the shape of the product,
-            and each says which slice delivers it rather than showing figures that are not
-            real.
+            Inviting people works now — send someone an invitation from Employees and
+            their JUTSU ID is issued when they accept, not before. Connecting your tools
+            is the next step and is not built yet; the sections in the sidebar that are
+            still to come are listed with the slice that delivers them rather than
+            showing figures that are not real.
           </p>
         </div>
       </section>
