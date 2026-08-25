@@ -237,13 +237,21 @@ jobs:
       # and not one to make blind. Recorded rather than quietly left looking intentional.
       - name: Deploy the API
         run: |
+          # SMTP_FROM carries a display name, so the whole --set-env-vars value stays
+          # inside double quotes: that keeps `<` and `>` as text rather than shell
+          # redirection. There is no comma in it, which is what the flag splits on.
+          #
+          # This comment sits above the command rather than among its continuation
+          # lines. A `#` after a trailing backslash ends the continuation, so the rest
+          # of the flags become their own command — still valid shell, so `bash -n`
+          # reports nothing, and the failure surfaces as an unrelated exit 127.
           gcloud run deploy "${API_SERVICE}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
-            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=noreply@jutsu.co.in" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>" \
             --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest" \
             --min-instances 0 \
             --max-instances 10 \

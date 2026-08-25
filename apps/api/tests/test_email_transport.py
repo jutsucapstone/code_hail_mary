@@ -8,6 +8,7 @@ network: `_render` is pure, and delivery is exercised against a fake SMTP.
 from __future__ import annotations
 
 import asyncio
+from email.utils import parseaddr
 
 import pytest
 from jutsu_api.config import MissingSecret, _smtp_settings
@@ -163,6 +164,69 @@ class TestConfiguration:
         assert settings is not None
         assert settings.sender == "noreply@jutsu.co.in"
         assert settings.username == "resend"
+
+    def test_a_display_name_is_carried_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """What production actually sends as.
+
+        A recipient sees the sender column of their mail client, and a one-time code
+        arriving from a bare `noreply@` reads like something to be suspicious of.
+        """
+        monkeypatch.setenv("SMTP_USERNAME", "resend")
+        monkeypatch.setenv("SMTP_PASSWORD", "re_not_a_real_key")
+        monkeypatch.setenv("SMTP_FROM", "JUTSU <noreply@jutsu.co.in>")
+
+        settings = _smtp_settings("prod")
+        assert settings is not None
+        assert settings.sender == "JUTSU <noreply@jutsu.co.in>"
+
+    def test_the_display_name_stays_out_of_the_envelope(self) -> None:
+        """The name is presentation; the envelope sender is the address alone.
+
+        `smtplib.send_message` derives `MAIL FROM` by parsing the From header, so this
+        asserts against the same parse rather than trusting that it does. If the display
+        name leaked into the envelope, SPF would be checked against a malformed sender
+        and every message would fail alignment — visible only as deliverability, which
+        is the slowest possible way to find out.
+        """
+        settings = SmtpSettings(
+            host="smtp.resend.com",
+            port=587,
+            username="resend",
+            password="re_not_a_real_key",
+            sender="JUTSU <noreply@jutsu.co.in>",
+        )
+        mime = SmtpEmailSender(settings)._render(MESSAGE)
+
+        assert mime["From"] == "JUTSU <noreply@jutsu.co.in>"
+        assert parseaddr(mime["From"]) == ("JUTSU", "noreply@jutsu.co.in")
+        # And the recipient is untouched by any of it.
+        assert mime["To"] == "ada@example.com"
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            "JUTSU noreply@jutsu.co.in",  # display form, angle brackets forgotten
+            "JUTSU <>",  # name but no address
+            "resend",  # the provider username, not an address
+            "",  # explicitly blank
+        ],
+    )
+    def test_an_unusable_from_is_refused_at_boot(
+        self, broken: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The near-misses matter more than the obvious ones.
+
+        `JUTSU noreply@jutsu.co.in` contains an "@" and passed the original check, which
+        only scanned for one — but it parses as a single address with spaces in it, which
+        the provider rejects at the first send, long after the service reported healthy
+        and told a registrant to check their email.
+        """
+        monkeypatch.setenv("SMTP_USERNAME", "resend")
+        monkeypatch.setenv("SMTP_PASSWORD", "re_not_a_real_key")
+        monkeypatch.setenv("SMTP_FROM", broken)
+
+        with pytest.raises(MissingSecret, match="SMTP_FROM"):
+            _smtp_settings("prod")
 
     def test_console_still_refuses_production(self) -> None:
         with pytest.raises(RuntimeError, match="cannot be used in production"):

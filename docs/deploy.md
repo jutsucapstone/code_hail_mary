@@ -191,19 +191,47 @@ Passwordless sign-in cannot deliver a code without one, so **production refuses 
 until both of these exist** — `get_settings` raises rather than falling back to a
 transport that prints to stdout and authenticates nobody.
 
-```bash
-printf '%s' 'jutsucapstone@gmail.com' | gcloud secrets create jutsu-smtp-username --data-file=-
+Delivery is **Resend**, reached over SMTP rather than its HTTP API — the transport is an
+interface, and speaking submission keeps every other provider a configuration change
+rather than a rewrite.
 
-# An APP password, not the account password. Gmail rejects the account password for SMTP
-# outright, and storing one would put a credential to the entire mailbox in Secret
-# Manager rather than a credential to sending alone. Generate one at
-# https://myaccount.google.com/apppasswords — it requires 2-step verification.
-printf '%s' 'xxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-smtp-password --data-file=-
+Resend authenticates with an **API key, not a mailbox**: the username is the literal
+string `resend` and the password is the key. There is no `RESEND_API_KEY` variable; the
+key *is* `SMTP_PASSWORD`.
+
+```bash
+printf '%s' 'resend' | gcloud secrets create jutsu-smtp-username --data-file=-
+
+# The Resend API key, from https://resend.com/api-keys. A send-only key is enough and is
+# what this deployment uses — it cannot read domains or account settings, so a leak
+# cannot be turned into a configuration change.
+printf '%s' 're_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-smtp-password --data-file=-
 ```
 
-`SMTP_HOST` and `SMTP_PORT` default to `smtp.gmail.com:587` and need no secret. `SMTP_FROM`
-defaults to the username, which is what Gmail requires anyway — it rewrites a From address
-it has not verified.
+`SMTP_HOST` and `SMTP_PORT` default to `smtp.resend.com:587` and need no secret.
+
+**`SMTP_FROM` is not optional with this provider**, and the API refuses to start without
+it. It defaults to the username, which is correct only where the username is a mailbox;
+here that would yield a From header of `resend`, rejected at the first send — after the
+service has started, passed its health check and told a registrant to check their email.
+
+It takes a bare address or a display form, and production sends the display form:
+
+```
+SMTP_FROM=JUTSU <noreply@jutsu.co.in>
+```
+
+The name is presentation only. `smtplib` derives the envelope sender by parsing the
+header, so `MAIL FROM` remains `noreply@jutsu.co.in` and SPF and DKIM alignment are
+unaffected. The address is **outbound only and needs no mailbox behind it** — nothing
+ever delivers to it.
+
+The address must sit on a domain verified with Resend. `jutsu.co.in` is, via
+`resend._domainkey.jutsu.co.in` for DKIM and a `send.jutsu.co.in` subdomain carrying
+`v=spf1 include:amazonses.com ~all` and an MX to Resend's feedback host. DMARC at
+`_dmarc.jutsu.co.in` is `p=quarantine` with relaxed alignment, which both the DKIM `d=`
+and the envelope sender satisfy. Resend rejects an unverified sender domain outright, so
+a send that is accepted is itself the verification check.
 
 **If the secret already exists, add a version — do not re-`create`.** `secrets create`
 fails on an existing name, and the deployed revision reads `latest`, so a new version is

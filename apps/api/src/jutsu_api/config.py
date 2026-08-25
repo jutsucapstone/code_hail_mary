@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from email.utils import parseaddr
 from functools import lru_cache
 from typing import Final
 
@@ -148,20 +149,37 @@ def _smtp_settings(environment: str) -> SmtpSettings | None:
 
     # Falls back to the account being authenticated as, which is right for providers that
     # authenticate as a mailbox — Gmail rewrites a From it has not verified anyway.
+    #
+    # Accepts either a bare address or a display form, `JUTSU <noreply@jutsu.co.in>`.
+    # Production sends the display form: a recipient sees the sender column of their
+    # client, and a one-time code arriving from a bare `noreply@` reads like something to
+    # be suspicious of. The name is presentation only — `smtplib` takes the envelope
+    # sender from the address inside the angle brackets, so `MAIL FROM` stays
+    # `noreply@jutsu.co.in` and SPF and DKIM alignment are unaffected.
     sender = os.environ.get("SMTP_FROM", username)
+    address = parseaddr(sender)[1]
 
-    if "@" not in sender:
+    if "@" not in address or " " in address:
         # Not every provider authenticates as a mailbox. Resend's username is the literal
         # string `resend`, so the fallback above yields a From header of `resend` and
         # every send fails at the provider — after the service has started, reported
         # healthy, and accepted a registration. Refusing here converts that into a boot
         # failure naming the variable, which is the difference between a five-minute fix
         # and reading SMTP logs.
+        #
+        # Parsed rather than scanned for "@". `JUTSU noreply@jutsu.co.in`, the display
+        # form with the angle brackets forgotten, contains an "@" and passed the earlier
+        # check — but parses as the single address `JUTSU noreply@jutsu.co.in`, spaces
+        # and all, which the provider rejects at the first send. That is precisely the
+        # failure this guard exists to move forward to boot, so it has to catch the
+        # near-miss and not just the obviously-wrong.
         raise MissingSecret(
-            "SMTP_FROM is not set and SMTP_USERNAME is not an email address, so there "
-            "is no valid From address to send as. Providers that authenticate with an "
-            "API key rather than a mailbox (Resend, Postmark, SES) always need SMTP_FROM "
-            "set explicitly, to an address on a domain verified with that provider."
+            "SMTP_FROM does not contain a usable email address, and SMTP_USERNAME is "
+            "not one either, so there is nothing valid to send as. Set SMTP_FROM to an "
+            "address on a domain verified with the provider — either bare "
+            "(noreply@example.com) or with a display name "
+            "(Example <noreply@example.com>). Providers that authenticate with an API "
+            "key rather than a mailbox (Resend, Postmark, SES) always need it set."
         )
 
     return SmtpSettings(
