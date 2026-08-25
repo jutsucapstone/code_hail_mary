@@ -65,7 +65,10 @@ class MissingSecret(RuntimeError):
 
 #: Gmail's submission endpoint. Overridable, because the transport is provider-agnostic
 #: and a pilot may well move to a dedicated sender once volume justifies one.
-DEFAULT_SMTP_HOST: Final = "smtp.gmail.com"
+#: Resend, which is what this deployment sends through. The default matters only
+#: locally — the deploy workflow sets SMTP_HOST explicitly — but a default that
+#: disagrees with production is a trap for whoever configures a second environment.
+DEFAULT_SMTP_HOST: Final = "smtp.resend.com"
 DEFAULT_SMTP_PORT: Final = 587
 
 
@@ -143,12 +146,28 @@ def _smtp_settings(environment: str) -> SmtpSettings | None:
             )
         return None
 
+    # Falls back to the account being authenticated as, which is right for providers that
+    # authenticate as a mailbox — Gmail rewrites a From it has not verified anyway.
+    sender = os.environ.get("SMTP_FROM", username)
+
+    if "@" not in sender:
+        # Not every provider authenticates as a mailbox. Resend's username is the literal
+        # string `resend`, so the fallback above yields a From header of `resend` and
+        # every send fails at the provider — after the service has started, reported
+        # healthy, and accepted a registration. Refusing here converts that into a boot
+        # failure naming the variable, which is the difference between a five-minute fix
+        # and reading SMTP logs.
+        raise MissingSecret(
+            "SMTP_FROM is not set and SMTP_USERNAME is not an email address, so there "
+            "is no valid From address to send as. Providers that authenticate with an "
+            "API key rather than a mailbox (Resend, Postmark, SES) always need SMTP_FROM "
+            "set explicitly, to an address on a domain verified with that provider."
+        )
+
     return SmtpSettings(
         host=os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST),
         port=int(os.environ.get("SMTP_PORT", DEFAULT_SMTP_PORT)),
         username=username,
         password=password,
-        # Falls back to the account being authenticated as, which is what most providers
-        # require anyway — Gmail rewrites a From it has not verified.
-        sender=os.environ.get("SMTP_FROM", username),
+        sender=sender,
     )

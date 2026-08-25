@@ -120,17 +120,49 @@ class TestConfiguration:
     def test_the_sender_defaults_to_the_authenticated_account(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Gmail rewrites a From it has not verified, so guessing a different one just
-        produces mail that appears to come from somewhere else."""
-        monkeypatch.setenv("SMTP_USERNAME", "jutsucapstone@gmail.com")
+        """Right for a provider that authenticates as a mailbox: Gmail rewrites a From it
+        has not verified, so guessing a different one produces mail that appears to come
+        from somewhere else."""
+        monkeypatch.setenv("SMTP_USERNAME", "someone@example.com")
         monkeypatch.setenv("SMTP_PASSWORD", "app-password")
         monkeypatch.delenv("SMTP_FROM", raising=False)
 
         settings = _smtp_settings("prod")
         assert settings is not None
-        assert settings.sender == "jutsucapstone@gmail.com"
-        assert settings.host == "smtp.gmail.com"
+        assert settings.sender == "someone@example.com"
+        assert settings.host == "smtp.resend.com"
         assert settings.port == 587
+
+    def test_a_username_that_is_not_an_address_demands_an_explicit_from(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bug this exists to prevent, from a real deployment.
+
+        Resend authenticates as the literal string `resend`, not as a mailbox. The
+        fallback above then yields a From header of `resend`, which the provider rejects
+        — but only at the moment of the first send, long after the service has started,
+        passed its health check and told a registrant to check their email. Refusing at
+        construction turns a silent runtime failure into a boot failure that names the
+        variable to set.
+        """
+        monkeypatch.setenv("SMTP_USERNAME", "resend")
+        monkeypatch.setenv("SMTP_PASSWORD", "re_not_a_real_key")
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+
+        with pytest.raises(MissingSecret, match="SMTP_FROM"):
+            _smtp_settings("prod")
+
+    def test_an_api_key_provider_is_fine_once_from_is_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SMTP_USERNAME", "resend")
+        monkeypatch.setenv("SMTP_PASSWORD", "re_not_a_real_key")
+        monkeypatch.setenv("SMTP_FROM", "noreply@jutsu.co.in")
+
+        settings = _smtp_settings("prod")
+        assert settings is not None
+        assert settings.sender == "noreply@jutsu.co.in"
+        assert settings.username == "resend"
 
     def test_console_still_refuses_production(self) -> None:
         with pytest.raises(RuntimeError, match="cannot be used in production"):

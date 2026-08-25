@@ -217,6 +217,16 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # `--set-env-vars` REPLACES the whole set rather than merging into it, so every
+      # variable the service needs must be listed here. Anything set by hand with
+      # `gcloud run services update --update-env-vars` survives exactly until the next
+      # deploy and then disappears — which presents as a working mail transport that
+      # stops working on an unrelated push.
+      #
+      # SMTP_FROM is not optional with this provider. Resend authenticates as the literal
+      # username `resend`, and the settings fall back to the username when no From is
+      # given, which would put `resend` in a From header and fail every send.
+      #
       # Secrets are referenced, never passed. `--set-secrets` mounts them from Secret
       # Manager at start, so nothing sensitive appears in the workflow, in a Cloud Run
       # environment variable, or in `gcloud run services describe` output (§4.10).
@@ -233,7 +243,7 @@ jobs:
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
-            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=noreply@jutsu.co.in" \
             --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest" \
             --min-instances 0 \
             --max-instances 10 \
