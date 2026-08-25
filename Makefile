@@ -6,6 +6,14 @@
 #
 # Targets for slices that have not landed yet fail loudly and name the slice,
 # rather than silently succeeding and letting a gate pass on nothing.
+#
+# Anything needing configuration goes through `uv run --env-file .env`, which is one
+# portable command and therefore allowed by the rule above — `set -a; . ./.env` is not.
+# Without it `make migrate` failed on a correctly configured checkout while printing
+# "Copy .env.example to .env", advice for a file that was already there.
+#
+# Package names are the ones in pyproject.toml: `jutsu-api`, not `api`. The short forms
+# were wrong here from the start, so `make api` and `make worker` had never run.
 
 .PHONY: help dev api worker up down migrate migrate-down migrate-rev psql seed test preflight eval gate deploy clean api-types api-types-check
 
@@ -31,10 +39,10 @@ dev:
 	pnpm --filter web dev
 
 api:
-	uv run --package api uvicorn jutsu_api.main:app --reload --port 8000
+	uv run --env-file .env --package jutsu-api uvicorn jutsu_api.main:app --reload --port 8000
 
 worker:
-	uv run --package worker arq jutsu_worker.main.WorkerSettings
+	uv run --env-file .env --package jutsu-worker arq jutsu_worker.main.WorkerSettings
 
 up:
 	docker compose -f infra/docker/compose.yml up -d
@@ -117,13 +125,13 @@ preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-p
 # ---------------------------------------------------------------- schema
 
 migrate:
-	uv run --package jutsu-db alembic -c packages/db/alembic.ini upgrade head
+	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini upgrade head
 
 migrate-down:
-	uv run --package jutsu-db alembic -c packages/db/alembic.ini downgrade base
+	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini downgrade base
 
 migrate-rev:
-	uv run --package jutsu-db alembic -c packages/db/alembic.ini revision --autogenerate -m "$(m)"
+	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini revision --autogenerate -m "$(m)"
 
 psql:
 	docker compose -f infra/docker/compose.yml exec postgres psql -U jutsu -d jutsu
