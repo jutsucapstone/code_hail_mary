@@ -96,5 +96,19 @@ export const PRODUCT_PATHS: readonly string[] = SURFACES.map((s) => `/${s.slug}`
  */
 export const PILOT_PATH = "/pilot";
 
+/**
+ * The way back in for somebody who already has an account.
+ *
+ * Deliberately not under `/pilot`. That subtree is the chooser and the two joining
+ * flows — "setting up" or "been invited" — and a returning administrator whose session
+ * expired is neither. They were sent to a page asking which kind of newcomer they were,
+ * having been a customer for a month.
+ *
+ * Role-neutral, because the destination is not this page's decision: the API returns it
+ * from `destination_for(role)`, so one form serves an owner, an admin and a member and
+ * cannot disagree with the server about where any of them belongs.
+ */
+export const SIGN_IN_PATH = "/signin";
+
 /** The surface a signed-in caller lands on when none is specified. */
 export const DEFAULT_SURFACE = `/${SURFACES[0].slug}`;

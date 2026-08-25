@@ -10,6 +10,7 @@ import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { ADMIN_SECTIONS, adminHref } from "@/lib/admin-nav";
 import { api } from "@/lib/api";
+import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { can, type Capabilities } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 
@@ -64,9 +65,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       .catch(() => {
         if (cancelled) return;
         // The cookie was present — the layout checked — but the session is not usable:
-        // expired, revoked, or the account was deactivated. Back to the front door.
+        // expired, revoked, or the account was deactivated. Straight to sign-in: this
+        // person has an account and needs a new session, not the chooser's question
+        // about which sort of newcomer they are.
         setFailed(true);
-        router.replace("/pilot");
+        router.replace(SIGN_IN_PATH);
       });
     return () => {
       cancelled = true;
@@ -77,7 +80,10 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     // Server-side revocation, not just a cleared cookie: deleting the cookie alone leaves
     // the handle valid for anyone who captured it.
     await api.logout().catch(() => undefined);
-    router.replace("/pilot");
+    // Home, not the chooser and not sign-in. Someone who deliberately signed out is a
+    // visitor again, and bouncing them onto a login form reads as refusing to let them
+    // leave. The header carries Console, so coming back is one click.
+    router.replace("/");
   }
 
   const visible = ADMIN_SECTIONS.filter((section) =>

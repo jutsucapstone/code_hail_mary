@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Menu, X } from "lucide-react";
+import Link from "next/link";
+import { LogIn, Menu, X } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ScrollProgress } from "@/components/site/scroll-progress";
 import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { contact, nav, siteConfig } from "@/lib/content";
+import { consoleCta, contact, nav, siteConfig } from "@/lib/content";
+import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { cn } from "@/lib/utils";
 
 export function SiteHeader() {
@@ -80,6 +82,22 @@ export function SiteHeader() {
         <div className="flex items-center gap-2">
           <FeedbackToggle className="hidden sm:inline-flex" />
           <ThemeToggle className="hidden sm:inline-flex" />
+          {/* The way back in, for people who already have an account.
+              Outlined rather than filled: the marketing page's job is still to convert a
+              visitor, so this must not compete with "Request a pilot" — but a returning
+              customer looks top-right for it, and having no door at all sent them into
+              the pilot funnel to be asked which sort of newcomer they were. */}
+          <Button
+            asChild
+            size="sm"
+            variant="outline"
+            className="hidden border-hairline-strong sm:inline-flex"
+          >
+            <Link href={SIGN_IN_PATH}>
+              <LogIn className="size-3.5" aria-hidden="true" />
+              {consoleCta.label}
+            </Link>
+          </Button>
           <Button
             asChild
             size="sm"
@@ -144,6 +162,22 @@ export function SiteHeader() {
               {contact.primaryCta.label}
             </a>
           </Button>
+          {/* The header chip is `sm:inline-flex`, so on a phone this menu is the only
+              way back in. Carries the sentence the chip has no room for — the label
+              alone assumes the reader knows JUTSU has a console to return to. */}
+          <Button
+            asChild
+            variant="outline"
+            className="mt-3 w-full border-hairline-strong"
+          >
+            <Link href={SIGN_IN_PATH} onClick={() => setMenuOpen(false)}>
+              <LogIn className="size-4" aria-hidden="true" />
+              {consoleCta.label}
+            </Link>
+          </Button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            {consoleCta.description}
+          </p>
         </nav>
       </div>
 

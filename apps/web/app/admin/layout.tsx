@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { AdminShell } from "@/components/admin/admin-shell";
 import { hasSessionCookie } from "@/lib/auth";
+import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 
 export const metadata: Metadata = {
@@ -25,7 +26,7 @@ export const metadata: Metadata = {
  */
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   if (!(await hasSessionCookie())) {
-    redirect("/pilot");
+    redirect(SIGN_IN_PATH);
   }
 
   return (

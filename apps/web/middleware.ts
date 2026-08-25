@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { SESSION_COOKIE } from "@/lib/auth";
-import { PILOT_PATH, PRODUCT_PATHS } from "@/lib/surfaces";
+import { PRODUCT_PATHS, SIGN_IN_PATH } from "@/lib/surfaces";
 
 /** Prefixes that need a session cookie before they are worth rendering. */
 const GATED_PREFIXES = [...PRODUCT_PATHS, "/admin"];
@@ -30,10 +30,14 @@ export function middleware(request: NextRequest) {
 
   if (request.cookies.has(SESSION_COOKIE)) return NextResponse.next();
 
-  // Send them home with the intended destination preserved, so the eventual sign-in
-  // flow can return them to it rather than dumping them on the landing page.
+  // To sign-in, not to the pilot chooser.
+  //
+  // Everyone arriving here was reaching for a gated surface, which means they had an
+  // account and their session has lapsed. The chooser asks whether they are setting up
+  // an organisation or have just been invited — the two questions a returning customer
+  // cannot answer, and answering either one wrongly starts a second registration.
   const url = request.nextUrl.clone();
-  url.pathname = PILOT_PATH;
+  url.pathname = SIGN_IN_PATH;
   // Deliberately no `next` parameter. The destination after sign-in is chosen by the
   // API and returned in its response — honouring one from the URL here would be an open
   // redirect with a freshly minted session attached.

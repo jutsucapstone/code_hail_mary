@@ -64,6 +64,19 @@ export const nav = [
   { label: "FAQ", href: "#faq" },
 ] as const;
 
+/**
+ * The returning-customer door.
+ *
+ * Called "Console" rather than "Sign in" because that is what it opens and what the
+ * product calls it — an administrator lands on the admin console, a member on theirs.
+ * "Sign in" describes the turnstile; the label people scan for is the room.
+ */
+export const consoleCta = {
+  label: "Console",
+  /** Used where there is room for a sentence — the mobile menu, not the header chip. */
+  description: "Already have a JUTSU ID? Sign back in.",
+} as const;
+
 export const hero = {
   badge: "Private beta · Enterprise Memory OS",
   headline: siteConfig.name,
@@ -394,7 +407,7 @@ export const pilot = {
     },
     {
       id: "employee",
-      href: "/pilot/employee",
+      href: "/signin",
       icon: "employee",
       label: "I've been invited by my organisation",
       role: "Employee",
