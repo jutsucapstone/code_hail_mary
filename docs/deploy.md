@@ -313,54 +313,89 @@ process that is running anyway, and this job can be deleted.
 
 ### 9. The custom domain
 
-`jutsu.co.in`, mapped straight onto the web service. No load balancer: a global external
-ALB is the textbook answer and costs about $18/month in forwarding rules alone, which is
-more than the rest of this deployment, to terminate TLS for one hostname. Cloud Run domain
-mappings are free, are supported in `asia-south1`, and issue and renew a managed
-certificate themselves.
+`jutsu.co.in`, fronted by a global external Application Load Balancer.
 
-The price is a verification step that cannot be automated, because it proves a human
-controls the domain — which is the entire point of it.
+**Not a Cloud Run domain mapping.** Mappings are free and would have been the obvious
+choice, but they are unavailable in `asia-south1`; the API answers `501 UNIMPLEMENTED —
+Creating domain mappings is not allowed in asia-south1`. Worth knowing how that presents:
+if the domain is not verified yet, the verification error is raised *first* and hides the
+region error completely, so a mapping can look like it is one manual step away when it is
+not possible at all. Verify the domain, then re-run the create, before believing either
+error.
 
-**1. Verify the domain.** This must be done as the same Google account `gcloud` is
-authenticated as, or Cloud Run will not see the verification:
+Firebase Hosting is the other supported route and is genuinely cheaper — free custom
+domain and SSL, 10 GB storage, 360 MB/day of transfer, and it can rewrite to a Cloud Run
+service in `asia-south1`. It was not taken because the daily transfer cap is a real
+ceiling for a demo and the setup runs through the Firebase console rather than `gcloud`.
+It remains the right answer if the load balancer's standing cost stops being worth it.
 
-```bash
-gcloud config get-value account   # must match the Search Console account
-gcloud domains verify jutsu.co.in
+The load balancer is billed continuously — a forwarding rule is charged per hour whether
+or not anything reaches it, and there are two of them here (`:80` and `:443`). This is the
+one component of this deployment that costs money while idle.
+
+**The resources, in dependency order:**
+
+```
+jutsu-lb-ip          global static IPv4, 34.36.151.92
+jutsu-web-neg        serverless NEG -> Cloud Run jutsu-web (asia-south1)
+jutsu-web-backend    global backend service, EXTERNAL_MANAGED, holds the NEG
+jutsu-cert           Google-managed cert for jutsu.co.in + www.jutsu.co.in
+jutsu-url-map        default -> backend; host www.jutsu.co.in -> 301 to the apex
+jutsu-http-redirect  everything -> https://jutsu.co.in
+jutsu-https-proxy    jutsu-url-map + jutsu-cert
+jutsu-http-proxy     jutsu-http-redirect
+jutsu-https-rule     :443 on the static IP
+jutsu-http-rule      :80  on the static IP
 ```
 
-That opens Search Console. Add `jutsu.co.in` as a **Domain** property (not a URL-prefix
-property — the domain property is what covers every subdomain and both schemes), take the
-TXT record it offers, and add it at the registrar. The nameservers are
-`ns21/ns22.domaincontrol.com`, so that is GoDaddy → Domain → DNS → Add record.
+IPv4 only. A second pair of forwarding rules for IPv6 doubles the standing charge, and
+nothing here needs it yet.
 
-**2. Create the mapping**, once verification succeeds:
+**DNS at the registrar** (GoDaddy — the nameservers are `ns21/ns22.domaincontrol.com`):
+
+| Type | Name | Value |
+|---|---|---|
+| A | `@` | `34.36.151.92` |
+| A | `www` | `34.36.151.92` |
+
+The parking A records GoDaddy installs must be **deleted**, not left alongside. DNS
+round-robins across every A record for a name, so leaving them means a share of visitors
+resolve to a parked page — intermittently, which is far harder to diagnose than a clean
+failure. Keep the `google-site-verification` TXT record.
+
+**The certificate provisions only after DNS resolves to the load balancer.** It cannot be
+hurried; Google validates by fetching over the very records above. `PROVISIONING` is normal
+and can persist for up to a day:
 
 ```bash
-gcloud beta run domain-mappings create --service=jutsu-web   --domain=jutsu.co.in --region=asia-south1
+gcloud compute ssl-certificates describe jutsu-cert --global   --format='value(managed.status,managed.domainStatus)'
 ```
 
-It prints the A and AAAA records to add. **Read them from that output rather than copying
-them from anywhere else** — they are Google's anycast addresses and they are not the same
-set for every mapping.
+HTTPS returns a TLS error, not a 404, until it reports `ACTIVE`.
 
-**3. Replace the parking records.** The domain currently answers on GoDaddy's parking IPs;
-those A records have to go, or DNS will round-robin between the real site and a parked
-page and roughly half of all visitors will see the wrong one.
+**A cosmetic quirk worth not chasing:** the `:80` redirect emits
+`Location: https://jutsu.co.in:443/`. The port suffix is inherent to the load balancer's
+`httpsRedirect` and cannot be removed from the URL map. It is the default port, browsers
+treat the two as one origin, and the page's own canonical tag carries no port — so it
+costs nothing beyond looking odd in a header dump.
 
-**4. Wait for the certificate.** Provisioning takes anywhere from fifteen minutes to a day
-after DNS propagates. `gcloud beta run domain-mappings describe --domain=jutsu.co.in
---region=asia-south1` reports the state; `CertificatePending` is normal, and the site
-answers on HTTPS only once it clears.
+**Verifying before DNS exists.** Point `jutsu-http-proxy` at `jutsu-url-map` for a moment
+and request the IP with an explicit `Host` header; this exercises the whole chain — LB,
+backend service, NEG, Cloud Run — without a certificate or a DNS record:
 
-**5. Only then submit the sitemap** in Search Console and request indexing for the root.
-Doing it earlier asks Google to crawl a hostname that does not resolve yet, and a failed
-fetch is remembered for longer than it takes to do this in the right order.
+```bash
+curl -s -H "Host: jutsu.co.in" http://34.36.151.92/ | grep canonical
+```
 
-Appearing in search is not a deployment step and cannot be forced. Indexing a new domain
-with no inbound links usually takes days to weeks. Searching `site:jutsu.co.in` is the way
-to check whether Google has it at all, separately from where it ranks for anything.
+Put the proxy back on `jutsu-http-redirect` afterwards. Every change to a proxy or URL map
+takes a few minutes to reach every edge, so a wrong answer immediately after an update is
+usually propagation rather than a mistake — re-check before changing anything.
+
+**Then, and only then, Search Console.** Submit the sitemap and request indexing once the
+domain answers on HTTPS. Doing it earlier asks Google to crawl a host that does not
+resolve, and that is remembered for longer than it takes to do these in order. Indexing a
+new domain with no inbound links takes days to weeks and cannot be forced; `site:jutsu.co.in`
+shows whether it is indexed at all, which is a separate question from where it ranks.
 
 ---
 
