@@ -43,6 +43,22 @@ def canonical_domain(value: str) -> str:
     if not cleaned:
         raise DomainError("A domain is required.")
 
+    # A pasted address reduces to its domain rather than being rejected.
+    #
+    # Without this the whole address survived: the label check only requires two or more
+    # non-empty dot-separated parts, and `er.ritikraj27@gmail.com` has three, so it was
+    # accepted as a domain in its own right. The organisation was then created claiming
+    # a "domain" containing an @, and the form told the registrant their work email had
+    # to be at `er.ritikraj27@gmail.com` — advice that cannot be followed.
+    #
+    # `rpartition`, so an address whose local part itself contains an @ still yields the
+    # real domain. `domain_of` splits before calling this, so it never reaches here with
+    # one and is unaffected.
+    if "@" in cleaned:
+        cleaned = cleaned.rpartition("@")[2].strip()
+        if not cleaned:
+            raise DomainError("That does not look like a domain.")
+
     # `idna` is not a dependency and the stdlib codec is close enough for a comparison
     # key: it is only ever used to make two strings agree, never to resolve anything.
     # A domain that cannot be encoded is rejected rather than passed through, because

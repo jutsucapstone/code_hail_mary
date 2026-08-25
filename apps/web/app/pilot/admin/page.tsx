@@ -17,11 +17,17 @@ type RegisterBody = components["schemas"]["RegisterPayload"];
 /**
  * The one error code this screen routes to a specific field.
  *
+ * `invalid_domain`, and it concerns the organisation domain on the *first* pane — so
+ * handling it means going back there, not decorating a field on this one. It replaced
+ * `domain_mismatch`, which reported the work email and the domain disagreeing; that is
+ * no longer refused, and leaving the old code wired here would have pointed the reader
+ * at the wrong input for a different problem.
+ *
  * Matched on the stable `code`, never on the message — the prose is user-facing copy and
  * is expected to be reworded, and a comparison against it would break silently on the
- * day someone does, degrading to a form-level box rather than an error anyone notices.
+ * day someone does.
  */
-const DOMAIN_MISMATCH = "domain_mismatch";
+const INVALID_DOMAIN = "invalid_domain";
 
 /**
  * Organisation registration — the first step of the admin path.
@@ -77,7 +83,7 @@ export default function AdminRegistrationPage() {
     null,
   );
   // Held apart from `failure` so a field-level rejection renders on the field.
-  const [emailError, setEmailError] = useState<string | null>(null);
+  const [domainError, setDomainError] = useState<string | null>(null);
 
   // Client-only, and memoised so it is not recomputed on every keystroke.
   //
@@ -148,18 +154,17 @@ export default function AdminRegistrationPage() {
       // this: a registration code cannot open a session, and vice versa.
       router.push(`/pilot/verify?flow=register&to=${encodeURIComponent(email)}`);
     } catch (error) {
-      // `domain_mismatch` is about one field, so it is shown on that field rather than
-      // in the form-level box at the bottom. The box is correct for failures that belong
-      // to the submission as a whole — it is the wrong place for "this input is wrong",
-      // because the reader has to carry the sentence back up the form and work out which
-      // of three inputs it meant.
+      // The offending field is on the pane behind this one, so returning the reader to
+      // it is the whole fix — a message about the organisation domain, shown under the
+      // administrator's details, describes an input that is not on screen.
       //
       // Still the server's error, not a rule restated here. The API stays the only
-      // authority on what a valid pairing is; this only decides where its answer lands.
-      if (error instanceof ApiError && error.code === DOMAIN_MISMATCH) {
-        setEmailError(error.message);
+      // authority on what a readable domain is; this only decides where its answer lands.
+      if (error instanceof ApiError && error.code === INVALID_DOMAIN) {
+        setDomainError(error.message);
         setFailure(null);
         setPending(false);
+        setPane(1);
         return;
       }
 
@@ -217,12 +222,17 @@ export default function AdminRegistrationPage() {
             id="company_domain"
             name="company_domain"
             label="Organisation domain"
-            hint="For example, example.com — your work email must be at this domain."
+            hint="For example, acme.com. Use the domain on its own, not a full email address."
             required
             minLength={3}
             maxLength={255}
-            placeholder="example.com"
+            placeholder="acme.com"
             defaultValue={details?.company_domain ?? ""}
+            error={domainError ?? undefined}
+            // Cleared on edit rather than left until the next submit. A red field beside
+            // a value the reader has already corrected says the correction did not take,
+            // and the usual next move is to change something that was right.
+            onChange={() => setDomainError(null)}
           />
 
           <SelectField
@@ -308,15 +318,10 @@ export default function AdminRegistrationPage() {
           name="work_email"
           type="email"
           label="Work email"
-          hint={`Must be at ${details.company_domain}. The confirmation code goes here.`}
+          hint={`The confirmation code goes here. An address at ${details.company_domain} also verifies the domain.`}
           autoComplete="work email"
           required
           maxLength={320}
-          error={emailError ?? undefined}
-          // Cleared on edit rather than left until the next submit. A red field beside
-          // an address the reader has already corrected says the correction did not
-          // take, and the usual next move is to change something that was right.
-          onChange={() => setEmailError(null)}
         />
 
         <Field

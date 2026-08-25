@@ -1,21 +1,33 @@
 """Organisation registration, in two halves separated by proof of a mailbox.
 
+**The work email does not have to be on the organisation's domain, and that is a
+deliberate trade with a live consequence.** Requiring it turned away every founder whose
+company has no mail on its own domain yet, and every pilot run from a personal address,
+so the requirement was dropped. What it was also doing, as a side effect, was preventing
+`eve@evil.example` from registering `microsoft.com`: proving a mailbox *at the claimed
+domain* is what separated a claim from a proof. Nothing does that now. An anonymous
+caller can register any unclaimed domain from any inbox they control, and because
+`uq_orgs_domain_active` is unique, the real company is then turned away.
+
+`domain_verified_at` is the honest record of the difference: a timestamp when the
+verified address is on the domain, NULL when it is not. **Anything that grants authority
+from a domain — auto-join, directory claims, support routing — must read that column and
+never `orgs.domain`.** Nothing does today. Closing the squatting hole properly means
+either verifying domains out of band (a DNS record, as Resend does) or refusing free-mail
+providers; both are open.
+
 **Nothing durable is created until the code comes back.** Staging writes one row in
 `auth.pending_registrations` and sends a message; the organisation, its owner, that
 person's role and their JUTSU ID all come into existence in a single transaction on the
 verify side, and only if the redeemed challenge is the one the staged payload was bound
 to. Before this split, registration created the whole tenant first and mailed afterwards,
-which meant an unauthenticated caller could claim any domain — `microsoft.com` with
-`eve@evil.example` — read the code in their own inbox, and hold Owner over it forever,
-because `uq_orgs_domain_active` then turned the real company away.
+so a domain could be claimed without reading any inbox at all. The split still buys that:
+whoever registers must at least control the address they gave.
 
 **The staged payload is reachable only with the emailed token.** The row is keyed on
 `token_digest(token)`, the same value `auth.invitation_tokens` uses for the same reason.
-That is what makes the domain check mean something: both operands were supplied by one
-anonymous request, so the only thing separating a claim from a proof is that the payload
-cannot be unlocked without the message. Keying on the address or the identity instead
-would let a stranger's later staging POST overwrite a victim's pending row, terms
-acceptance included.
+Keying on the address or the identity instead would let a stranger's later staging POST
+overwrite a victim's pending row, terms acceptance included.
 
 **The scope is set before the organisation exists.** `orgs` carries a `WITH CHECK` policy
 on `id`, so an unscoped INSERT is rejected — and a row cannot be scoped to itself before
@@ -25,10 +37,12 @@ looks odd until you try it the other way round, which is why the fixture in
 
 **A duplicate domain never changes the HTTP response at staging.** Telling an anonymous
 caller "that company is already registered" is a customer-enumeration oracle. At verify
-it is safe and useful: whoever is reading holds a mailbox at that exact domain, so they
-already know the company exists — and leaving them at a generic failure means the real
-answer ("ask your administrator for an invitation") never reaches the one person who
-needs it.
+it is still disclosed, because leaving someone at a generic failure means the real answer
+("ask your administrator for an invitation") never reaches the person who needs it — and
+whoever is reading has at least proved a mailbox and spent an attempt from the budget,
+rather than typing a domain into a form. That is a weaker justification than it was when
+the address had to be on the domain in question, and it is the second place the relaxed
+check is felt.
 """
 
 from __future__ import annotations
@@ -62,7 +76,7 @@ from jutsu_api.config import (
 from jutsu_api.email import EmailSender
 
 __all__ = [
-    "DomainMismatch",
+    "InvalidDomain",
     "PendingRegistration",
     "RegistrationOutcome",
     "RegistrationRequest",
@@ -87,22 +101,35 @@ JUTSU_ID_ATTEMPTS = 5
 #: from a domain that is in fact free.
 DOMAIN_CONSTRAINT = "uq_orgs_domain_active"
 
+#: Shown for a value that cannot be read as a domain. Names the shape wanted rather than
+#: restating the rule, because "invalid domain" alone leaves the reader guessing which of
+#: the two fields on the previous pane is wrong, and the usual mistake is pasting a whole
+#: address into it.
+_INVALID_DOMAIN_MESSAGE = (
+    "That does not look like an organisation domain. Use the domain on its own, like acme.com."
+)
+
 
 class JutsuIdAllocationExhausted(JutsuError):
     status_code = 503
     code = "service_unavailable"
 
 
-class DomainMismatch(JutsuError):
-    """The work address is not at the domain being claimed.
+class InvalidDomain(JutsuError):
+    """The organisation domain cannot be read as a domain at all.
 
-    A 422 rather than a 403: nothing is forbidden, the two fields simply disagree, and
-    the caller can fix it. Safe to state plainly — both values came from this same
-    request, so it discloses nothing the caller did not already type.
+    Was `DomainMismatch`, and meant something else: that the work address was not on the
+    domain being claimed. That is no longer refused, so the name and the code would have
+    described a rejection that can no longer happen while quietly continuing to fire for
+    a malformed value — the sort of drift that makes an error code untrustworthy.
+
+    A 422 rather than a 403: nothing is forbidden, one field is unreadable and the caller
+    can fix it. Safe to state plainly — the value came from this same request, so it
+    discloses nothing they did not type.
     """
 
     status_code = 422
-    code = "domain_mismatch"
+    code = "invalid_domain"
 
 
 class TooManyRegistrations(JutsuError):
@@ -192,17 +219,33 @@ async def stage_registration(
 ) -> PendingRegistration:
     """Record the intent, send the code. Creates no organisation and no user.
 
-    The domain check runs here as well as at verify. It is a pure function of two strings
-    the caller just typed, so running it early leaks nothing and spares them ten minutes
-    and an email for a typo — `ada@acme.co.uk` against `acme.com` is the common case, not
-    the tail. It runs again at verify because a check that happens only on the way in is
-    not a control: any future path that stages a row another way would bypass it.
-    """
-    email = normalise_email(request.work_email)
-    domain = canonical_domain(request.company_domain)
+    **The work email no longer has to sit on the organisation's domain.** It used to, and
+    refusing the pair here saved a registrant ten minutes and an email for what was
+    usually a typo. It also refused every founder whose company has no mail on its own
+    domain yet, which is most of them before the first hire, and every pilot run from a
+    personal address. The address is now taken as given and the code goes to it.
 
-    if domain_of(email) != domain:
-        raise DomainMismatch("Your work email must be at the organisation domain you entered.")
+    What that costs is stated plainly rather than papered over: the domain on an
+    organisation is no longer proof of anything by itself, so `domain_verified_at` is set
+    at completion *only* when the verified address is actually on that domain. Anything
+    that grants authority from a domain — auto-join, directory claims — must read that
+    column and not the domain, or it inherits an assumption this function stopped
+    honouring. Nothing does today; the constraint is written down so the next thing does
+    not get it wrong.
+    """
+    # Both parses are guarded. `canonical_domain` raising here escaped as an unhandled
+    # exception — `DomainError` is not a `JutsuError`, so it fell through to the
+    # catch-all and a domain typed without a dot returned a 500 rather than "that does
+    # not look like a domain". Confirmed against production before this was changed.
+    try:
+        email = normalise_email(request.work_email)
+    except DomainError as exc:
+        raise InvalidDomain("That does not look like an email address.") from exc
+
+    try:
+        domain = canonical_domain(request.company_domain)
+    except DomainError as exc:
+        raise InvalidDomain(_INVALID_DOMAIN_MESSAGE) from exc
 
     digest = email_hmac(email, settings)
 
@@ -319,17 +362,27 @@ async def complete_registration(
         industry=payload.get("industry"),
     )
 
-    # Re-run the equality against the consumed row, not against anything this request
-    # carried. A check performed only at staging is bypassed by any future path that
-    # writes a pending row, so it is not a control on its own.
+    # Whether the verified address actually proves this domain — recorded, not enforced.
+    #
+    # Evaluated against the consumed staging row rather than anything this request
+    # carried, for the same reason the equality was checked here when it was a gate: a
+    # value that only ever passes through the staging path is not a value any future
+    # path is obliged to supply honestly.
+    #
+    # The outcome lands in `domain_verified_at`. A registrant on the domain gets a
+    # timestamp; anyone else gets NULL and an organisation that works exactly the same
+    # way otherwise. The distinction is kept because it is true, and because the moment
+    # anything grants authority from a domain it needs a column that means "proven"
+    # rather than a column that means "typed".
     try:
-        if domain_of(request.work_email) != canonical_domain(domain):
-            await _record_event(
-                session, digest=bytes(staged_digest), domain=domain, outcome="mismatch"
-            )
-            raise DomainMismatch("Your work email must be at the organisation domain you entered.")
+        domain_proven = domain_of(request.work_email) == canonical_domain(domain)
     except DomainError as exc:
-        raise DomainMismatch("That does not look like a valid organisation domain.") from exc
+        raise InvalidDomain(_INVALID_DOMAIN_MESSAGE) from exc
+
+    if not domain_proven:
+        await _record_event(
+            session, digest=bytes(staged_digest), domain=domain, outcome="unverified_domain"
+        )
 
     org_id = uuid4()
     await session.execute(
@@ -347,7 +400,8 @@ async def complete_registration(
                 text(
                     "INSERT INTO orgs (id, name, domain, size_band, status, country, "
                     "industry, domain_verified_at) "
-                    "VALUES (:id, :name, :domain, :size, 'active', :country, :industry, :now)"
+                    "VALUES (:id, :name, :domain, :size, 'active', :country, :industry, "
+                    ":verified_at)"
                 ),
                 {
                     "id": org_id,
@@ -356,7 +410,10 @@ async def complete_registration(
                     "size": request.org_size,
                     "country": request.country,
                     "industry": request.industry,
-                    "now": now,
+                    # NULL unless the address that was actually verified sits on this
+                    # domain. Writing `now` unconditionally would make the column a
+                    # record of when the row was inserted, which it already has.
+                    "verified_at": now if domain_proven else None,
                 },
             )
     except IntegrityError as exc:

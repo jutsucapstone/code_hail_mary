@@ -37,7 +37,7 @@ from jutsu_api.config import (
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.registration import (
     DomainAlreadyRegistered,
-    DomainMismatch,
+    InvalidDomain,
     JutsuIdAllocationExhausted,
     NoPendingRegistration,
     RegistrationRequest,
@@ -142,41 +142,75 @@ class TestStaging:
         # And the message went out, so the observable behaviour is unchanged.
         assert len(mailbox.messages) == 1
 
-    async def test_a_mismatched_domain_is_refused_before_anything_is_written(
+    async def test_an_address_off_the_domain_is_accepted_and_mailed(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        """The code goes to whatever address was given.
+
+        This used to raise. Requiring the work email to sit on the organisation's domain
+        turned away every founder whose company has no mail on its own domain yet, and
+        every pilot run from a personal address. What the relaxation costs is asserted
+        below, in `test_an_unproven_domain_is_recorded_as_unverified` — the organisation
+        is created, but its domain is not marked as proven by anybody.
+        """
+        pending = await stage_registration(
+            db_session,
+            _request(email="founder@gmail.com", domain="acme.com"),
+            settings=settings,
+            sender=mailbox,
+        )
+
+        assert pending.token
+        assert len(mailbox.messages) == 1
+        assert mailbox.last.to == "founder@gmail.com"
+
+    async def test_a_subdomain_is_accepted_and_still_not_proof(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        """A mailbox on a subdomain no longer blocks registration, and never proved the
+        apex. The distinction now lives in `domain_verified_at` rather than in a refusal."""
+        pending = await stage_registration(
+            db_session,
+            _request(email="ada@mail.example.com", domain="example.com"),
+            settings=settings,
+            sender=mailbox,
+        )
+        assert pending.token
+
+    @pytest.mark.parametrize("bad", ["acme", "not a domain", "@@@", "a..b"])
+    async def test_an_unreadable_domain_is_a_422_and_not_a_crash(
         self,
-        inspector: AsyncSession,
+        bad: str,
         db_session: AsyncSession,
         settings: Settings,
         mailbox: RecordingEmailSender,
     ) -> None:
-        """`eve@evil.example` cannot claim `microsoft.com`.
-
-        Rejected at staging rather than after a round trip: both values came from this
-        request, so saying so leaks nothing, and it saves the person ten minutes and an
-        email for what is usually a typo.
-        """
-        with pytest.raises(DomainMismatch):
+        """`DomainError` is not a `JutsuError`, so it used to escape staging entirely and
+        land in the catch-all handler — a domain typed without a dot returned a 500.
+        Confirmed against production before this was fixed."""
+        with pytest.raises(InvalidDomain):
             await stage_registration(
                 db_session,
-                _request(email="eve@evil.example", domain="microsoft.com"),
+                _request(email="ada@example.com", domain=bad),
                 settings=settings,
                 sender=mailbox,
             )
 
-        assert await _count_orgs(inspector, "microsoft.com") == 0
         assert mailbox.messages == []
 
-    async def test_a_subdomain_does_not_prove_the_apex(
+    async def test_a_pasted_address_reduces_to_its_domain(
         self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
     ) -> None:
-        """Anyone issued a mailbox on any subdomain would otherwise own the apex."""
-        with pytest.raises(DomainMismatch):
-            await stage_registration(
-                db_session,
-                _request(email="ada@mail.example.com", domain="example.com"),
-                settings=settings,
-                sender=mailbox,
-            )
+        """`er.ritikraj27@gmail.com` in the domain box parses as three dot-separated
+        labels, so it was accepted verbatim — the organisation then claimed a domain
+        containing an @, and the form told the registrant to use an address at it."""
+        pending = await stage_registration(
+            db_session,
+            _request(email="er.ritikraj27@gmail.com", domain="er.ritikraj27@gmail.com"),
+            settings=settings,
+            sender=mailbox,
+        )
+        assert pending.token
 
     async def test_case_and_trailing_dot_do_not_defeat_the_match(
         self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
@@ -235,6 +269,38 @@ class TestStaging:
 
 
 class TestCompletion:
+    async def test_an_unproven_domain_is_recorded_as_unverified(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        """The price of accepting any address, written down where it can be read.
+
+        Registering `acme.com` from a gmail address now succeeds — but nobody proved
+        anything about `acme.com`, so the column that says so stays NULL. Anything that
+        later grants authority from a domain must read this and not `orgs.domain`; the
+        assertion exists so that stays true.
+        """
+        org_id, _user_id, _jid = await _register(
+            db_session,
+            settings,
+            mailbox,
+            _request(email="founder@gmail.com", domain="acme.com"),
+        )
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :o, true)"), {"o": str(org_id)}
+        )
+        row = (
+            await db_session.execute(
+                text("SELECT domain, domain_verified_at FROM orgs WHERE id = :id"),
+                {"id": org_id},
+            )
+        ).one()
+
+        assert row.domain == "acme.com", "the organisation is created either way"
+        assert row.domain_verified_at is None, (
+            "a gmail address proves gmail.com and nothing about acme.com"
+        )
+
     async def test_creates_the_whole_tenant_atomically(
         self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
     ) -> None:
