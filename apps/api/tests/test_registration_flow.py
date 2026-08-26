@@ -35,6 +35,7 @@ from jutsu_api.config import (
     Settings,
 )
 from jutsu_api.email import RecordingEmailSender
+from jutsu_api.emails import organisation_welcome
 from jutsu_api.registration import (
     DomainAlreadyRegistered,
     InvalidDomain,
@@ -47,7 +48,7 @@ from jutsu_api.registration import (
 )
 from jutsu_core.errors import Unauthenticated
 from jutsu_core.ids import is_valid_jutsu_id
-from jutsu_core.rbac import Permission, Role
+from jutsu_core.rbac import Permission, Role, role_label
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1000,3 +1001,102 @@ class TestSignIn:
     async def test_an_unknown_session_token_is_refused(self, db_session: AsyncSession) -> None:
         with pytest.raises(Unauthenticated):
             await resolve_principal(db_session, token="not-a-real-session-token")
+
+
+class TestWhatEachFlowMails:
+    """The delivered message, per flow, against a real database.
+
+    `test_email_templates.py` proves each template carries what it should. This proves
+    the *flows* reach the right one — the join between the two, and the half that only a
+    real registration can exercise, because the organisation identifier does not exist
+    until one has completed.
+    """
+
+    async def test_staging_delivers_the_branded_verification_naming_the_company(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        await stage_registration(
+            db_session,
+            _request(company_name="Example Analytical"),
+            settings=settings,
+            sender=mailbox,
+        )
+
+        delivered = mailbox.last
+        assert delivered.subject == "Verify Example Analytical on JUTSU"
+        assert delivered.html is not None
+        assert "Example Analytical" in delivered.html
+        assert "example.com" in delivered.html
+        # A code goes out; nothing that identifies a tenant does, because none exists.
+        assert set(delivered.secrets) == {"code", "token"}
+
+    async def test_completing_registration_is_the_one_mail_carrying_the_identifiers(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        """Scenario one, second half.
+
+        The welcome is the only place the organisation id ever appears, and it is sent to
+        an address that has just proved a mailbox and redeemed a registration challenge.
+        It is sent by the router rather than by `complete_registration`, so this exercises
+        the builder against the outcome the way the route does.
+        """
+        org_id, _user_id, jutsu_id = await _register(db_session, settings, mailbox)
+
+        welcome = organisation_welcome(
+            to="ada@example.com",
+            company_name="Example Analytical",
+            company_domain="example.com",
+            org_id=str(org_id),
+            jutsu_id=jutsu_id,
+            role=role_label(Role.OWNER),
+            app_url=settings.app_url,
+        )
+
+        assert welcome.html is not None
+        assert str(org_id) in welcome.html
+        assert jutsu_id in welcome.html
+        # No credential. Whoever reads this was signed in by the redemption that created
+        # the organisation; a fresh code would be an unrequested live one in an inbox.
+        assert welcome.secrets == {}
+
+    async def test_a_returning_sign_in_never_reproduces_the_organisation_id(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        """The rule the whole split exists for, asserted against a tenant that really
+        exists and against the message a real sign-in really produces."""
+        org_id, _user_id, jutsu_id = await _register(db_session, settings, mailbox)
+
+        await issue_challenge(
+            db_session,
+            address="ada@example.com",
+            purpose=ChallengePurpose.SIGN_IN,
+            settings=settings,
+            sender=mailbox,
+        )
+
+        delivered = mailbox.last
+        assert delivered.subject == "Your JUTSU sign-in code"
+        readable = f"{delivered.html}\n{delivered.body}"
+        assert str(org_id) not in readable
+        assert jutsu_id not in readable
+        assert "Example Analytical" not in readable
+        # The code and the magic-link token, and nothing else. The link token is part of
+        # the challenge this request just issued — it is not the organisation token, and
+        # the verify page will not accept a code without it.
+        assert set(delivered.secrets) == {"code", "token"}
+
+    async def test_an_unknown_address_is_told_so_and_given_nothing(
+        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    ) -> None:
+        await issue_challenge(
+            db_session,
+            address="nobody@nowhere.example",
+            purpose=ChallengePurpose.SIGN_IN,
+            settings=settings,
+            sender=mailbox,
+        )
+
+        delivered = mailbox.last
+        assert delivered.secrets == {}
+        assert delivered.html is not None
+        assert "[[" not in delivered.html

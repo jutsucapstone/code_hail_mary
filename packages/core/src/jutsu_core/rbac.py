@@ -25,12 +25,14 @@ from types import MappingProxyType
 from typing import Final
 
 __all__ = [
+    "ROLE_LABELS",
     "ROLE_PERMISSIONS",
     "ROLE_RANKS",
     "Permission",
     "Role",
     "outranks",
     "permissions_for",
+    "role_label",
 ]
 
 
@@ -93,6 +95,37 @@ ROLE_RANKS: Final[MappingProxyType[Role, int]] = MappingProxyType(
         Role.MEMBER: 10,
     }
 )
+
+#: How a role is written when a person reads it.
+#:
+#: Here rather than at the call site because the mechanical transform is wrong for half
+#: of them: `hr_admin.title()` is "Hr Admin", and an email telling somebody they joined
+#: as an "It Admin" reads as a typo in a message whose whole job is to look legitimate.
+#: The first place that needed these was the welcome email; the admin console will want
+#: the same strings, and two spellings of a role name is exactly the drift that makes a
+#: product feel unfinished.
+ROLE_LABELS: Final[MappingProxyType[Role, str]] = MappingProxyType(
+    {
+        Role.OWNER: "Organisation Owner",
+        Role.SUPER_ADMIN: "Super Admin",
+        Role.HR_ADMIN: "HR Admin",
+        Role.IT_ADMIN: "IT Admin",
+        Role.ANALYST: "Analyst",
+        Role.VIEWER: "Viewer",
+        Role.MEMBER: "Member",
+    }
+)
+
+
+def role_label(role: Role) -> str:
+    """The human spelling of a role.
+
+    A direct lookup, with no fallback: `ROLE_LABELS` is exhaustive over the enum and the
+    test asserts that it stays so. A `.get(role, role.value)` here would let a role added
+    without a label ship silently as `hr_admin` in customer-facing mail.
+    """
+    return ROLE_LABELS[role]
+
 
 _EVERYONE = (
     Permission.PROFILE_SELF_READ,

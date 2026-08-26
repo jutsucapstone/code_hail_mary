@@ -166,6 +166,12 @@ export interface paths {
          *     No second code is sent. The token reached the invited address and nowhere else, so
          *     holding it already proves the same thing an emailed code would — sending another
          *     would be ceremony, not security.
+         *
+         *     A welcome does go out, and it is not ceremony. `jutsu_id` below is shown on exactly
+         *     one screen, and the console asks for it by name at every subsequent sign-in — so a
+         *     closed tab currently costs somebody their identifier and an email to their
+         *     administrator. The message carries that, their role and the address to sign in with.
+         *     It carries no organisation identifier: the sign-in form does not ask for one.
          */
         post: operations["accept_v1_invitations_accept_post"];
         delete?: never;

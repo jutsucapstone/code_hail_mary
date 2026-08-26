@@ -11,8 +11,16 @@ import asyncio
 from email.utils import parseaddr
 
 import pytest
-from jutsu_api.config import MissingSecret, _smtp_settings
-from jutsu_api.email import ConsoleEmailSender, EmailMessage, SmtpEmailSender, SmtpSettings
+from jutsu_api.config import MissingSecret, _app_url, _smtp_settings
+from jutsu_api.email import (
+    ConsoleEmailSender,
+    EmailMessage,
+    InlineImage,
+    SmtpEmailSender,
+    SmtpSettings,
+    secret_slot,
+    send_best_effort,
+)
 
 SETTINGS = SmtpSettings(
     host="smtp.example.com",
@@ -55,6 +63,133 @@ class TestRendering:
         stray blank block."""
         plain = EmailMessage(to="x@example.com", subject="s", body="no secrets here")
         assert SmtpEmailSender(SETTINGS)._render(plain).get_content().strip() == "no secrets here"
+
+    def test_a_placeholder_is_filled_in_place_rather_than_appended(self) -> None:
+        """The branded templates carry `[[code]]` where the code belongs, so it lands
+        inside the sentence rather than in a block bolted to the end."""
+        message = EmailMessage(
+            to="ada@example.com",
+            subject="s",
+            body=f"Your code is {secret_slot('code')}.",
+            secrets={"code": "483920"},
+        )
+        content = SmtpEmailSender(SETTINGS)._render(message).get_content()
+
+        assert content.strip() == "Your code is 483920."
+
+
+class TestBrandedRendering:
+    """The multipart structure a mail client needs before it renders any of this."""
+
+    BRANDED = EmailMessage(
+        to="ada@example.com",
+        subject="Your JUTSU sign-in code",
+        body=f"Your code is {secret_slot('code')}.",
+        html=(
+            "<!DOCTYPE html><html><body>"
+            f'<img src="cid:jutsu-mark" /><p>{secret_slot("code")}</p>'
+            f'<a href="https://jutsu.example/pilot/verify?token={secret_slot("token")}">go</a>'
+            "</body></html>"
+        ),
+        secrets={"code": "483920", "token": "a-long-opaque-token"},
+        inline_images=(
+            InlineImage(
+                cid="jutsu-mark", filename="jutsu-mark.png", subtype="png", data=b"\x89PNG"
+            ),
+        ),
+    )
+
+    def _structure(self) -> list[str]:
+        mime = SmtpEmailSender(SETTINGS)._render(self.BRANDED)
+        return [part.get_content_type() for part in mime.walk()]
+
+    def test_plain_text_comes_before_html(self) -> None:
+        """A client renders the *last* alternative it understands. Reversing these
+        serves plain text to everything, which is the sort of bug that looks like the
+        template never shipped."""
+        assert self._structure() == [
+            "multipart/alternative",
+            "text/plain",
+            "multipart/related",
+            "text/html",
+            "image/png",
+        ]
+
+    def test_the_mark_hangs_off_the_html_part_and_not_the_message(self) -> None:
+        """`multipart/related` has to wrap the HTML alone. Attaching at the top level
+        instead produces a message several clients render with an attachment paperclip
+        on it — on a sign-in mail, that reads as suspicious."""
+        mime = SmtpEmailSender(SETTINGS)._render(self.BRANDED)
+        related = next(p for p in mime.walk() if p.get_content_type() == "multipart/related")
+        inside = [p.get_content_type() for p in related.iter_parts()]
+
+        assert inside == ["text/html", "image/png"]
+        image = next(p for p in mime.walk() if p.get_content_type() == "image/png")
+        assert image["Content-ID"] == "<jutsu-mark>"
+        assert image.get_content_disposition() == "inline"
+
+    def test_both_alternatives_carry_the_code(self) -> None:
+        """The text part is not decoration — it is what a spam filter scores, and what a
+        terminal client and a watch preview actually show."""
+        mime = SmtpEmailSender(SETTINGS)._render(self.BRANDED)
+        plain = mime.get_body(preferencelist=("plain",))
+        html = mime.get_body(preferencelist=("html",))
+
+        assert plain is not None and html is not None
+        assert "483920" in plain.get_content()
+        assert "483920" in html.get_content()
+
+    def test_no_placeholder_survives_delivery(self) -> None:
+        """A leftover slot renders as the literal text `[[code]]` where the code should
+        be, and the first person to see it would be a customer."""
+        mime = SmtpEmailSender(SETTINGS)._render(self.BRANDED)
+
+        assert "[[" not in mime.as_string()
+
+    def test_a_text_only_message_gains_no_html_part(self) -> None:
+        """`multipart/alternative` with one alternative is a structure some clients
+        render as an empty message."""
+        plain = EmailMessage(to="x@example.com", subject="s", body="text")
+        assert SmtpEmailSender(SETTINGS)._render(plain).get_content_type() == "text/plain"
+
+
+class TestBestEffortDelivery:
+    """Welcome mail must never roll back the account it is welcoming somebody to."""
+
+    class Broken:
+        async def send(self, message: EmailMessage) -> None:
+            raise ConnectionRefusedError("provider is down")
+
+    def test_a_failed_welcome_is_reported_not_raised(self) -> None:
+        """This runs inside the transaction that created the tenant. Raising would undo
+        an organisation, an owner and a spent JUTSU ID over a bad minute at the mail
+        provider — and the registrant could not retry, because the challenge and the
+        staged payload are both consumed by then."""
+        assert asyncio.run(send_best_effort(self.Broken(), MESSAGE)) is False
+
+    def test_the_failure_log_says_nothing_about_the_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        said: list[str] = []
+
+        class Recorder:
+            def warning(self, message: str, *args: object, **kwargs: object) -> None:
+                said.append(message)
+
+        monkeypatch.setattr("jutsu_api.email.logger", Recorder())
+        asyncio.run(send_best_effort(self.Broken(), MESSAGE))
+
+        assert said == ["email_delivery_failed"]
+
+    def test_a_successful_send_reports_it(self) -> None:
+        delivered: list[EmailMessage] = []
+
+        class Working:
+            async def send(self, message: EmailMessage) -> None:
+                delivered.append(message)
+
+        assert asyncio.run(send_best_effort(Working(), MESSAGE)) is True
+        assert delivered == [MESSAGE]
 
 
 class TestDelivery:
@@ -231,3 +366,35 @@ class TestConfiguration:
     def test_console_still_refuses_production(self) -> None:
         with pytest.raises(RuntimeError, match="cannot be used in production"):
             ConsoleEmailSender(environment="prod")
+
+
+class TestAppUrl:
+    """Where the links in outbound mail point.
+
+    Defaulted per environment rather than required, because a missing value cannot be
+    caught at boot the way a missing SMTP credential can — the service would start,
+    authenticate people, and only produce a broken link in mail nobody on the team reads.
+    """
+
+    def test_production_defaults_to_the_deployed_origin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("JUTSU_APP_URL", raising=False)
+        assert _app_url("prod") == "https://jutsu.co.in"
+
+    def test_development_defaults_to_the_dev_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Port 3210, not 3000."""
+        monkeypatch.delenv("JUTSU_APP_URL", raising=False)
+        assert _app_url("dev") == "http://localhost:3210"
+
+    @pytest.mark.parametrize(
+        "configured", ["https://preview.jutsu.co.in", "https://preview.jutsu.co.in/"]
+    )
+    def test_a_trailing_slash_is_stripped(
+        self, configured: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every template concatenates a path onto this, and `//pilot/verify` is a URL
+        some routers answer and some do not — a bug that only appears in the one
+        environment where the variable was set by hand."""
+        monkeypatch.setenv("JUTSU_APP_URL", configured)
+        assert _app_url("prod") == "https://preview.jutsu.co.in"

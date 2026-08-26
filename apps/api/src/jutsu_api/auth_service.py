@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -40,6 +40,7 @@ from jutsu_api.config import (
     Settings,
 )
 from jutsu_api.email import EmailMessage, EmailSender
+from jutsu_api.emails import no_account, organisation_verification, sign_in_code
 from jutsu_api.security import Principal
 
 __all__ = [
@@ -148,6 +149,62 @@ def _generate_code() -> str:
     return f"{secrets.randbelow(10**OTP_DIGITS):0{OTP_DIGITS}d}"
 
 
+def _challenge_message(
+    *,
+    address: str,
+    purpose: str,
+    settings: Settings,
+    known_account: bool,
+    organisation: tuple[str, str] | None,
+) -> tuple[EmailMessage, bool]:
+    """Pick the branded template, and say whether it expects the one-time values.
+
+    Three outcomes, and the branch is total rather than defaulted, because the difference
+    between them is what each message is allowed to say. A registration mail names the
+    organisation about to be created; a sign-in mail names nothing at all, because at
+    this point nobody has established that the address belongs to an account, and a
+    message that named an organisation would answer in the recipient's inbox the question
+    the identical 202 exists to leave unanswered.
+
+    Neither carries an organisation identifier: `organisation_verification` is reached
+    before any tenant exists and `sign_in_code` has no parameter for one. The only
+    message that does is `organisation_welcome`, sent from the completion path.
+
+    **The flag is returned rather than re-derived by the caller, and that is why.**
+    Whether a template contains `[[code]]` and whether the send attaches a code are one
+    decision, and they were briefly two: the caller keyed the secrets off `known_account`
+    alone, so a registration challenge issued with `known_account=False` would have
+    selected a template full of placeholders and then delivered it with nothing to fill
+    them — an email reading `[[code]]` where the code belongs. Only `stage_registration`
+    issues those and it always passes `True`, so it was unreachable; returning the pair
+    makes it unrepresentable instead.
+    """
+    minutes = CHALLENGE_TTL_SECONDS // 60
+
+    if purpose == ChallengePurpose.REGISTER:
+        if organisation is None:
+            # Unreachable from `stage_registration`, which always supplies it. A
+            # registration mail with no company on it would still deliver a working code,
+            # so this raises rather than falling back: a wrong-but-functional template is
+            # the kind of defect that ships.
+            raise ValueError("a registration challenge must name the organisation being created")
+        company_name, company_domain = organisation
+        message = organisation_verification(
+            to=address,
+            company_name=company_name,
+            company_domain=company_domain,
+            app_url=settings.app_url,
+            minutes=minutes,
+        )
+        # A registrant always gets a code — that is the entire purpose of the message —
+        # regardless of what the membership lookup would have said about the address.
+        return message, True
+
+    if known_account:
+        return sign_in_code(to=address, app_url=settings.app_url, minutes=minutes), True
+    return no_account(to=address, app_url=settings.app_url), False
+
+
 async def issue_challenge(
     session: AsyncSession,
     *,
@@ -156,11 +213,17 @@ async def issue_challenge(
     settings: Settings,
     sender: EmailSender,
     known_account: bool | None = None,
+    organisation: tuple[str, str] | None = None,
 ) -> IssuedChallenge:
     """Create a challenge and deliver it. Always does the same work.
 
     `known_account` lets the caller skip a lookup it has already done (registration knows
     the answer). It changes only the wording of the message.
+
+    `organisation` is `(name, domain)` and is required for — and only accepted by — a
+    registration challenge, where it is echoed back so a typo in either is caught before
+    a tenant is built around it. It is the values the caller just typed, not a lookup:
+    nothing has been created yet for there to be a lookup of.
     """
     digest = email_hmac(address, settings)
     identity_id = (
@@ -197,23 +260,21 @@ async def issue_challenge(
         ).all()
         known_account = bool(memberships)
 
-    body = (
-        f"Your JUTSU sign-in code is below. It expires in "
-        f"{CHALLENGE_TTL_SECONDS // 60} minutes and can be used once."
-        if known_account
-        else (
-            "Someone asked to sign in to JUTSU with this address, but it has no "
-            "account. If that was you, you can register at /pilot."
-        )
+    message, carries_credential = _challenge_message(
+        address=address,
+        purpose=purpose,
+        settings=settings,
+        known_account=known_account,
+        organisation=organisation,
     )
 
+    # The template holds `[[code]]` and `[[token]]`; these are the values the transport
+    # substitutes into them. The flag comes back from the same branch that chose the
+    # template, so a message with placeholders cannot be sent with nothing to fill them —
+    # and the "no account" message, which has no placeholders, is sent with an empty
+    # mapping so there is nothing that could leak into one.
     await sender.send(
-        EmailMessage(
-            to=address,
-            subject="Your JUTSU sign-in code",
-            body=body,
-            secrets={"code": code, "token": token} if known_account else {},
-        )
+        replace(message, secrets={"code": code, "token": token} if carries_credential else {})
     )
 
     return IssuedChallenge(challenge_id=challenge_id, token=token, code=code)

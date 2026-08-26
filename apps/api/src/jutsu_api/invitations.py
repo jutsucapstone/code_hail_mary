@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -35,7 +35,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.auth_service import email_hmac
 from jutsu_api.config import Settings
-from jutsu_api.email import EmailMessage, EmailSender
+from jutsu_api.email import EmailSender
+from jutsu_api.emails import employee_invitation
 from jutsu_api.registration import allocate_jutsu_id
 from jutsu_api.security import Principal
 
@@ -64,6 +65,12 @@ class AcceptedInvitation:
     #: decide where to send this person, and re-reading it from `user_roles` afterwards
     #: would be a second query for something this function already had in hand.
     role: Role
+    #: For the welcome message, and for nothing else. Both were in hand here — the name
+    #: under the scope this function had already set, the address off the consumed
+    #: invitation — so carrying them out avoids re-reading a tenant the caller has only
+    #: just been admitted to.
+    org_name: str
+    email: str
 
 
 def _hash(value: str) -> bytes:
@@ -138,20 +145,36 @@ async def invite_employee(
         {"org": actor.org_id, "actor": str(actor.user_id), "rid": str(invitation_id)},
     )
 
-    await sender.send(
-        EmailMessage(
-            to=normalised,
-            subject="You have been invited to JUTSU",
-            body=(
-                "Your organisation has invited you to JUTSU. Opening the link below "
-                f"creates your account and issues your JUTSU ID. It expires in "
-                f"{INVITATION_TTL_HOURS} hours."
-            ),
-            secrets={"token": token},
-        )
+    # Named, not "your organisation". An invitation that cannot say who it is from is
+    # indistinguishable from a phishing mail, and the reader's only defence is to ignore
+    # it. Read under the actor's own tenant scope, so the name can only ever be theirs.
+    organisation = await _organisation_name(session, org_id=actor.org_id)
+
+    message = employee_invitation(
+        to=normalised,
+        organisation=organisation,
+        app_url=settings.app_url,
+        hours=INVITATION_TTL_HOURS,
     )
+    # The template carries `[[token]]` inside the accept link; this is the only place the
+    # value itself exists outside the database hash.
+    await sender.send(replace(message, secrets={"token": token}))
 
     return IssuedInvitation(invitation_id=invitation_id, token=token)
+
+
+async def _organisation_name(session: AsyncSession, *, org_id: object) -> str:
+    """The tenant's display name, for a message that has to say who it is from.
+
+    Falls back rather than raising. A missing name here would mean an organisation row
+    that row-level security cannot see from inside its own scope, which is a far larger
+    problem than an unnamed invitation — but failing the invitation is not how anyone
+    would want to discover it, and the invitee is not the person who can act on it.
+    """
+    name = (
+        await session.execute(text("SELECT name FROM orgs WHERE id = :id"), {"id": org_id})
+    ).scalar_one_or_none()
+    return str(name) if name else "your organisation"
 
 
 async def accept_invitation(
@@ -261,6 +284,8 @@ async def accept_invitation(
         identity_id=identity_id,
         jutsu_id=jutsu_id,
         role=Role(role_key),
+        org_name=await _organisation_name(session, org_id=org_id),
+        email=str(email),
     )
 
 

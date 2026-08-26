@@ -161,12 +161,32 @@ class PendingRegistration:
 
 @dataclass(frozen=True, slots=True)
 class RegistrationOutcome:
-    """What happened. Safe to return from the verify side, never from staging."""
+    """What happened. Safe to return from the verify side, never from staging.
+
+    The last three fields exist for the welcome email and nothing else. They are values
+    this function already held — the staged payload and the row it just wrote — so
+    carrying them out is cheaper than a second read, and it keeps the caller from having
+    to re-query a tenant inside the same transaction that created it.
+
+    None of it reaches the HTTP response. `register_verify` returns a destination and
+    nothing more, for the same reason staging returns nothing: the next thing the
+    registrant needs is in their inbox.
+    """
 
     created: bool
     org_id: UUID | None
     user_id: UUID | None
     jutsu_id: str | None
+    org_name: str | None = None
+    org_domain: str | None = None
+    #: The address that was verified, and therefore the only one this organisation's
+    #: welcome may be sent to.
+    owner_email: str | None = None
+    #: What the registrant was actually made, read out of this function rather than
+    #: assumed by the caller. The welcome email states it, and a second place asserting
+    #: "the first administrator is an Owner" is a second place to update if that ever
+    #: stops being true.
+    owner_role: Role | None = None
 
 
 async def allocate_jutsu_id(session: AsyncSession, *, org_id: UUID, kind: JutsuIdKind) -> str:
@@ -277,6 +297,11 @@ async def stage_registration(
         settings=settings,
         sender=sender,
         known_account=True,
+        # Echoed into the message so a mistyped company or domain is caught before a
+        # tenant is built around it. These are the values from this request and nothing
+        # else — there is no organisation to look one up from, which is the entire point
+        # of the staging half.
+        organisation=(request.company_name.strip(), domain),
     )
 
     accepted_at = datetime.now(UTC)
@@ -500,7 +525,16 @@ async def complete_registration(
 
     await _record_event(session, digest=bytes(staged_digest), domain=domain, outcome="created")
 
-    return RegistrationOutcome(created=True, org_id=org_id, user_id=user_id, jutsu_id=jutsu_id)
+    return RegistrationOutcome(
+        created=True,
+        org_id=org_id,
+        user_id=user_id,
+        jutsu_id=jutsu_id,
+        org_name=request.company_name.strip(),
+        org_domain=domain,
+        owner_email=request.work_email,
+        owner_role=Role.OWNER,
+    )
 
 
 class NoPendingRegistration(JutsuError):
