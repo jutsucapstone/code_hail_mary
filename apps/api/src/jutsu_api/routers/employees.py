@@ -14,13 +14,14 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from jutsu_core.rbac import Permission, Role
+from jutsu_core.rbac import Permission, Role, role_label
 from pydantic import BaseModel, EmailStr, Field
 
 from jutsu_api.auth_service import open_session
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
-from jutsu_api.email import EmailSender
+from jutsu_api.email import EmailSender, send_best_effort
+from jutsu_api.emails import employee_welcome
 from jutsu_api.invitations import accept_invitation, invite_employee, list_employees
 from jutsu_api.routers.auth import set_session_cookies
 from jutsu_api.security import GuardedAPIRoute, destination_for, public, requires
@@ -129,12 +130,19 @@ async def accept(
     response: Response,
     session: Db,
     settings: SettingsDep,
+    sender: SenderDep,
 ) -> AcceptResult:
     """Join an organisation, and sign in.
 
     No second code is sent. The token reached the invited address and nowhere else, so
     holding it already proves the same thing an emailed code would — sending another
     would be ceremony, not security.
+
+    A welcome does go out, and it is not ceremony. `jutsu_id` below is shown on exactly
+    one screen, and the console asks for it by name at every subsequent sign-in — so a
+    closed tab currently costs somebody their identifier and an email to their
+    administrator. The message carries that, their role and the address to sign in with.
+    It carries no organisation identifier: the sign-in form does not ask for one.
     """
     accepted = await accept_invitation(
         session, token=payload.token, full_name=payload.full_name, settings=settings
@@ -151,6 +159,21 @@ async def accept(
         token=credentials.token,
         csrf_token=credentials.csrf_token,
         settings=settings,
+    )
+
+    # Best-effort, for the same reason registration's is: this runs inside the
+    # transaction that created the account, and losing a welcome is a far smaller failure
+    # than rolling back a person's membership over a mail provider having a bad minute.
+    # The invitation is spent by now, so there would be nothing to retry with.
+    await send_best_effort(
+        sender,
+        employee_welcome(
+            to=accepted.email,
+            organisation=accepted.org_name,
+            jutsu_id=accepted.jutsu_id,
+            role=role_label(accepted.role),
+            app_url=settings.app_url,
+        ),
     )
 
     # Chosen by the server. A destination from the request would be an open redirect with

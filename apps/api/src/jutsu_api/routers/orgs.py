@@ -15,14 +15,15 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Response, status
 from jutsu_core.errors import NotFound
-from jutsu_core.rbac import Permission
+from jutsu_core.rbac import Permission, role_label
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
 from jutsu_api.auth_service import ChallengePurpose, open_session, verify_challenge
 from jutsu_api.config import OTP_DIGITS, Settings, get_settings
 from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
-from jutsu_api.email import EmailSender
+from jutsu_api.email import EmailSender, send_best_effort
+from jutsu_api.emails import organisation_welcome
 from jutsu_api.registration import (
     RegistrationRequest,
     complete_registration,
@@ -138,6 +139,7 @@ async def register_verify(
     response: Response,
     session: Db,
     settings: SettingsDep,
+    sender: SenderDep,
 ) -> RegistrationComplete:
     """Redeem a registration code and create the organisation.
 
@@ -162,7 +164,14 @@ async def register_verify(
         challenge_id=redeemed.challenge_id,
         settings=settings,
     )
+    # Every field the success path populates, asserted together. Not belt-and-braces:
+    # `RegistrationOutcome` types them optional so the dataclass can also describe an
+    # outcome that created nothing, and `str(None)` renders as the word "None" — which
+    # would reach a customer as an organisation called None rather than as an error.
     assert outcome.org_id is not None and outcome.user_id is not None  # noqa: S101
+    assert outcome.jutsu_id is not None and outcome.owner_role is not None  # noqa: S101
+    assert outcome.org_name is not None and outcome.org_domain is not None  # noqa: S101
+    assert outcome.owner_email is not None  # noqa: S101
 
     credentials = await open_session(
         session,
@@ -176,6 +185,30 @@ async def register_verify(
         csrf_token=credentials.csrf_token,
         settings=settings,
     )
+
+    # The one message that carries the organisation identifier, sent at the one moment
+    # there is an organisation to identify — and only to the address that just proved a
+    # mailbox and redeemed this registration. No sign-in ever reproduces it.
+    #
+    # Best-effort on purpose. This runs inside the request transaction that created the
+    # tenant, so raising would roll back an organisation, an owner, a role and a spent
+    # JUTSU ID over a refused SMTP connection — and the registrant could not retry,
+    # because the challenge and the staged payload are both consumed by now. They hold a
+    # session either way; what a failure costs them is the copy of their identifiers,
+    # which the console also shows.
+    await send_best_effort(
+        sender,
+        organisation_welcome(
+            to=outcome.owner_email,
+            company_name=outcome.org_name,
+            company_domain=outcome.org_domain,
+            org_id=str(outcome.org_id),
+            jutsu_id=outcome.jutsu_id,
+            role=role_label(outcome.owner_role),
+            app_url=settings.app_url,
+        ),
+    )
+
     return RegistrationComplete(destination="/admin")
 
 

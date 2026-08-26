@@ -443,3 +443,130 @@ class TestInvitationLifecycle:
 
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "permission_denied"
+
+
+class TestWhatEachRouteMails:
+    """Which branded message each HTTP flow actually delivers.
+
+    Over the wire rather than through the service layer, because the two welcome
+    messages are sent by the *routers* — deliberately, so a refused SMTP connection
+    cannot roll back the tenant or the membership the request just created. Nothing in
+    `test_registration_flow.py` would notice if a router stopped sending one.
+    """
+
+    async def test_registering_delivers_the_verification_then_the_welcome(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Scenario one, both halves, in order.
+
+        The identifiers cannot ride on the first message: nothing durable exists when it
+        is sent, and that is the control that stops a domain being claimed by whoever can
+        type it. So the code goes first and the organisation's identity follows the moment
+        there is one.
+        """
+        await client.post("/v1/orgs/register", json=REGISTRATION)
+        verification = mailbox.last
+        assert verification.subject == "Verify Example Analytical on JUTSU"
+        assert set(verification.secrets) == {"code", "token"}
+
+        delivered = verification.secrets
+        response = await client.post(
+            "/v1/orgs/register/verify",
+            json={"token": delivered["token"], "code": delivered["code"]},
+        )
+        assert response.status_code == 200, response.text
+
+        welcome = mailbox.last
+        assert welcome is not verification
+        assert welcome.subject == "Example Analytical is live on JUTSU"
+        assert welcome.html is not None
+        assert "JUTSU-ADM-" in welcome.html
+        assert "Organisation ID" in welcome.html
+        # No credential in a message nobody asked for.
+        assert welcome.secrets == {}
+
+    async def test_inviting_names_the_organisation_and_carries_no_tenant_id(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """An invitation that cannot say who it is from is indistinguishable from
+        phishing, and the reader's only defence is to ignore it."""
+        await complete_registration(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await client.post(
+            "/v1/employees/invitations",
+            json={"email": "charles@example.com", "role": "member"},
+            headers=csrf_headers(client),
+        )
+
+        invitation = mailbox.last
+        assert invitation.subject == "You have been invited to Example Analytical on JUTSU"
+        assert set(invitation.secrets) == {"token"}
+        assert org_id not in (invitation.html or "") + invitation.body
+
+    async def test_accepting_welcomes_the_employee_with_their_own_id_only(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Scenario two.
+
+        `jutsu_id` is otherwise shown on exactly one screen, and the console asks for it
+        by name at every later sign-in — so a closed tab currently costs somebody their
+        identifier. The organisation's id is not in here: the sign-in form never asks for
+        one.
+        """
+        await complete_registration(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await client.post(
+            "/v1/employees/invitations",
+            json={"email": "charles@example.com", "role": "member"},
+            headers=csrf_headers(client),
+        )
+        token = mailbox.last.secrets["token"]
+
+        accepted = await client.post(
+            "/v1/invitations/accept",
+            json={"token": token, "full_name": "Charles Babbage"},
+        )
+        assert accepted.status_code == 200, accepted.text
+        jutsu_id = accepted.json()["jutsu_id"]
+
+        welcome = mailbox.last
+        assert welcome.subject == "Welcome to Example Analytical on JUTSU"
+        assert welcome.to == "charles@example.com"
+        readable = (welcome.html or "") + welcome.body
+        assert jutsu_id in readable
+        assert org_id not in readable
+        assert welcome.secrets == {}
+
+    async def test_signing_in_again_delivers_the_code_and_nothing_else(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Scenario three, over the wire: no organisation token, no JUTSU ID, no
+        organisation name."""
+        await complete_registration(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        jutsu_id = (await client.get("/v1/me")).json()["jutsu_id"]
+
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+
+        code_mail = mailbox.last
+        assert code_mail.subject == "Your JUTSU sign-in code"
+        readable = (code_mail.html or "") + code_mail.body
+        assert org_id not in readable
+        assert jutsu_id not in readable
+        assert "Example Analytical" not in readable
+        # The challenge's own code and link token. Neither is the organisation token, and
+        # the verify page refuses a code submitted without the link token.
+        assert set(code_mail.secrets) == {"code", "token"}
+
+    async def test_an_unknown_address_still_gets_a_message_with_no_credential(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The anti-enumeration control, unchanged: same work, same 202, and the only
+        difference is in the recipient's own inbox."""
+        await client.post("/v1/auth/request", json={"email": "nobody@nowhere.example"})
+
+        assert mailbox.last.secrets == {}
+        assert mailbox.last.html is not None
+        assert "[[" not in mailbox.last.html

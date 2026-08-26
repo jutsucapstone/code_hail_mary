@@ -875,7 +875,7 @@
     },
     "/v1/invitations/accept": {
       "post": {
-        "description": "Join an organisation, and sign in.\n\nNo second code is sent. The token reached the invited address and nowhere else, so\nholding it already proves the same thing an emailed code would \u2014 sending another\nwould be ceremony, not security.",
+        "description": "Join an organisation, and sign in.\n\nNo second code is sent. The token reached the invited address and nowhere else, so\nholding it already proves the same thing an emailed code would \u2014 sending another\nwould be ceremony, not security.\n\nA welcome does go out, and it is not ceremony. `jutsu_id` below is shown on exactly\none screen, and the console asks for it by name at every subsequent sign-in \u2014 so a\nclosed tab currently costs somebody their identifier and an email to their\nadministrator. The message carries that, their role and the address to sign in with.\nIt carries no organisation identifier: the sign-in form does not ask for one.",
         "operationId": "accept_v1_invitations_accept_post",
         "requestBody": {
           "content": {

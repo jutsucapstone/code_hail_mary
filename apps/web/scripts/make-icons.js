@@ -162,6 +162,19 @@ const targets = [
   // iOS composites away transparency; the logo's black lobe would vanish on a
   // dark plate, so this one ships on the light brand ground.
   { out: "app/apple-icon.png", size: 180, pad: 16, bg: [249, 250, 251] },
+  // The authentication emails. Mail clients are the one surface that cannot fetch
+  // an asset from the web app, so the API package carries its own copy and attaches
+  // it as a related MIME part — Outlook blocks remote images by default, and a
+  // sign-in mail whose branding depends on the recipient clicking "show images"
+  // arrives looking like the phishing it is trying not to resemble. Composited on
+  // white because it sits in a white tile: several Outlook builds render PNG alpha
+  // as black, which would swallow the mark's dark lobe.
+  {
+    out: "../api/src/jutsu_api/emails/assets/jutsu-mark.png",
+    size: 96,
+    pad: 0,
+    bg: [255, 255, 255],
+  },
 ];
 for (const t of targets) {
   fs.writeFileSync(t.out, encodePNG(resize(src, t.size, t.pad, t.bg)));

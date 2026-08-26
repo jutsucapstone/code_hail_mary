@@ -72,6 +72,21 @@ class MissingSecret(RuntimeError):
 DEFAULT_SMTP_HOST: Final = "smtp.resend.com"
 DEFAULT_SMTP_PORT: Final = 587
 
+#: Where the console lives, for the links in outbound mail.
+#:
+#: The API has never needed to know this — it serves JSON and chooses destinations as
+#: paths, which the browser resolves against its own origin. An email has no origin to
+#: resolve against, so every link in one has to be absolute.
+#:
+#: Defaulted per environment rather than required, deliberately. A missing value here
+#: cannot be caught at boot the way a missing SMTP credential can: the service would
+#: start, authenticate people and only produce a broken link in mail nobody on the team
+#: reads. Defaulting to the origin the deploy workflow already builds the web image with
+#: means the link is right without a second place to keep in step, and `JUTSU_APP_URL`
+#: overrides it for a preview deployment.
+DEFAULT_APP_URL: Final = "https://jutsu.co.in"
+DEV_APP_URL: Final = "http://localhost:3210"
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -80,6 +95,10 @@ class Settings:
     #: None when no transport is configured. Absence is meaningful rather than an error:
     #: development runs happily without one, and production refuses to start without one.
     smtp: SmtpSettings | None = None
+    #: Absolute origin of the console, with protocol and no trailing slash. Only the
+    #: email templates read it — every other destination this service produces is a path
+    #: the browser resolves for itself.
+    app_url: str = DEV_APP_URL
 
     @property
     def is_production(self) -> bool:
@@ -120,7 +139,22 @@ def get_settings() -> Settings:
         email_pepper=pepper.encode("utf-8"),
         environment=environment,
         smtp=_smtp_settings(environment),
+        app_url=_app_url(environment),
     )
+
+
+def _app_url(environment: str) -> str:
+    """The origin the emailed links point at.
+
+    Trailing slashes are stripped rather than tolerated: every template concatenates a
+    path onto this, and `https://jutsu.co.in//pilot/verify` is a URL some routers answer
+    and some do not — a class of bug that only shows up in the one environment where the
+    variable was set by hand.
+    """
+    configured = os.environ.get("JUTSU_APP_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return DEFAULT_APP_URL if environment == "prod" else DEV_APP_URL
 
 
 def _smtp_settings(environment: str) -> SmtpSettings | None:

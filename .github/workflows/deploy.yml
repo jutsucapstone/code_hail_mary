@@ -227,6 +227,12 @@ jobs:
       # username `resend`, and the settings fall back to the username when no From is
       # given, which would put `resend` in a From header and fail every send.
       #
+      # JUTSU_APP_URL is what the authentication emails build their links from. It has a
+      # production default in `config.py`, so omitting it here would still work — it is
+      # stated anyway because this file is the one place the deployed origin is written
+      # down (the web image is built with the same value at line 120), and a default
+      # nobody can see from the deploy is a default nobody updates when the domain moves.
+      #
       # Secrets are referenced, never passed. `--set-secrets` mounts them from Secret
       # Manager at start, so nothing sensitive appears in the workflow, in a Cloud Run
       # environment variable, or in `gcloud run services describe` output (§4.10).
@@ -251,7 +257,7 @@ jobs:
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
-            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>,JUTSU_APP_URL=https://jutsu.co.in" \
             --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest" \
             --min-instances 0 \
             --max-instances 10 \
