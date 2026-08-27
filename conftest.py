@@ -98,3 +98,43 @@ def database_is_reachable(url: str | None) -> bool:
 os.environ[DB_REACHABLE_ENV] = (
     "1" if database_is_reachable(os.environ.get("JUTSU_TEST_DATABASE_URL")) else "0"
 )
+
+
+#: The same question, asked of Neo4j. Set to "1" or "0" and read by the graph suite.
+#:
+#: A second variable rather than one combined flag: Postgres and Neo4j fail independently
+#: — `make up` can bring one healthy and leave the other still starting — and a single
+#: flag would skip a suite that could have run, or worse, run one that could not.
+GRAPH_REACHABLE_ENV = "JUTSU_GRAPH_REACHABLE"
+
+#: Bolt's default. Used when NEO4J_URI names no port.
+_DEFAULT_BOLT_PORT = 7687
+
+
+@lru_cache(maxsize=4)
+def graph_is_reachable(uri: str | None) -> bool:
+    """Whether something is listening where NEO4J_URI points.
+
+    A TCP connect, exactly like the Postgres probe: this only decides whether to run the
+    suite, and the tests themselves report anything subtler. Opening a real driver here
+    would mean authenticating during collection, which turns a stopped container into a
+    slow import rather than a clean skip.
+    """
+    if not uri:
+        return False
+
+    # `bolt://`, `neo4j://`, and their +s / +ssc variants all parse the same way.
+    parts = urlsplit(uri)
+    if not parts.hostname:
+        return False
+
+    try:
+        with socket.create_connection(
+            (parts.hostname, parts.port or _DEFAULT_BOLT_PORT), timeout=1.0
+        ):
+            return True
+    except OSError:
+        return False
+
+
+os.environ[GRAPH_REACHABLE_ENV] = "1" if graph_is_reachable(os.environ.get("NEO4J_URI")) else "0"

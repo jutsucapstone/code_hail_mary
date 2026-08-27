@@ -2,7 +2,11 @@
 name = "jutsu-graph"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["jutsu-core"]
+# The official async driver. Pinned to 5.x to match the server: AuraDB 5 in prod,
+# neo4j:5-community locally (infra/docker/compose.yml). A 6.x driver speaks to a 5
+# server but changes defaults around routing and notification handling, which is not
+# something to discover from a staging incident.
+dependencies = ["jutsu-core", "neo4j>=5.26,<6"]
 
 [build-system]
 requires = ["hatchling"]
