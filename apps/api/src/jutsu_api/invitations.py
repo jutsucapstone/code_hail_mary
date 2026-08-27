@@ -37,6 +37,7 @@ from jutsu_api.auth_service import email_hmac
 from jutsu_api.config import Settings
 from jutsu_api.email import EmailSender
 from jutsu_api.emails import employee_invitation
+from jutsu_api.identities import link_verified_email
 from jutsu_api.registration import allocate_jutsu_id
 from jutsu_api.security import Principal
 
@@ -256,6 +257,11 @@ async def accept_invitation(
             "jid": jutsu_id,
         },
     )
+
+    # The address the invitation token reached, and nowhere else — the same proof an
+    # emailed code would give. Taken from the consumed invitation, never from the request
+    # body, which carries only a name (ADR 0010).
+    await link_verified_email(session, org_id=org_id, user_id=user_id, verified_email=email)
 
     await session.execute(
         text("SELECT auth.claim_jutsu_id(:jid, :org, :user)"),
