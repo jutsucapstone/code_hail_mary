@@ -28,6 +28,7 @@ from uuid import UUID
 
 from jutsu_core.errors import Unauthenticated
 from jutsu_core.rbac import Permission, Role, permissions_for
+from jutsu_db.acl import resolve_acl_principals
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -400,6 +401,38 @@ async def scoped_role(session: AsyncSession, *, org_id: object, user_id: object)
     return Role(role_key)
 
 
+async def scoped_acl_principals(
+    session: AsyncSession, *, user_id: object
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The caller's ACL principals and groups, read inside the tenant scope (ADR 0010).
+
+    **Resolved eagerly, on every request, and never cached.** §17 test 3 requires a group
+    removal to take effect on the next query with no cache flush; the same must be true of
+    revoking a source identity. A cache that outlived a revocation would be an
+    authorisation decision made from stale state, which is the shape of failure that is
+    hardest to notice and worst to explain. One indexed read per request is the price, and
+    it is the right price.
+
+    **Only active identities.** `is_active` is the revocation switch — offboarding flips
+    it rather than deleting the row, so the audit trail survives and authorisation stops.
+
+    **The organisation never comes from the caller.** This runs after `scoped_role` has set
+    `app.current_org_id` from the *session-derived* org id, so row-level security scopes
+    both reads. Nothing here takes an org id as an argument, which is what makes it
+    impossible for a request parameter to widen the scope.
+
+    Principals are namespaced `{source_system}:{subject}` so a Slack id can never match a
+    GitHub grant. Group values are stored already namespaced in `group_external_id`, for
+    the same reason and in the same form.
+
+    The query itself moved to `jutsu_db.acl` in S7, because retrieval builds the §12 filter
+    from the same answer and two copies of an authorization query is exactly how the two
+    come to disagree. This name stays: it is the request-path spelling, and a test pins its
+    signature.
+    """
+    return await resolve_acl_principals(session, user_id=user_id)
+
+
 async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     """Turn an opaque handle into an authenticated caller.
 
@@ -422,6 +455,8 @@ async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     session_id, identity_id, user_id, org_id, _csrf_hash = row
 
     role = await scoped_role(session, org_id=org_id, user_id=user_id)
+    acl_principals, acl_groups = await scoped_acl_principals(session, user_id=user_id)
+
     return Principal(
         session_id=UUID(str(session_id)),
         identity_id=UUID(str(identity_id)),
@@ -429,6 +464,8 @@ async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
         org_id=UUID(str(org_id)),
         role=role,
         permissions=frozenset(permissions_for(role)),
+        acl_principals=acl_principals,
+        acl_groups=acl_groups,
     )
 
 

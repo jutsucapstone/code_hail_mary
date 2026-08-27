@@ -56,7 +56,6 @@ RLS_EXEMPT_NO_TENANT = frozenset(
         "roles",
         "permissions",
         "role_permissions",
-        "user_groups",
         "eval_results",
     }
 )
@@ -365,11 +364,17 @@ class TestAclPrincipalIsNotTheJutsuId:
     ) -> None:
         """The invariant that made `external_id` nullable in the first place.
 
-        `document_acl.principal_id` matches `users.external_id` — the IdP subject. A
-        pilot user has none yet, so they match no grant and see no evidence. If the JUTSU
-        ID were ever written into `external_id` as a convenience, this test would start
-        passing for the wrong reason: the grant would match a JUTSU-shaped principal and
-        the caller would gain visibility they were never given.
+        **Migration 0008 moved the mechanism.** `document_acl.principal_id` no longer
+        matches `users.external_id`; it matches a namespaced provider subject held in
+        `source_identities` (ADR 0010). `external_id` was singular and one person is
+        simultaneously a Google `sub`, a Slack member id and an Atlassian `accountId`.
+
+        Both halves are asserted below, and the second is the one that matters now: the
+        old join must still find nothing, *and* a user with no source identity must hold
+        no principal. If the JUTSU ID were ever written into either column as a
+        convenience, this test would start passing for the wrong reason — the grant would
+        match a JUTSU-shaped principal and the caller would gain visibility nobody gave
+        them.
         """
         org_a, _ = two_orgs
         await _scope(conn, org_a)
@@ -401,5 +406,15 @@ class TestAclPrincipalIsNotTheJutsuId:
             )
         ).scalar_one()
         assert matched == 0
+
+        # The mechanism that actually gates access now. A user with no source identity
+        # holds no ACL principal, so every predicate in the §12 filter is false.
+        principals = (
+            await conn.execute(
+                text("SELECT count(*) FROM source_identities WHERE user_id = :id AND is_active"),
+                {"id": user_id},
+            )
+        ).scalar_one()
+        assert principals == 0, "a pilot user must hold no ACL principal"
 
         await conn.rollback()

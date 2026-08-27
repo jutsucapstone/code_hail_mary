@@ -105,14 +105,94 @@ class User(Base):
 
 
 class UserGroup(Base):
-    """IdP-synced group membership. Primary key is both columns (§8)."""
+    """IdP-synced group membership. Primary key is both columns (§8).
+
+    `org_id` was added by migration 0008. It shipped without one, which meant the table
+    feeding the group half of §12's retrieval filter — an authorisation input — had no
+    tenant column and therefore no row-level security. The composite foreign key holds the
+    denormalised value true against the user's own organisation.
+    """
 
     __tablename__ = "user_groups"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     group_external_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: Denormalised for RLS — see ADR 0002 for the same argument on chunks.
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "org_id"],
+            ["users.id", "users.org_id"],
+            ondelete="CASCADE",
+            name="fk_user_groups_user_id_org_id",
+        ),
+        Index("ix_user_groups_org_id_user_id", "org_id", "user_id"),
+        Index("ix_user_groups_org_id_group_external_id", "org_id", "group_external_id"),
+    )
+
+
+class SourceIdentity(Base):
+    """Who a JUTSU user is **inside one source system** (ADR 0010).
+
+    The ACL principal. `document_acl.principal_id` holds `{source_system}:{subject}`, and
+    this table is what maps a signed-in user to the subjects they own.
+
+    It exists because `users.external_id` could not do the job. That column is singular,
+    and one person is simultaneously a Google `sub`, an Entra `oid`, a Slack `U0…`, a
+    GitHub numeric id and an Atlassian `accountId`. The mismatch was never "email versus
+    subject"; it was cardinality.
+
+    **`subject` is provider-native and immutable.** Never an email address — except for
+    the local mail corpus, where the address genuinely is the subject the source issues,
+    and that is stated rather than assumed (ADR 0008).
+
+    **Revocation is a flag, not a delete.** Authorisation reads `is_active`, so
+    deactivating a row takes effect on the next request with nothing to invalidate — which
+    is what §17 test 3 requires of a group removal, and the same reasoning applies here.
+    """
+
+    __tablename__ = "source_identities"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: Denormalised for RLS, held true by the composite FK below.
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_system: Mapped[SourceSystem] = mapped_column(
+        Enum(SourceSystem, name="source_system", native_enum=True), nullable=False
+    )
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    linked_at: Mapped[datetime] = _now()
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: How the link was established — an OAuth grant, a directory sync, an admin action.
+    #: §17 wants every ACL change auditable, and "who claimed this subject" is the first
+    #: question an incident asks.
+    linked_by: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
+    updated_at: Mapped[datetime] = _now()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "org_id"],
+            ["users.id", "users.org_id"],
+            ondelete="CASCADE",
+            name="fk_source_identities_user_id_org_id",
+        ),
+        # Scoped to the organisation, not global: two tenants may legitimately connect the
+        # same Slack workspace, and a global constraint would make the second one fail.
+        UniqueConstraint(
+            "org_id", "source_system", "subject", name="uq_source_identities_org_system_subject"
+        ),
+        Index("ix_source_identities_org_id_user_id", "org_id", "user_id"),
+        Index(
+            "ix_source_identities_org_id_source_system_subject",
+            "org_id",
+            "source_system",
+            "subject",
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- ingestion
@@ -416,4 +496,15 @@ class EvalResult(Base):
 
 #: Tables carrying RLS. Kept as data so the migration and its tests cannot disagree
 #: about which tables are protected.
-RLS_TABLES: tuple[str, ...] = ("documents", "chunks", "document_acl")
+#:
+#: `source_identities` and `user_groups` joined the list in migration 0008. Both are
+#: authorisation inputs — they decide which ACL principals a caller holds — so they belong
+#: under the same policy as the data they gate. Adding them here also extends `test_rls.py`
+#: over them for free, including the §17.6 count-leak case.
+RLS_TABLES: tuple[str, ...] = (
+    "documents",
+    "chunks",
+    "document_acl",
+    "source_identities",
+    "user_groups",
+)
