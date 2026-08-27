@@ -10,11 +10,11 @@ protect it; everything in Phase 2 depends on chunk offsets and the ACL filter be
 |---|---|---|---|
 | S0 | F | Monorepo (pnpm + uv workspaces), Compose, CI, landing page folded into `apps/web`, product routes stubbed behind auth | done |
 | S1 | B | Postgres migration 001 + pgvector + RLS (§8) | done |
-| S2 | B | Neo4j migration runner + constraints + `temporal.py` (§7) | not started |
-| S3 | D | Corpus loaders, connector protocol, Enron thread sampler (§19) | not started |
-| S4 | D | PII masking + offset map, ten tests (§9.1) | not started |
-| S5 | D | Chunker with original-document offsets (§9.2) | not started |
-| S6 | A | Embedder + HNSW (§9.3) | not started |
+| S2 | B | Neo4j migration runner + constraints + `temporal.py` (§7) | done |
+| S3 | D | Corpus loaders, connector protocol, Enron thread sampler (§19) | done |
+| S4 | D | PII masking + offset map, ten tests (§9.1) | done |
+| S5 | D | Chunker with original-document offsets (§9.2) | done |
+| S6 | A | Embedder + HNSW (§9.3) | done |
 | S7 | B | ACL capture + filtered search + 7 adversarial tests (§12, §17) | not started |
 | S8 | B | Job queue, idempotent pipeline, crash resume | not started |
 | S9 | A | Gate harness `scripts/gate.py --phase 1` | not started |
@@ -119,6 +119,602 @@ Each of these looks correct on the page and is inert or broken in the database.
 
 No ingestion, no connectors, no embedding calls, no Neo4j (that is S2). Tables are
 created empty and nothing writes to them in this slice.
+
+---
+
+## S4 — PII masking with an offset map
+
+**Goal:** the bridge between the two coordinate systems every citation depends on, plus
+the detectors that decide what a model is allowed to read. Nothing downstream can be
+correct before this is.
+
+### Deliverables
+
+- `MaskResult.to_original` / `to_masked` / `original_range` in `packages/core/models.py`
+  — a bisect over the span starts rather than a walk, because the chunker converts every
+  boundary it produces and a pilot document carries hundreds of spans.
+- `packages/core/pii.py` — the `PiiDetector` protocol, `RegexDetector`, five detectors
+  (email, IBAN, payment card, US SSN, phone) in a fixed order, the canonicaliser table,
+  and `mask()`.
+- Tokens and vault keys derived from `(document, type, canonical value)`, so a pseudonym
+  co-refers within a document and correlates nothing across the corpus (ADR 0005).
+- `packages/core/tests/test_pii.py` — 65 tests: §9.1's ten named cases, detector
+  precision, determinism, and an exhaustive 1024-document offset sweep.
+
+### Three things that had to be found by running it
+
+1. **`original_range` needs `bisect_left` where `to_original` needs `bisect_right`.** An
+   offset on a token's `masked_start` is the first character *of* the token as a start,
+   and the position *before* it as an end. One operator for both made a chunk ending
+   immediately before an address record itself as covering the address — a citation
+   highlighting text the chunk does not contain.
+2. **Longest-match-wins has to be greedy by length, not by position.** Sorting by start
+   first reads as "longest wins" right up until two detectors disagree about where an
+   entity begins, at which point the shorter earlier hit takes it. Detector order then
+   has to outrank position too, or the fixed order of `DEFAULT_DETECTORS` — the thing
+   that puts checksummed detectors ahead of the loose one — decides nothing.
+3. **Two-character pseudonyms collide, and often.** Thirty entities over 1024 buckets
+   collide about a third of the time, so "derive a suffix from a digest" is not an
+   implementation, it is a bug that appears on a third of real documents. The allocation
+   loop re-derives and widens; two hundred entities in one document is the test.
+
+### Gate S4 — run 2026-08-27
+
+1. All ten §9.1 cases present and named for the case they cover.
+2. 1024 arrangements of two entities among four fillers (including Devanagari, emoji, an
+   empty filler and a quoted block): every one reconstructs to the original character for
+   character, and `to_masked(to_original(i)) == i` at every offset outside a token.
+3. `original_range` tiles all 1024 documents end to start with no gap and no overlap,
+   ending exactly at `len(original)`.
+4. Non-ASCII offsets asserted to be character indices, with the byte index the same
+   fixture would have produced asserted to be a different number.
+5. Detector precision: an IP address, a version string, a date range, an extension number
+   and a bare digit run are all left alone; a Luhn failure and a mod-97 failure are both
+   rejected.
+6. `make preflight` green — 300 passed, 0 failed. `packages/core` is 140 of them.
+
+### Out of scope
+
+No PERSON or ADDRESS detector — that needs NER, which is a stack decision (ADR 0005).
+No vault encryption and no rehydration: `vault_key` is derived here, and the ciphertext
+and the org-scoped key belong with the ingestion pipeline that has an `org_id` to scope
+them to. No chunking (S5); `original_range` exists for it and is tested against it.
+
+---
+
+## S5 — Chunking with original-document offsets
+
+**Goal:** turn a masked document into embedding units that carry offsets into the
+*original* body, so a citation highlights the words a person actually wrote. This is the
+first consumer of S4's offset map, and proving that map against a real caller is half the
+point of the slice.
+
+### Deliverables
+
+- `packages/core/chunking.py` — `chunk_document`, the §9.2 split hierarchy expressed as a
+  boundary *strength* per split point, the `TokenCounter` protocol, and `estimate_tokens`.
+- Token counting injected, not assumed: the counter is a parameter and the default is a
+  documented estimate that S6 replaces before anything is persisted (ADR 0006).
+- `packages/core/tests/test_chunking.py` — 62 tests, including a 1024-document sweep
+  carried one stage further than S4's.
+
+### Four things that had to be found by running it
+
+1. **Boundary snapping needs two different comparisons.** Among candidate boundaries the
+   test is `<=`, so the latest of the strongest wins and the chunk stays full. Against the
+   point where the budget ran out it must be `<`, so shrinking has to *buy* a stronger
+   boundary. Written with one `<=` for both, the first qualifying boundary of any strength
+   won every time and every chunk collapsed to `min_tokens`.
+2. **`TokenCounter.__call__` has to take its argument positional-only.** Without the slash
+   the protocol demands a parameter literally named `text`, and every plain
+   `Callable[[str], int]` — which is what S6 will most likely hand it — fails to satisfy
+   it. mypy caught this; nothing at runtime would have.
+3. **`overlap_ratio` is inert when no whole segment fits inside it.** Overlap is taken in
+   whole segments, and prose sentences cost 13 to 20 tokens, so a small target with a
+   small ratio produces a budget nothing fits in. Correct behaviour — the alternative is
+   splitting a sentence to manufacture an overlap — but it was undocumented, which made it
+   look like a bug the first time a test asserted otherwise. Now stated and tested.
+4. **A hard split cuts grapheme clusters.** Sweeping budgets over Devanagari, a
+   zero-width-joiner emoji family and a keycap sequence produced chunks beginning with a
+   lone virama, joiner or variation selector — a fragment of a character handed to the
+   model. The offsets were correct throughout, which is why nothing downstream would have
+   failed and nobody would have noticed until a customer read a chunk. Cuts now move back
+   off the inside of a cluster, and give up only when one cluster costs more than the
+   entire budget.
+
+### Gate S5 — run 2026-08-27
+
+1. Coverage: every character of every test document belongs to at least one chunk, in both
+   coordinate systems. Chunks overlap by design, so this is union-covers, not a partition.
+2. Across the 1024-document sweep: no chunk boundary falls strictly inside a `MaskedSpan`,
+   and every chunk's stored range reproduces exactly through `original_range`.
+3. `chunk.text` is masked text in every case — the assertion that would catch original
+   text reaching the vector store.
+4. No chunk exceeds `target_tokens` at four budgets, under the estimator and under a
+   deliberately super-additive stub counter.
+5. A sentence is split only when it exceeds the budget alone; five abbreviation and
+   decimal cases do not split; `-----Original Message-----` does not read as a heading.
+6. Unicode: offsets asserted to be character indices, Devanagari chunked more finely
+   than the equivalent ASCII, and no grapheme cluster split at any budget from 8 to 40
+   across Devanagari, a ZWJ family, a flag, a skin-tone modifier and a keycap sequence.
+7. Pathological input: 100,000 characters with no whitespace and 20,000 tiny sentences
+   both complete with counter work under 60x the document length — bounded work asserted
+   in characters examined, not in wall-clock seconds.
+8. `make preflight` green — 362 passed, 128 skipped, 0 failed. `packages/core` is 202,
+   62 of them added by this slice. No new skips.
+
+### Out of scope
+
+No real tokeniser (S6, ADR 0006). No decision detection — that needs the extraction layer
+of §10; sentence preservation is the reachable half. Nothing is persisted: chunks first
+reach Postgres in S8.
+
+---
+
+## S2 — Neo4j, tenancy and bitemporality
+
+**Goal:** the graph layer every Phase 2 slice writes into, with tenant isolation and
+bitemporality in place *before* there is anything stored — §7 is explicit that
+retrofitting either means rewriting every edge and every template.
+
+### Deliverables
+
+- `packages/graph/driver.py` — driver lifecycle, `GraphSession`, read-only default,
+  explicit write mode, server-side statement timeouts, and the conspicuous unscoped
+  `ddl_session` that only migrations use.
+- `packages/graph/labels.py` — the closed node and relationship allowlist. Cypher cannot
+  parameterise a label, so this is the only thing standing where a parameter would be.
+- `packages/graph/migrations.py` + `cli.py` + `migrations/001_constraints.{up,down}.cypher`
+  — numbered Cypher, paired files, a ledger node, stored checksums, a real downgrade.
+- `packages/graph/temporal.py` — `supersede`, `as_of`, half-open interval predicates,
+  and a refusal to accept a naive datetime.
+- 124 tests across tenancy, schema, temporal and the allowlist, run against a real Neo4j.
+- `make migrate` now covers both stores; CI gains a `neo4j:5-community` service and an
+  assertion that the graph suite did not skip.
+- ADR 0007 records why tenancy is enforced in the session rather than by the database.
+
+### Four things that had to be found by running it
+
+1. **Neo4j has no row-level security, and `READ_ACCESS` does not block writes on a single
+   instance.** It is a routing hint that rejects writes on a cluster by sending them to a
+   follower; on the development container it blocks nothing. A static write-clause check
+   is what actually holds there, so both exist and ADR 0007 says which does what.
+2. **A checksum-tamper test poisoned every test after it.** `upgrade` refuses a ledger it
+   cannot verify — correct — but the fixture teardown also calls `upgrade`, so one test's
+   deliberate corruption cascaded into ten setup errors. The test now reverses its own
+   tamper, and the recovery path (`downgrade` does not verify checksums, deliberately) is
+   recorded in ADR 0007.
+3. **`python -m jutsu_graph.migrations` executes the module twice.** The package `__init__`
+   imports it, then runpy runs it again as `__main__`, and Python warns that the two
+   copies "may result in unpredictable behaviour". The CLI moved to `cli.py`, which
+   nothing imports.
+4. **`IF NOT EXISTS` reports a server notification on every idempotent re-run.** Every
+   successful `make migrate` printed a notice, which is how a deploy log teaches its
+   readers to ignore warnings. The ledger constraint is now checked before creation. The
+   driver can filter notifications instead, but only through a preview API that emits its
+   own warning — rejected in ADR 0007.
+
+### Gate S2 — run 2026-08-27 against Neo4j 5.26.29 Community + APOC 5.26.29
+
+1. `make up` — Postgres, Neo4j and Redis healthy. `make migrate` applies both stores.
+2. `make migrate` with Neo4j unreachable exits **2**; with Postgres unreachable it exits
+   **2** and never reaches the graph step. Verified by pointing each at a dead port.
+3. Migration 001 applies from empty, and a second run applies nothing and changes no
+   schema object.
+4. `downgrade` then `upgrade` restores an identical constraint and index set; the three
+   constraints and three indexes are absent in between.
+5. Constraints **enforce**: a duplicate `(org_id, email)` Person and a duplicate
+   `(org_id, key)` Project both raise, while the same address in two organisations does
+   not — proving the key is compound rather than global.
+6. Cross-tenant isolation proven adversarially against a store holding a second tenant's
+   nodes: disjoint reads from one query text, an unscoped query refused, a caller-supplied
+   `org_id` refused, and `supersede` unable to close another tenant's interval.
+7. `supersede` closes an interval and the relationship count is unchanged — it never
+   deletes. Calling it twice closes nothing the second time and does not move `valid_to`.
+8. `as_of` returns the state at a past instant; the interval is half-open at the boundary,
+   so exactly one version is valid at the supersede instant.
+9. Nine Cypher injection shapes refused by the allowlist; the alias in a temporal
+   predicate goes through the same check.
+10. The password never appears in a repr, a `str`, or any log record emitted during a real
+    connection.
+11. `make preflight` green — **614 passed, 0 skipped, 0 failed**, of which `packages/graph`
+    is 125. The baseline before this slice was 490 passed, 0 skipped: no existing test
+    became skipped.
+
+### Out of scope
+
+No Cypher templates for retrieval (§12), no entity resolution (§11), no extraction (§10).
+Nothing in this slice reads or writes application data; it is the layer those are built on.
+
+---
+
+## S3 — Connectors, corpus loading and thread sampling
+
+**Goal:** turn files on disk into `RawDocument`s with real grants and real thread
+structure, so the ingestion path S4 and S5 built has something to ingest. The reference
+implementation of the connector protocol, before OAuth is in the way.
+
+### Deliverables
+
+- `packages/connectors/rfc822.py` — mail into `ParsedMessage`, tolerant of everything a
+  real corpus contains. Never logs, never raises past `UnparsableMessage`.
+- `packages/connectors/threads.py` — union-find thread reconstruction over a corpus.
+- `packages/connectors/local.py` — `LocalConnector`, read-only, with path containment
+  closed against both `..` and symlink escapes.
+- `packages/connectors/enron.py` — custodian ranking, complete-thread sampling, and a
+  byte-identical manifest.
+- 122 tests, including the first end-to-end S3 → S4 → S5 flow on a real file.
+- ADR 0008 records thread identity, ACL derivation, and the departures from §19's sketch.
+
+**No new runtime dependency.** `email`, `mailbox`, `json` and `random` are stdlib.
+**Nothing is persisted** — `make seed` still names S8, untouched.
+
+### Four things that had to be found by running it
+
+1. **Committed mail fixtures would be corrupted by git.** `.gitattributes` sets
+   `* text=auto eol=lf`, and a MIME boundary is defined in terms of CRLF — so checked-in
+   `.eml` files would parse differently from the mail they imitate, differently again per
+   checkout. The fixtures are built from Python with explicit CRLF instead.
+2. **`os.walk(followlinks=False)` does not stop a symlinked *file*.** The flag governs
+   directory recursion only, so a symlink to `/etc/passwd` sitting in the corpus is
+   walked like any other file. Containment is re-checked after resolution, and both
+   halves are tested.
+3. **A zone-less `Date` is not UTC, it is unknown.** Assuming UTC shifts a message by up
+   to twelve hours, and thread ordering reads exactly that field. Zone-less dates are
+   recorded as a defect and the file mtime is used instead.
+4. **Swallowing an undecodable MIME part loses a measurable fact.** ruff's S112 was right:
+   the parts that fail are now *counted* on `ParsedMessage.defects` — names only, never
+   values — so "3% of this corpus has an undecodable body" is answerable without logging
+   any of it.
+
+### Gate S3 — run 2026-08-27
+
+1. Complete-thread invariant holds across every sample at every budget: for each sampled
+   message, its entire thread is in the sample.
+2. Same corpus and seed produce a **byte-identical** manifest; a different seed produces a
+   different selection; walk order changes nothing.
+3. The manifest carries no timestamp and no key resembling one.
+4. Threading survives truncated `References`, cycles, self-reference, absent parents,
+   missing `Message-ID`, and a 4,000-deep chain without exhausting the stack.
+5. Path traversal refused for six shapes; symlinked file and symlinked directory both
+   refused (skipped on Windows, which will not create symlinks unprivileged — CI is Linux
+   and runs them).
+6. Malformed input: not-mail, empty bytes, binary rubbish, unclosed MIME boundary, unknown
+   charset, no text part, broken encoded word, malformed address — each tolerated or
+   refused, none crashing.
+7. `content_hash` deterministic and independent of identifier and thread.
+8. ACLs derived from participants, sorted so `acl_hash_of` is stable; no participants
+   yields no grants, which fails closed.
+9. End to end on a real file: offsets resolve against the ORIGINAL body, chunk text is
+   masked text, chunks cover the document, and the whole chain is reproducible.
+10. `make preflight` green — **733 passed, 3 skipped**. Baseline before this slice was
+    614 passed, 0 skipped; no existing test became skipped, and the three are new
+    platform-conditional ones.
+
+### Out of scope
+
+No real corpus — validation against the Enron download is a separate approved step. No
+synthetic Jira/Confluence generator (§19), deferred deliberately. No persistence (S8), no
+OAuth connectors (Phase 4), no embedding (S6).
+
+---
+
+## S6 — Embedding
+
+**Goal:** turn S5's chunks into 768-dimensional vectors in `chunks.embedding`, against the
+real provider, with the cost controls §20 asks for before the first bill rather than after.
+
+### Deliverables
+
+- `packages/retrieval/{config,errors,client,embeddings,persistence}.py` — the transport
+  behind a Protocol, batching bounded twice, retry classified by whether retrying can
+  help, L2 normalisation, the provider's own token accounting, and org-scoped persistence.
+- 67 tests: 65 with no network and no credential, plus 2 gated live ones.
+- A **real recorded provider response** as a fixture, captured through ADC.
+- ADR 0009, and a correction to ADR 0006.
+
+**No migration.** `vector(768)`, HNSW `m=16, ef_construction=64`, `vector_cosine_ops`,
+pgvector 0.8.6 — all verified live, all unchanged.
+
+### Five things that had to be found by calling the API
+
+1. **The 768-wide vector is not normalised.** Default 3072 comes back at exactly L2 1.0;
+   `outputDimensionality=768` comes back at 0.5838. Cosine is scale-invariant so nothing
+   is wrong today — but an inner-product index over mixed-magnitude vectors would be, and
+   that is a schema decision somebody may take later.
+2. **Over-long input is truncated silently under HTTP 200.** 2081 tokens returned
+   `truncated=True` with a well-formed vector describing only a prefix. Refused and never
+   persisted.
+3. **`estimate_tokens` under-counts masked text.** 0.75x on `[EMAIL_A7]` pseudonyms — the
+   exact text that gets embedded. ADR 0006 claimed it was conservative; it is not, and the
+   claim is corrected. Safe at the defaults only because 768 sits far below 2048.
+4. **The batch limit was not the limit.** The first probe failed at ten instances and
+   looked like a batch cap; it was the per-minute request quota. Spaced out, 250 worked in
+   16.8 s. **Requests per minute is the constraint**, so batch large and keep concurrency
+   low — the opposite of the reflex.
+5. **Running Alembic in-process disables the application's loggers.** `fileConfig`
+   defaults to `disable_existing_loggers=True`. Found because a log-content assertion
+   captured nothing; fixed in `env.py`. An audit line that is never emitted looks exactly
+   like an action that never happened.
+
+### Gate S6 — run 2026-08-27 against `gemini-embedding-001` in `asia-south1`
+
+1. All seven prerequisites verified, including the actual budget object — "JUTSU
+   development", INR 2500/month, thresholds 0.5/0.8/1.0, scoped to `jutsu-506513`.
+2. 768-dimensional vectors, L2-normalised by this package, round-trip through
+   `chunks.embedding` and read back through the typed column within 1e-6.
+3. `truncated=true` refused, with the offending global index named.
+4. Cross-tenant: a write scoped to the wrong organisation matches zero rows and leaves the
+   target `NULL`.
+5. Idempotent and resumable: a second pass embeds nothing and spends nothing; a partial
+   pass resumes exactly where it stopped; a failed pass writes nothing.
+6. Retry: transient statuses retried with jittered backoff and bounded attempts; **400
+   never retried**, asserted by call count.
+7. Token accounting uses the provider's `token_count`, and the budget stops the job.
+8. No provider body, chunk text or credential reaches any log record or exception.
+9. `make preflight` green — **798 passed, 5 skipped**. Baseline before this slice was
+   733 passed, 3 skipped; the two new skips are the flag-gated live tests and no existing
+   test became skipped.
+10. One bounded live smoke test against the real provider through ADC.
+
+### Out of scope
+
+No corpus-wide embedding job. No search — fusion, rerank and the ACL-filtered query of
+§12 are S7, where the trap is already recorded: HNSW plus a restrictive ACL filter returns
+fewer than `k`, and the fix is a larger `ef_search` and over-fetching, never a looser
+filter.
+
+---
+
+## S6.5 — Source identity mapping and ACL principals
+
+**Goal:** make the authorization identity model production-grade *before* S7 builds a
+filter on top of it. Inserted between S6 and S7 rather than folded into either, because it
+is a migration plus a connector change plus a `Principal` change, and S7's acceptance
+criteria are the seven adversarial ACL tests of §17.
+
+### Why it could not wait
+
+Built on the old model, S7's adversarial suite would have passed **vacuously**.
+`document_acl.principal_id` was documented as matching `users.external_id`; that column is
+nullable and **nothing in `apps/api` ever writes it**. Every "sees nothing" test would pass
+for the wrong reason, and the "sees something" tests would only pass because a fixture
+seeded the column by hand.
+
+### Deliverables
+
+- Migration **0008** — `source_identities` (org-scoped, RLS enabled *and* forced), plus
+  `org_id` and RLS on `user_groups`, which had fed §12's group filter with no tenant
+  column at all.
+- `Principal.acl_principals` / `.acl_groups`, resolved **eagerly and uncached** inside the
+  session's organisation scope.
+- S3 emits namespaced grants: `local:someone@example.com`.
+- `document_acl` **unchanged** — the namespace is a data convention, not DDL.
+- ADR 0010; ADR 0008's decision 2 marked superseded; `ids.py` and `rbac.py` corrected.
+- **47 new tests**: 18 adversarial at the database layer, 22 at the request layer, 5
+  gained free by adding the two tables to `RLS_TABLES`, and 2 pinning S3's namespacing.
+
+### Three things the investigation found
+
+1. **`users.external_id` is never written.** A grep across `apps/api` returns nothing. The
+   documented ACL join key does not exist in production data.
+2. **`user_groups` had no `org_id` and no RLS** — an authorization input with no
+   database-level tenant isolation, sitting in `RLS_EXEMPT_NO_TENANT` on the grounds that
+   it had "no tenant column at all". True, and that was the defect.
+3. **The mismatch was cardinality, not format.** One column cannot hold six provider
+   identities, which is why a mapping table was unavoidable and a wider `external_id`
+   would not have helped.
+
+### Gate S6.5 — run 2026-08-28
+
+1. Migration 0008 applies, downgrades and re-applies to an identical index fingerprint; a
+   second `upgrade` applies nothing.
+2. RLS **enabled and forced** on both new tables, verified against a live Postgres as the
+   restricted role.
+3. Adversarial: cross-tenant identity invisible, cross-tenant write refused by `WITH
+   CHECK`, unscoped session resolves nothing, counts do not leak.
+4. Revocation and group removal both take effect on the **next** resolution.
+5. An email change leaves authorization byte-identical.
+6. Same subject in two providers resolves as two principals; same subject in two
+   organisations is legitimate and stays isolated.
+7. `scoped_acl_principals` takes no `org_id` — asserted on the signature.
+8. `make preflight` green — **845 passed, 5 skipped**. Baseline before this slice was
+   798 passed, 5 skipped: 47 tests added and **not one new skip**.
+
+### Out of scope
+
+No retrieval filter — that is S7. **Nothing populates `source_identities` in production
+yet**: rows come from tests today and from an OAuth link or directory sync later, so every
+real user still resolves to an empty principal set and sees nothing. That is the correct
+default, and it is not yet a working authorization system. **S6.6 closes exactly that
+sentence.**
+
+---
+
+## S6.6 — Source identity lifecycle
+
+**Goal:** make S7 production-real rather than test-real, by giving `source_identities` the
+production writer S6.5 deliberately left out.
+
+### Why it is its own slice
+
+S6.5's own "out of scope" is the specification for this one. A retrieval filter over a
+table only tests ever write is a filter measured against fixtures — the §17 suite would
+pass while no real caller could see any document at all. Folding it into S7 would mix an
+authorization *lifecycle* with an authorization *filter* in one review.
+
+### The decision this slice records
+
+Administrators may link arbitrary provider subjects, and **an administrator may never link
+one to themselves.** §17 divides the world — roles gate features, ACLs gate data, and
+nothing in `Permission` may confer a document read. A self-link would make a role a way to
+hand yourself somebody else's documents, so the refusal is unconditional and is not a
+permission check: an Owner holds every permission there is, and is refused too.
+
+### Deliverables
+
+- **Automatic linking from a proven mailbox.** Registration and invitation acceptance each
+  create `local:{verified_email}` inside the transaction that creates the user. The address
+  is the one written to `users.email` — the address an OTP was redeemed against, or the one
+  a single-use token reached — **never a request field**. `/v1/invitations/accept` carries a
+  free-text `full_name`, and a test posts another employee's address in it to prove that
+  string reaches nothing.
+- **Idempotent**, on `ON CONFLICT (org_id, source_system, subject) DO NOTHING`. An address
+  already held by somebody else in that tenant links nothing at all, which fails closed
+  rather than moving access between people.
+- **Four routes**, four different guards:
+  `GET /v1/me/identities` (`integration:self_manage`, held by every role including Member),
+  `GET /v1/employees/{id}/identities` (`integration:read`),
+  `POST /v1/employees/{id}/identities` (`integration:connect`),
+  `DELETE /v1/employees/{id}/identities/{sid}` (`integration:revoke`).
+- **Four refusals on the administrative link**, in order: self-link, rank ceiling
+  (`outranks`, strict — a peer is refused), tenant (resolved under RLS, so a foreign user
+  is `NotFound` and not `PermissionDenied`), duplicate subject (`Conflict`, never a silent
+  re-point).
+- **Revocation is immediate** — `is_active` flips, `revoked_at` is stamped, the row
+  survives for the audit trail, and resolution re-reads on every request so there is
+  nothing to invalidate. Self-revocation is allowed; removing your own access is not an
+  escalation.
+- **An audit row per ACL change** — `identity.linked` / `identity.revoked`, actor named by
+  opaque id, `resource_type='source_identity'`, and **no address or subject anywhere in the
+  row** (§4.9, asserted against a `to_jsonb` dump).
+- `revoke_all_for_user` as the offboarding primitive, with **no production caller yet** and
+  that stated rather than hidden — there is no employee-deactivation route today.
+- OpenAPI and the generated TypeScript client regenerated; ADR 0010 updated.
+- **No migration.** 0008 already had every column this needed.
+
+### Gate S6.6 — run 2026-08-28
+
+1. Registering over HTTP creates exactly one `local:` identity, and its subject equals
+   `users.email` — read back through the privileged inspector, because an RLS-scoped
+   "nothing was created" assertion is vacuous.
+2. Staging a registration without redeeming the code links nothing.
+3. Accepting an invitation links the **invited** address; a `full_name` containing another
+   employee's address claims nothing.
+4. The new owner resolves `local:ada@example.com` through `scoped_acl_principals` — the row
+   reaches `Principal`, not merely the table.
+5. A bare Member reads `/v1/me/identities`, and is refused (403) on another employee's
+   identities and on linking.
+6. Self-link refused for an IT Admin **and** for an Owner; peer refused; superior refused;
+   another tenant is `NotFound`; a duplicate subject is `Conflict` and the original link
+   does not move.
+7. A revoked identity stops resolving on the next call, with no cache flush.
+8. A refused link writes no audit row.
+9. Another tenant's identities read as an **empty page**, not a refusal — the read route
+   has no rank check, so the tenant boundary is the only guard and it is the database
+   that holds it.
+10. `make preflight` green — **884 passed, 5 skipped**. Baseline before this slice was 845
+    passed, 5 skipped: 39 tests added and **not one new skip**.
+
+### Out of scope
+
+No OAuth, no provider tokens, no credential storage of any kind, and no Google, Microsoft,
+Slack or GitHub integration. A provider flow later becomes a new *source* of subjects
+feeding this same table and this same lifecycle. Still no retrieval filter — that is S7,
+which can now be built against identities production actually writes.
+
+---
+
+## S7 — ACL-filtered vector retrieval
+
+**Goal:** make §12's retrieval query real, with authorization inside it.
+
+> A user must never retrieve evidence unless they are authorized to see that evidence, and
+> the authorization must happen before the evidence reaches the application.
+
+### The three ways to get this wrong, all of which pass their own tests
+
+- **Post-filter in Python.** Identical rows to a correct implementation, so every
+  outcome-based test passes. Leaks through counts, through `LIMIT`, through pagination.
+- **Pass the principal set in.** Correct at every call site that exists today, one future
+  call site away from a wider or staler one.
+- **Take `org_id` as a parameter.** The tenant becomes something a call site names, which
+  is one refactor from something a request names.
+
+### Deliverables
+
+- `packages/retrieval/search.py` — `search_chunks(session, *, user_id, query_vector, k,
+  after, …)`. **No `principals` parameter and no `org_id` parameter**: principals are
+  resolved inside the function from `user_id`, the tenant is read from the RLS GUC. A test
+  asserts the signature.
+- `ACL_PREDICATE` — §12's filter as a module constant, with ADR 0010's `= ANY(:principals)`.
+  Shared verbatim with the fetch-by-id path, never restated.
+- **`ef_search` ladder 100 → 400 → 1000**, plus `hnsw.iterative_scan = strict_order` and
+  `hnsw.max_scan_tuples`. Every rung re-runs a byte-identical predicate; escalation stops at
+  `k`, at the ladder's end, or when a wider search finds nothing new.
+- `SET LOCAL statement_timeout` — transaction-scoped, so it cannot ride a pooled connection
+  into the next request.
+- Deterministic total ordering `(distance, chunk_id)` and a **keyset** cursor applied inside
+  the same `WHERE`. A cursor carries no authorization; a forged one grants nothing.
+- `packages/retrieval/evidence.py` + `GET /v1/evidence/{chunk_id}` (§15), **404 not 403**.
+- `jutsu_db/acl.py` — the principal resolver, moved so retrieval and the API share one
+  implementation. `scoped_acl_principals` keeps its name and delegates.
+- Migration **0009** — `retrieval:query`, held by every role.
+- ADR 0011.
+
+### The query shape, measured rather than assumed
+
+§12's SQL taken literally — `FROM chunks JOIN documents JOIN sources … ORDER BY distance,
+c.id` — is correct, passes every adversarial test, and takes **3 016 ms** on 40 000 chunks
+with an organisation-wide grant, because the HNSW index is never opened. Two independent
+causes: a join in the vector scan's `FROM` makes the planner drive from `documents`, and a
+secondary sort key forces a full sort. `chunks` alone, ordered by distance alone, is
+**15 ms**. Both fixes move work outward to the `k` already-authorized rows; the ACL
+predicate and the `LIMIT` stay inside. Two string assertions pin the shape, because the
+entire symptom of the regression is slowness.
+
+### Three things the implementation found
+
+1. **`hnsw.ef_search` is unknown to a backend until pgvector's library loads.** `SHOW` fails
+   on a fresh connection; `set_config` succeeds as a placeholder, and pgvector validates and
+   applies it when the module loads — verified on 0.8.6, including that an out-of-range value
+   is rejected loudly rather than ignored.
+2. **The permission was drafted as `evidence:read` and an existing test refused it.**
+   `test_no_permission_grants_document_visibility` forbids a permission naming a data-plane
+   object. The refusal was correct: such a name reads as a grant over that object whatever
+   its docstring says. It became `retrieval:query` — the query is the feature, the evidence
+   is not.
+
+### Gate S7 — run 2026-08-28
+
+All against **real Postgres 16.15 + pgvector 0.8.6 with a real HNSW index**, as the
+restricted `jutsu_app` role.
+
+1. Same-tenant authorized document returned; same-tenant unauthorized never returned — and
+   the unauthorized one is seeded *nearer the query vector*, so a filter running after
+   ranking would surface it first.
+2. Cross-tenant never returned, with the **same principal string** granted in both tenants.
+3. Principal mismatch, empty principal set and tenant mismatch all return nothing, not an
+   error. An org-wide grant still reaches everyone (§17.4).
+4. Group grant reaches only a member; removing membership takes effect on the next query
+   with no flush.
+5. Revoked source identity loses access immediately — asserted both directions
+   (revoke, restore), so a merely-slow cache cannot pass.
+6. `EXPLAIN` contains `document_acl` (§17.7).
+7. `k` of 1, 5, 50 and 500 all refuse the unauthorized document.
+8. Pagination walked to exhaustion leaks nothing; a forged cursor pointing at an
+   unauthorized chunk grants nothing.
+9. A query aimed **exactly at the unauthorized document's own vector** returns it to nobody.
+10. Counts are independent per caller (§17.6). Unauthorized ids and text never appear in any
+    `Evidence` object.
+11. The log line contains no address, principal, chunk id or content (§4.9).
+12. **Production path, over HTTP:** register → automatic `local:` identity → `Principal` →
+    ACL-filtered search → the authorized chunk. Then revoke via the real S6.6 `DELETE`
+    route → zero results and 404 on the evidence route, same session cookie.
+13. **Sabotage check** — replacing `ACL_PREDICATE` with `TRUE` fails 22 of the 37 adversarial
+    tests. The suite is not green about nothing.
+14. **Latency at 40 000 chunks**, both ACL shapes, k=30: organisation-wide grant 0–32 ms on
+    an HNSW index scan; 1-in-40 grant 16–61 ms on an ACL-first exact plan. `document_acl`
+    is in both plans. Dev-container numbers on synthetic vectors — indicative, not a budget.
+15. `make preflight` green — **934 passed, 5 skipped**. Baseline before this slice was 884
+    passed, 5 skipped: 50 tests added and **not one new skip**.
+
+### Out of scope
+
+No fusion, no rerank, no graph expansion, no `/v1/ask` — §12's full pipeline is S9. Nothing
+embeds a question yet, which is also why there is no search *route*: a search endpoint with
+no query embedding would be a surface that is not real (§4.11). No graph-side evidence
+filtering. No UI beyond the regenerated client types.
 
 ---
 

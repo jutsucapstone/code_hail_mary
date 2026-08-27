@@ -150,6 +150,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/employees/{user_id}/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Employee Identities
+         * @description Which accounts are linked to one employee.
+         *
+         *     Read-only, so there is no rank check: `integration:read` is the ceiling, and an
+         *     administrator who may see the organisation's integrations may see which of its people
+         *     are attached to them.
+         */
+        get: operations["read_employee_identities_v1_employees__user_id__identities_get"];
+        put?: never;
+        /**
+         * Create Employee Identity
+         * @description Link a provider subject to an employee. **This grants document access.**
+         *
+         *     Everything about this endpoint follows from that sentence. The permission is the
+         *     outer gate; inside, `link_identity` refuses a self-link outright, enforces the rank
+         *     ceiling, resolves the target under row-level security, and writes an audit row naming
+         *     the actor.
+         *
+         *     The self-link refusal is not a permission check and cannot be granted away. §17 keeps
+         *     roles and ACLs apart — nothing in `Permission` may confer a document read — and an
+         *     administrator linking themselves would be exactly that.
+         */
+        post: operations["create_employee_identity_v1_employees__user_id__identities_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/employees/{user_id}/identities/{identity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Employee Identity
+         * @description Revoke a linked identity. Effective on the target's next request.
+         *
+         *     A deactivation rather than a delete, so the row survives for the audit trail. There is
+         *     nothing to invalidate: principals are resolved fresh on every request, which is what
+         *     makes "immediately" true rather than aspirational.
+         */
+        delete: operations["delete_employee_identity_v1_employees__user_id__identities__identity_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/evidence/{chunk_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Evidence
+         * @description The source span behind one citation, if this caller may read it.
+         *
+         *     A chunk the caller is not granted is **404, not 403**. A 403 would confirm that the
+         *     chunk exists, which turns this endpoint into an oracle: walk ids, read the status
+         *     codes, and recover the shape of a tenant's document population without ever being
+         *     authorized to read one. `NotFound` is the single answer for never-existed,
+         *     another-tenant's, and not-granted-to-you.
+         */
+        get: operations["read_evidence_v1_evidence__chunk_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/invitations/accept": {
         parameters: {
             query?: never;
@@ -198,6 +285,30 @@ export interface paths {
          *     to discover that they are a Member.
          */
         get: operations["read_me_v1_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read My Identities
+         * @description Which accounts are linked to the caller, and which were revoked.
+         *
+         *     Held by every role including a bare Member. Seeing what has been connected on your
+         *     behalf is not an administrative privilege, and gating it on one would leave the people
+         *     with the least power least able to check.
+         */
+        get: operations["read_my_identities_v1_me_identities_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -375,6 +486,36 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /**
+         * EvidenceView
+         * @description One chunk, with everything a citation needs to render (§12 `Citation`).
+         *
+         *     `char_start` and `char_end` index the **original** document, while `text` is the
+         *     masked body the model was given. That is deliberate and it is the trap CLAUDE.md
+         *     records: highlighting the returned text with these offsets mis-highlights the span,
+         *     because masking changes lengths. They address the source document, not this string.
+         */
+        EvidenceView: {
+            /** Char End */
+            char_end: number;
+            /** Char Start */
+            char_start: number;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Source System */
+            source_system: string;
+            /** Text */
+            text: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -396,6 +537,12 @@ export interface components {
              */
             email: string;
             role: components["schemas"]["Role"];
+        };
+        /** LinkPayload */
+        LinkPayload: {
+            source_system: components["schemas"]["SourceSystem"];
+            /** Subject */
+            subject: string;
         };
         /**
          * MemberCounts
@@ -441,7 +588,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage";
+        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query";
         /** RegisterPayload */
         RegisterPayload: {
             /** Company Domain */
@@ -500,6 +647,44 @@ export interface components {
          * @enum {string}
          */
         Role: "owner" | "super_admin" | "hr_admin" | "it_admin" | "analyst" | "viewer" | "member";
+        /** SourceIdentityPage */
+        SourceIdentityPage: {
+            /** Items */
+            items: components["schemas"]["SourceIdentityView"][];
+        };
+        /**
+         * SourceIdentityView
+         * @description One linked identity, as a caller sees it.
+         *
+         *     `subject` is returned. It is an identifier rather than a secret — the point of the
+         *     transparency surface is to say *which* account is linked, and an opaque row that will
+         *     not name it answers nothing. It is never a credential; no token is stored anywhere in
+         *     this product.
+         */
+        SourceIdentityView: {
+            /** Id */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /**
+             * Linked At
+             * Format: date-time
+             */
+            linked_at: string;
+            /** Linked By */
+            linked_by: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            source_system: components["schemas"]["SourceSystem"];
+            /** Subject */
+            subject: string;
+        };
+        /**
+         * SourceSystem
+         * @description Every system JUTSU can read from. Read-only, always (§4.8).
+         * @enum {string}
+         */
+        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -728,6 +913,133 @@ export interface operations {
             };
         };
     };
+    read_employee_identities_v1_employees__user_id__identities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceIdentityPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_employee_identity_v1_employees__user_id__identities_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceIdentityView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_employee_identity_v1_employees__user_id__identities__identity_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_evidence_v1_evidence__chunk_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chunk_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     accept_v1_invitations_accept_post: {
         parameters: {
             query?: never;
@@ -777,6 +1089,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+        };
+    };
+    read_my_identities_v1_me_identities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceIdentityPage"];
                 };
             };
         };

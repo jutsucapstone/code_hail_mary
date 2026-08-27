@@ -218,6 +218,56 @@
         "title": "EmployeePage",
         "type": "object"
       },
+      "EvidenceView": {
+        "description": "One chunk, with everything a citation needs to render (\u00a712 `Citation`).\n\n`char_start` and `char_end` index the **original** document, while `text` is the\nmasked body the model was given. That is deliberate and it is the trap CLAUDE.md\nrecords: highlighting the returned text with these offsets mis-highlights the span,\nbecause masking changes lengths. They address the source document, not this string.",
+        "properties": {
+          "char_end": {
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "text",
+          "char_start",
+          "char_end",
+          "occurred_at"
+        ],
+        "title": "EvidenceView",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -259,6 +309,26 @@
           "role"
         ],
         "title": "InvitePayload",
+        "type": "object"
+      },
+      "LinkPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "source_system": {
+            "$ref": "#/components/schemas/SourceSystem"
+          },
+          "subject": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_system",
+          "subject"
+        ],
+        "title": "LinkPayload",
         "type": "object"
       },
       "MemberCounts": {
@@ -368,7 +438,8 @@
           "audit:read",
           "profile:self_read",
           "profile:self_update",
-          "integration:self_manage"
+          "integration:self_manage",
+          "retrieval:query"
         ],
         "title": "Permission",
         "type": "string"
@@ -520,6 +591,88 @@
           "member"
         ],
         "title": "Role",
+        "type": "string"
+      },
+      "SourceIdentityPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SourceIdentityView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SourceIdentityPage",
+        "type": "object"
+      },
+      "SourceIdentityView": {
+        "description": "One linked identity, as a caller sees it.\n\n`subject` is returned. It is an identifier rather than a secret \u2014 the point of the\ntransparency surface is to say *which* account is linked, and an opaque row that will\nnot name it answers nothing. It is never a credential; no token is stored anywhere in\nthis product.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "linked_at": {
+            "format": "date-time",
+            "title": "Linked At",
+            "type": "string"
+          },
+          "linked_by": {
+            "title": "Linked By",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "source_system": {
+            "$ref": "#/components/schemas/SourceSystem"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_system",
+          "subject",
+          "is_active",
+          "linked_at",
+          "revoked_at",
+          "linked_by"
+        ],
+        "title": "SourceIdentityView",
+        "type": "object"
+      },
+      "SourceSystem": {
+        "description": "Every system JUTSU can read from. Read-only, always (\u00a74.8).",
+        "enum": [
+          "local",
+          "gmail",
+          "m365",
+          "slack",
+          "jira",
+          "confluence",
+          "github"
+        ],
+        "title": "SourceSystem",
         "type": "string"
       },
       "ValidationError": {
@@ -873,6 +1026,193 @@
         ]
       }
     },
+    "/v1/employees/{user_id}/identities": {
+      "get": {
+        "description": "Which accounts are linked to one employee.\n\nRead-only, so there is no rank check: `integration:read` is the ceiling, and an\nadministrator who may see the organisation's integrations may see which of its people\nare attached to them.",
+        "operationId": "read_employee_identities_v1_employees__user_id__identities_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceIdentityPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Employee Identities",
+        "tags": [
+          "identities"
+        ]
+      },
+      "post": {
+        "description": "Link a provider subject to an employee. **This grants document access.**\n\nEverything about this endpoint follows from that sentence. The permission is the\nouter gate; inside, `link_identity` refuses a self-link outright, enforces the rank\nceiling, resolves the target under row-level security, and writes an audit row naming\nthe actor.\n\nThe self-link refusal is not a permission check and cannot be granted away. \u00a717 keeps\nroles and ACLs apart \u2014 nothing in `Permission` may confer a document read \u2014 and an\nadministrator linking themselves would be exactly that.",
+        "operationId": "create_employee_identity_v1_employees__user_id__identities_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceIdentityView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Employee Identity",
+        "tags": [
+          "identities"
+        ]
+      }
+    },
+    "/v1/employees/{user_id}/identities/{identity_id}": {
+      "delete": {
+        "description": "Revoke a linked identity. Effective on the target's next request.\n\nA deactivation rather than a delete, so the row survives for the audit trail. There is\nnothing to invalidate: principals are resolved fresh on every request, which is what\nmakes \"immediately\" true rather than aspirational.",
+        "operationId": "delete_employee_identity_v1_employees__user_id__identities__identity_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "identity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Identity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Employee Identity",
+        "tags": [
+          "identities"
+        ]
+      }
+    },
+    "/v1/evidence/{chunk_id}": {
+      "get": {
+        "description": "The source span behind one citation, if this caller may read it.\n\nA chunk the caller is not granted is **404, not 403**. A 403 would confirm that the\nchunk exists, which turns this endpoint into an oracle: walk ids, read the status\ncodes, and recover the shape of a tenant's document population without ever being\nauthorized to read one. `NotFound` is the single answer for never-existed,\nanother-tenant's, and not-granted-to-you.",
+        "operationId": "read_evidence_v1_evidence__chunk_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chunk_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chunk Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Evidence",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
     "/v1/invitations/accept": {
       "post": {
         "description": "Join an organisation, and sign in.\n\nNo second code is sent. The token reached the invited address and nowhere else, so\nholding it already proves the same thing an emailed code would \u2014 sending another\nwould be ceremony, not security.\n\nA welcome does go out, and it is not ceremony. `jutsu_id` below is shown on exactly\none screen, and the console asks for it by name at every subsequent sign-in \u2014 so a\nclosed tab currently costs somebody their identifier and an email to their\nadministrator. The message carries that, their role and the address to sign in with.\nIt carries no organisation identifier: the sign-in form does not ask for one.",
@@ -934,6 +1274,28 @@
         "summary": "Read Me",
         "tags": [
           "me"
+        ]
+      }
+    },
+    "/v1/me/identities": {
+      "get": {
+        "description": "Which accounts are linked to the caller, and which were revoked.\n\nHeld by every role including a bare Member. Seeing what has been connected on your\nbehalf is not an administrative privilege, and gating it on one would leave the people\nwith the least power least able to check.",
+        "operationId": "read_my_identities_v1_me_identities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceIdentityPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read My Identities",
+        "tags": [
+          "identities"
         ]
       }
     },
