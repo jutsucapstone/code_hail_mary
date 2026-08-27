@@ -4,6 +4,14 @@ Pure types. No IO, no LLM calls, no database access; every other package depends
 this one, so it must stay import-cheap and side-effect free.
 """
 
+from jutsu_core.chunking import (
+    DEFAULT_MIN_TOKENS,
+    DEFAULT_OVERLAP_RATIO,
+    DEFAULT_TARGET_TOKENS,
+    TokenCounter,
+    chunk_document,
+    estimate_tokens,
+)
 from jutsu_core.errors import (
     AclDenied,
     Conflict,
@@ -36,13 +44,36 @@ from jutsu_core.models import (
     acl_hash_of,
     content_hash_of,
 )
+from jutsu_core.pii import (
+    CARD_DETECTOR,
+    DEFAULT_DETECTORS,
+    EMAIL_DETECTOR,
+    IBAN_DETECTOR,
+    PHONE_DETECTOR,
+    SSN_DETECTOR,
+    Detection,
+    PiiDetector,
+    RegexDetector,
+    canonicalise,
+    mask,
+)
 
 __all__ = [
+    "CARD_DETECTOR",
+    "DEFAULT_DETECTORS",
+    "DEFAULT_MIN_TOKENS",
+    "DEFAULT_OVERLAP_RATIO",
+    "DEFAULT_TARGET_TOKENS",
+    "EMAIL_DETECTOR",
+    "IBAN_DETECTOR",
+    "PHONE_DETECTOR",
+    "SSN_DETECTOR",
     "AclDenied",
     "AclEntry",
     "Chunk",
     "Conflict",
     "Connector",
+    "Detection",
     "ExtractionRejected",
     "InsufficientEvidence",
     "InternalError",
@@ -52,16 +83,23 @@ __all__ = [
     "MaskedSpan",
     "NotFound",
     "PermissionDenied",
+    "PiiDetector",
     "PiiType",
     "RateLimited",
     "RawDocument",
+    "RegexDetector",
     "ServiceUnavailable",
     "SourceSystem",
+    "TokenCounter",
     "Unauthenticated",
     "ValidationFailed",
     "acl_hash_of",
+    "canonicalise",
+    "chunk_document",
     "content_hash_of",
+    "estimate_tokens",
     "generate_jutsu_id",
     "is_valid_jutsu_id",
+    "mask",
     "normalise_jutsu_id",
 ]
