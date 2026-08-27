@@ -3,10 +3,10 @@
 **Roles gate features; ACLs gate data. Never conflate them** (§17). Nothing in
 `Permission` grants a document read, and nothing here can. An Organization Owner with no
 ACL grant still sees zero evidence, because visibility is decided by
-`document_acl.principal_id` matching `users.external_id` — a mechanism this module cannot
-reach. That omission is deliberate and load-bearing: there is no `memory:read_all` to
-hand out by accident, which is the most likely way an onboarding feature could quietly
-breach the product invariant.
+`document_acl.principal_id` matching a namespaced provider subject the caller holds in
+`source_identities` (ADR 0010) — a mechanism this module cannot reach. That omission is
+deliberate and load-bearing: there is no `memory:read_all` to hand out by accident, which
+is the most likely way an onboarding feature could quietly breach the product invariant.
 
 This module is the *authoring* copy. Migration 0002 seeds the same values into Postgres
 and then revokes write access to those tables from the application role, so the database
@@ -65,6 +65,17 @@ class Permission(StrEnum):
     PROFILE_SELF_READ = "profile:self_read"
     PROFILE_SELF_UPDATE = "profile:self_update"
     INTEGRATION_SELF_MANAGE = "integration:self_manage"
+
+    #: Retrieval, held by every role. §17: roles gate features, ACLs gate data.
+    #:
+    #: **It names the query, not the evidence, and that is deliberate.** It was first
+    #: written `evidence:read` and `test_no_permission_grants_document_visibility`
+    #: refused it — correctly. A permission spelled after a data-plane object reads as
+    #: a grant over that object, and the next person to add one would follow the
+    #: precedent. This permits *issuing a retrieval query*; which chunks come back is
+    #: decided by `document_acl` inside the SQL, per caller, per request. Holding it
+    #: grants access to no document, and no permission in this enum ever will.
+    RETRIEVAL_QUERY = "retrieval:query"
 
 
 class Role(StrEnum):
@@ -131,6 +142,7 @@ _EVERYONE = (
     Permission.PROFILE_SELF_READ,
     Permission.PROFILE_SELF_UPDATE,
     Permission.INTEGRATION_SELF_MANAGE,
+    Permission.RETRIEVAL_QUERY,
 )
 
 ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = MappingProxyType(

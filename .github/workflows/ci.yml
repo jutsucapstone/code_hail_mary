@@ -27,6 +27,12 @@ env:
   JUTSU_TEST_MIGRATION_URL: postgresql+asyncpg://jutsu:jutsu_ci@localhost:5432/jutsu_test
   DATABASE_URL: postgresql+asyncpg://jutsu_app:jutsu_app_ci@localhost:5432/jutsu_test
   MIGRATION_DATABASE_URL: postgresql+asyncpg://jutsu:jutsu_ci@localhost:5432/jutsu_test
+  # Neo4j has no row-level security, so `org_id` on every query is the whole tenancy
+  # mechanism and the adversarial suite proving it must actually run. A skipped graph
+  # suite is unverified tenant isolation, which is exactly what this job exists to catch.
+  NEO4J_URI: bolt://localhost:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: jutsu_ci
 
 jobs:
   preflight:
@@ -51,6 +57,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+
+      # Matches infra/docker/compose.yml: same image, same major version as AuraDB 5.
+      # Constraints, fulltext indexes, transaction timeouts and the bitemporal comparisons
+      # have no in-memory equivalent, so without this the graph suite would skip and CI
+      # would be green on untested tenant isolation.
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/jutsu_ci
+          NEO4J_server_memory_heap_max__size: 1G
+        ports:
+          - 7687:7687
+          - 7474:7474
+        # Neo4j accepts TCP well before it will answer a query, and the suite's first act
+        # is to apply a migration. A long start period is cheaper than a flaky job.
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474 || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 30s
 
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +145,12 @@ jobs:
       # unverified, which is exactly the failure this job exists to catch.
       - name: Assert database tests were not skipped
         run: uv run pytest packages/db -q --no-header -p no:randomly | tee /tmp/db.txt && ! grep -q 'skipped' /tmp/db.txt
+
+      # Same rule for the graph. Its tenancy suite is the only thing standing between a
+      # forgotten `WHERE org_id = $org_id` and a cross-tenant read, because Neo4j has no
+      # policy layer underneath to fail closed.
+      - name: Assert graph tests were not skipped
+        run: uv run pytest packages/graph -q --no-header -p no:randomly | tee /tmp/graph.txt && ! grep -q 'skipped' /tmp/graph.txt
 
       # The build is the real gate for the web app — lint and tsc both pass on things
       # that fail to compile under Turbopack.

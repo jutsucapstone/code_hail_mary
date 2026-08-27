@@ -2,18 +2,27 @@
 
 Format: ``JUTSU-{EMP|ADM|HR}-{8 characters}``.
 
-Three separate concepts must never be conflated, and this module owns only the third:
+Four separate concepts must never be conflated, and this module owns only the last:
 
-===================  ==========================================================
-``users.id``         Database primary key. Internal, never displayed.
-``users.external_id``The **ACL principal**. ``document_acl.principal_id`` matches
-                     it, and it holds the customer IdP's subject. Writing a JUTSU
-                     ID here would silently break evidence visibility the day a
-                     real tenant connects, because their grants carry IdP object
-                     ids that would match nothing.
-``jutsu_id``         What a person reads out over the phone. Display and lookup
-                     only; never an authorisation input.
-===================  ==========================================================
+=========================  ====================================================
+``users.id``               Database primary key. Internal, never displayed.
+``users.external_id``      The primary IdP subject, where one exists. **No longer
+                           the ACL principal** — migration 0008 moved that to
+                           ``source_identities`` because one column cannot hold
+                           six provider identities (ADR 0010). Nothing in the
+                           authorisation path reads it.
+``source_identities``      The **ACL principal**, one row per provider:
+                           ``document_acl.principal_id`` matches
+                           ``{source_system}:{subject}``, where ``subject`` is the
+                           provider-native immutable id. Email is display data,
+                           not an authorisation key.
+``jutsu_id``               What a person reads out over the phone. Display and
+                           lookup only; never an authorisation input.
+=========================  ====================================================
+
+Writing a JUTSU ID into any of the first three would silently breach the product
+invariant: a grant would match a JUTSU-shaped principal and the holder would gain
+visibility nobody granted them.
 
 **Why Crockford base32 rather than "A-Z0-9 minus the confusable ones".**
 

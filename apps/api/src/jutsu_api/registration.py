@@ -74,6 +74,7 @@ from jutsu_api.config import (
     Settings,
 )
 from jutsu_api.email import EmailSender
+from jutsu_api.identities import link_verified_email
 
 __all__ = [
     "InvalidDomain",
@@ -473,6 +474,14 @@ async def complete_registration(
             "jid": jutsu_id,
             "now": now,
         },
+    )
+
+    # The address an OTP was just redeemed against, so mailbox control is proven. Taken
+    # from the same value written to `users.email` above and never from a request field:
+    # a link derived from untrusted input would be an unverified grant of document access
+    # (ADR 0010).
+    await link_verified_email(
+        session, org_id=org_id, user_id=user_id, verified_email=request.work_email
     )
 
     # Binds the reserved id to this user. A compare-and-set, so it cannot be claimed twice.

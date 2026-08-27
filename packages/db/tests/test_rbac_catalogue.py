@@ -61,10 +61,17 @@ class TestCatalogueInvariants:
         """The control plane must not be able to widen the data plane.
 
         §17: "Roles gate features; ACLs gate data. Never conflate them." Evidence
-        visibility is decided by `document_acl.principal_id` matching
-        `users.external_id`. If a permission ever appears here that implies reading
-        documents, chunks or evidence directly, the onboarding feature has reached into
-        the product invariant and this test is the tripwire.
+        visibility is decided by `document_acl.principal_id` matching the caller's
+        namespaced source-identity subjects (ADR 0010 — it was `users.external_id` when
+        this test was written, and that column no longer means anything). If a permission
+        ever appears here that implies reading documents, chunks or evidence directly, a
+        feature has reached into the product invariant and this test is the tripwire.
+
+        **It has already caught one.** S7's retrieval permission was drafted as
+        `evidence:read` and refused here. The refusal was right: a permission spelled
+        after a data-plane object reads as a grant over that object however the docstring
+        argues otherwise, and the next person to add one follows the precedent. It became
+        `retrieval:query` — the query is the feature, the evidence is not.
         """
         forbidden = {"document", "chunk", "evidence", "memory", "acl"}
         offenders = {
@@ -102,10 +109,28 @@ class TestCatalogueInvariants:
             assert Permission.PROFILE_SELF_READ in permissions, role
 
     def test_member_has_nothing_but_self_service(self) -> None:
-        assert ROLE_PERMISSIONS[Role.MEMBER] == {
+        """A Member holds exactly what *every* role holds, and nothing beyond it.
+
+        Stated as an intersection rather than only as a list, because the list was the
+        weaker half: it had to be edited whenever a universal permission was added, and an
+        edit made to turn a test green is an edit that stops asking the original question.
+        The intersection cannot drift — it says a Member is the floor, whatever the floor
+        becomes — and the list below then pins what that floor currently is.
+        """
+        universal = set.intersection(*(set(held) for held in ROLE_PERMISSIONS.values()))
+
+        assert set(ROLE_PERMISSIONS[Role.MEMBER]) == universal, (
+            "a Member holds something not every role holds"
+        )
+        assert universal == {
             Permission.PROFILE_SELF_READ,
             Permission.PROFILE_SELF_UPDATE,
             Permission.INTEGRATION_SELF_MANAGE,
+            # Retrieval. Universal on purpose: asking the corporate memory a question is
+            # the feature every employee is hired to use, and `document_acl` decides what
+            # comes back. Gating it on rank would make a role decide what a person may
+            # read, which is the §17 conflation the test above exists to prevent.
+            Permission.RETRIEVAL_QUERY,
         }
 
 

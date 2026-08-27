@@ -157,6 +157,17 @@ class Principal:
     role: Role
     permissions: frozenset[Permission]
 
+    #: What this caller may *see*, as opposed to what they may *do* (§17 — roles gate
+    #: features, ACLs gate data, never conflate them). Each entry is a namespaced
+    #: provider subject, `{source_system}:{subject}`, matching `document_acl.principal_id`
+    #: exactly (ADR 0010).
+    #:
+    #: **Empty is the default and it is fail-closed.** A caller with no linked source
+    #: identity holds no principals, so every ACL predicate is false and they see no
+    #: protected document. That is the §2 invariant holding, not a missing feature.
+    acl_principals: frozenset[str] = frozenset()
+    acl_groups: frozenset[str] = frozenset()
+
     def can(self, permission: Permission) -> bool:
         return permission in self.permissions
 

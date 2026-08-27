@@ -1,8 +1,8 @@
 """Contract tests for the domain models.
 
-These guard the invariants later slices depend on. The full ten-case PII offset suite
-(§9.1) lands with the implementation in S4; what is tested here is only what the models
-themselves promise.
+These guard the invariants later slices depend on. The ten-case PII offset suite (§9.1)
+lives with the implementation in `test_pii.py`; what is tested here is only what the
+models themselves promise about their own shape.
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@
 # Package names are the ones in pyproject.toml: `jutsu-api`, not `api`. The short forms
 # were wrong here from the start, so `make api` and `make worker` had never run.
 
-.PHONY: help dev api worker up down migrate migrate-down migrate-rev psql seed test preflight eval gate deploy clean api-types api-types-check
+.PHONY: help dev api worker up down migrate migrate-pg migrate-graph migrate-down migrate-pg-down migrate-graph-down migrate-status migrate-rev psql seed test preflight eval gate deploy clean api-types api-types-check
 
 help:
 	@echo "JUTSU targets"
@@ -24,8 +24,9 @@ help:
 	@echo "  make worker     arq worker"
 	@echo "  make up         start Postgres + Neo4j + Redis (needs Docker)"
 	@echo "  make down       stop them"
-	@echo "  make migrate    apply Postgres migrations (Neo4j at S2)"
-	@echo "  make migrate-down  roll Postgres back to base"
+	@echo "  make migrate    apply Postgres + Neo4j migrations"
+	@echo "  make migrate-down  roll both back to base"
+	@echo "  make migrate-status  what is applied, in both stores"
 	@echo "  make psql       psql shell into the dev database"
 	@echo "  make seed       ingest the pilot corpus                [S3]"
 	@echo "  make test       full test suite"
@@ -124,11 +125,38 @@ preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-p
 
 # ---------------------------------------------------------------- schema
 
-migrate:
+# Both stores, in dependency order, and NOT one recipe with two lines.
+#
+# Make runs prerequisites left to right and aborts the whole target the moment one exits
+# non-zero, so `make migrate` cannot report success having migrated Postgres and skipped
+# Neo4j. Written as two lines inside one recipe it would still abort — each line is its
+# own shell and make checks the status — but as separate targets the failure names which
+# store broke, and either can be run alone during an incident.
+#
+# Postgres first: nothing in the graph depends on it today, but a schema change that
+# needs both should land in the store that has transactions.
+migrate: migrate-pg migrate-graph
+
+migrate-pg:
 	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini upgrade head
 
-migrate-down:
+# Numbered Cypher, a ledger node and checksum verification — see packages/graph/migrations.py.
+migrate-graph:
+	uv run --env-file .env --package jutsu-graph python -m jutsu_graph.cli upgrade
+
+migrate-down: migrate-graph-down migrate-pg-down
+
+migrate-pg-down:
 	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini downgrade base
+
+migrate-graph-down:
+	uv run --env-file .env --package jutsu-graph python -m jutsu_graph.cli downgrade
+
+# What has been applied, in both stores. The first thing to run when a deploy disagrees
+# with what you expected.
+migrate-status:
+	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini current
+	uv run --env-file .env --package jutsu-graph python -m jutsu_graph.cli current
 
 migrate-rev:
 	uv run --env-file .env --package jutsu-db alembic -c packages/db/alembic.ini revision --autogenerate -m "$(m)"

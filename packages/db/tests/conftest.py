@@ -183,7 +183,34 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
                 "INSERT INTO document_acl (document_id, principal_type, principal_id, "
                 "org_id, permission) VALUES (:doc, 'user', :pid, :org, 'read')"
             ),
-            {"doc": doc_id, "pid": f"user-{label}", "org": org_id},
+            # Namespaced, as ADR 0010 requires: a bare subject is meaningless outside the
+            # system that issued it.
+            {"doc": doc_id, "pid": f"local:user-{label}", "org": org_id},
+        )
+
+        # One user, one source identity and one group per organisation, so migration
+        # 0008's two new RLS tables carry exactly one row each per tenant — which is what
+        # `test_counts_do_not_leak` needs in order to cover them rather than skip them.
+        user_id = uuid.uuid4()
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, org_id, email, status) VALUES (:id, :org, :email, 'active')"
+            ),
+            {"id": user_id, "org": org_id, "email": f"{label}@example.com"},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO source_identities (org_id, user_id, source_system, subject) "
+                "VALUES (:org, :user, 'local', :subject)"
+            ),
+            {"org": org_id, "user": user_id, "subject": f"user-{label}"},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO user_groups (user_id, org_id, group_external_id) "
+                "VALUES (:user, :org, :group)"
+            ),
+            {"user": user_id, "org": org_id, "group": f"group-{label}"},
         )
 
     await conn.commit()
