@@ -58,6 +58,36 @@ The repository name (`jutsu`) and region must match `REPOSITORY` and `REGION` in
 gcloud artifacts repositories create jutsu --repository-format=docker --location="$REGION" --description="JUTSU service images"
 ```
 
+### 2b. Vertex AI, and the budget that has to exist first
+
+Embedding is the first thing in JUTSU that costs money per unit of work, so the guardrail
+goes in before the capability does — §20 asks for budget alerts "day one, not after the
+first bill", and a budget created afterwards is a budget that was not there for the run
+that mattered.
+
+```bash
+gcloud services enable aiplatform.googleapis.com --project "$PROJECT_ID"
+gcloud services enable billingbudgets.googleapis.com --project "$PROJECT_ID"
+
+# Confirm a budget EXISTS rather than assuming it does. An empty list here is a finding.
+gcloud billing budgets list --billing-account="$BILLING_ACCOUNT"
+```
+
+The runtime service account needs `roles/aiplatform.user` and nothing wider. It is granted
+below with the other runtime roles; called out here because the API being enabled and the
+account being able to use it are two different things, and the second failure surfaces as
+a 403 in a worker rather than at deploy time.
+
+**Region.** `VERTEX_LOCATION` is a data-residency decision, not a latency one (§20 —
+"Vertex AI, regional"). `gemini-embedding-001`, `text-embedding-004` and
+`text-multilingual-embedding-002` were all verified callable in `asia-south1` on
+2026-08-27. Moving to another region to chase availability moves customer text with it.
+
+**No key file.** Cloud Run supplies the attached service account and
+`packages/retrieval` uses Application Default Credentials. `GOOGLE_APPLICATION_CREDENTIALS`
+stays empty in every deployed environment; a key on disk is a credential that can be
+copied.
+
 ### 3. Two service accounts, not one
 
 The account that *deploys* and the account the services *run as* are separate on purpose.
@@ -78,10 +108,10 @@ for role in roles/run.admin roles/artifactregistry.writer roles/iam.serviceAccou
 done
 ```
 
-Runtime — reach Cloud SQL and read its own secrets, and nothing else:
+Runtime — reach Cloud SQL, read its own secrets, and call Vertex AI. Nothing else:
 
 ```bash
-for role in roles/cloudsql.client roles/secretmanager.secretAccessor; do
+for role in roles/cloudsql.client roles/secretmanager.secretAccessor roles/aiplatform.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" --role="$role"
 done

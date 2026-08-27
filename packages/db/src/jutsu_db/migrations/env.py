@@ -22,7 +22,17 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False, and it is not cosmetic. `fileConfig` defaults to
+    # True, which disables every logger not named in alembic.ini — including
+    # `jutsu.retrieval.*`, `jutsu.api` and `jutsu.graph.*`. Running a migration in the
+    # same process as the application therefore silently switches the application's
+    # logging off, and nothing reports that it happened.
+    #
+    # Harmless for `make migrate`, which is its own process. Not harmless for a test that
+    # migrates and then asserts on log output, and not harmless for any future job that
+    # migrates before doing work — an audit line that is never emitted is indistinguishable
+    # from an action that never occurred (§4.9, §37).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
