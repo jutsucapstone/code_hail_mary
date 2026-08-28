@@ -121,14 +121,33 @@ class TestCrossOrgIsolation:
     async def test_cannot_insert_into_another_org(
         self, conn: AsyncConnection, two_orgs: tuple[uuid.UUID, uuid.UUID]
     ) -> None:
-        """WITH CHECK stops a scoped session writing rows attributed to another org."""
-        org_a, org_b = two_orgs
-        await _scope(conn, org_a)
+        """WITH CHECK stops a scoped session writing rows attributed to another org.
 
+        The foreign source id is read **while scoped to the org that owns it**. Migration
+        0010 put `sources` under the policy, so reading it from org A's scope now returns
+        nothing — which broke this test's setup and is itself worth asserting, so the
+        first half of the test is that lookup failing to see anything.
+
+        Obtaining the id honestly matters: an attacker in a real breach has the foreign id
+        from somewhere else entirely, and the question this test asks is whether knowing
+        it is enough. It is not.
+        """
+        org_a, org_b = two_orgs
+
+        await _scope(conn, org_a)
+        invisible = (
+            (await conn.execute(text("SELECT id FROM sources WHERE org_id = :org"), {"org": org_b}))
+            .scalars()
+            .all()
+        )
+        assert invisible == [], "org A can see org B's source row"
+
+        await _scope(conn, org_b)
         source_id = (
             await conn.execute(text("SELECT id FROM sources WHERE org_id = :org"), {"org": org_b})
         ).scalar_one()
 
+        await _scope(conn, org_a)
         with pytest.raises(DBAPIError):
             await conn.execute(
                 text(

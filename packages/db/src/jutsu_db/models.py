@@ -437,11 +437,22 @@ class Job(Base):
     idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
     payload_json: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The lease. A worker holds a claimed row until this passes; after that any worker
+    #: may reclaim it, which is what makes a crash recoverable rather than terminal.
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    #: Why it failed, not just that it did. A single FAILED state loses the one thing an
+    #: operator needs — whether retrying could possibly help (migration 0010).
+    failure_kind: Mapped[str | None] = mapped_column(String(32))
+    #: When backoff says it may run again. NULL means "as soon as a worker is free".
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()
 
-    __table_args__ = (Index("ix_jobs_state_locked_until", "state", "locked_until"),)
+    __table_args__ = (
+        Index("ix_jobs_state_locked_until", "state", "locked_until"),
+        Index("ix_jobs_org_kind_state_next_attempt", "org_id", "kind", "state", "next_attempt_at"),
+    )
 
 
 class AuditLogEntry(Base):
@@ -501,10 +512,17 @@ class EvalResult(Base):
 #: authorisation inputs — they decide which ACL principals a caller holds — so they belong
 #: under the same policy as the data they gate. Adding them here also extends `test_rls.py`
 #: over them for free, including the §17.6 count-leak case.
+#:
+#: `jobs` and `sources` joined in migration 0010. Both had carried `org_id` since the
+#: initial schema with no policy over it, which is protection by call-site discipline
+#: rather than by the database. `jobs` holds the ingestion queue and `sources` holds the
+#: connector cursor, so S8 made them load-bearing and the gap closed first.
 RLS_TABLES: tuple[str, ...] = (
     "documents",
     "chunks",
     "document_acl",
     "source_identities",
     "user_groups",
+    "jobs",
+    "sources",
 )

@@ -31,6 +31,7 @@ env:
   # mechanism and the adversarial suite proving it must actually run. A skipped graph
   # suite is unverified tenant isolation, which is exactly what this job exists to catch.
   NEO4J_URI: bolt://localhost:7687
+  REDIS_URL: redis://localhost:6379
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: jutsu_ci
 
@@ -62,6 +63,19 @@ jobs:
       # Constraints, fulltext indexes, transaction timeouts and the bitemporal comparisons
       # have no in-memory equivalent, so without this the graph suite would skip and CI
       # would be green on untested tenant isolation.
+      # Backs arq in dev and CI. The pipeline's correctness does not depend on it —
+      # Postgres is the source of truth and every durability test runs there — but the
+      # dispatch surface needs somewhere to connect.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
       neo4j:
         image: neo4j:5-community
         env:

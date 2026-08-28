@@ -16,12 +16,18 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any, ClassVar
 
 from arq import cron
 from arq.connections import RedisSettings
 from jutsu_db import unscoped_session
+from jutsu_retrieval.client import VertexTransport
+from jutsu_retrieval.config import get_embedding_settings
+from jutsu_retrieval.embeddings import Embedder
 from sqlalchemy import text
+
+from jutsu_worker.runner import process_document, process_embedding, process_source
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 
@@ -39,6 +45,51 @@ REAP_MINUTES = set(range(0, 60, 5))
 async def ping(ctx: dict[str, Any]) -> str:
     """No-op job. Exists so the queue wiring is exercised before S8 depends on it."""
     return "pong"
+
+
+async def ingest_source(ctx: dict[str, Any], org_id: str, source_id: str) -> bool:
+    """Dispatch entry point for a source walk.
+
+    **The arguments are a hint about where to look, never an authorization.** `org_id`
+    scopes the database session; row-level security then decides what that scope can see.
+    A forged message naming another tenant reaches no row of theirs — it finds nothing in
+    its own and returns, which is a wasted round trip rather than a leak.
+    """
+    return await process_source(uuid.UUID(org_id), uuid.UUID(source_id))
+
+
+async def ingest_document(
+    ctx: dict[str, Any], org_id: str, job_id: str | None = None
+) -> str | None:
+    """Dispatch entry point for one document.
+
+    Redis may deliver this twice, late, or never. Twice is refused by the lease; late is
+    harmless; never is recovered by the next source run, because the durable job row is
+    what the work actually is.
+    """
+    outcome = await process_document(
+        uuid.UUID(org_id), job_id=uuid.UUID(job_id) if job_id else None
+    )
+    return outcome.value if outcome else None
+
+
+async def embed_document(ctx: dict[str, Any], org_id: str, job_id: str | None = None) -> int | None:
+    """Dispatch entry point for one document's embeddings.
+
+    Builds the provider transport per job rather than holding one open: a worker that is
+    idle overnight should not be holding an authenticated connection pool, and the
+    settings are read fresh so a rotated credential takes effect without a redeploy.
+    """
+    settings = get_embedding_settings()
+    transport = VertexTransport(settings)
+    try:
+        return await process_embedding(
+            uuid.UUID(org_id),
+            Embedder(transport, settings),
+            job_id=uuid.UUID(job_id) if job_id else None,
+        )
+    finally:
+        await transport.aclose()
 
 
 async def reap_expired_registrations(ctx: dict[str, Any]) -> int:
@@ -69,7 +120,7 @@ class WorkerSettings:
     """arq settings. Queue access is behind this one interface so the prod swap to
     Cloud Tasks (§5) touches nothing else."""
 
-    functions: ClassVar[list[object]] = [ping]
+    functions: ClassVar[list[object]] = [ping, ingest_source, ingest_document, embed_document]
 
     #: `run_at_startup` so a deploy clears whatever accumulated while nothing was
     #: running, rather than waiting for the next slot. `unique` is arq's default and is

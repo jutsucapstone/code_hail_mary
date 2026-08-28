@@ -28,7 +28,7 @@ help:
 	@echo "  make migrate-down  roll both back to base"
 	@echo "  make migrate-status  what is applied, in both stores"
 	@echo "  make psql       psql shell into the dev database"
-	@echo "  make seed       ingest the pilot corpus                [S3]"
+	@echo "  make seed       ingest a local corpus   ORG=<uuid> ROOT=<dir> [EMBED=--embed]"
 	@echo "  make test       full test suite"
 	@echo "  make preflight  lint + typecheck + tests  (required before commit, §4.15)"
 	@echo "  make eval       evaluation harness                     [S9]"
@@ -166,9 +166,16 @@ psql:
 
 # ---------------------------------------------------------------- not yet implemented
 
+# S8. Idempotent by construction: a second run lists the same identifiers, matches the
+# same job keys and the same content hashes, and writes nothing.
+#
+# ORG and ROOT are required and there is no default corpus. A seed command that invented
+# documents would put fabricated data behind every downstream measurement (S4.11), and the
+# real Enron corpus is a deliberate act by an operator who has downloaded it (S19).
+#
+# Embedding is opt-in and costs money: add EMBED=--embed once you mean it.
 seed:
-	@echo "seed is implemented in S3. See docs/plan-phase-1.md"
-	@exit 1
+	uv run --env-file .env --package jutsu-worker python -m jutsu_worker.cli seed --org "$(ORG)" --root "$(ROOT)" $(EMBED)
 
 eval:
 	@echo "eval is implemented in S9. See docs/plan-phase-1.md"

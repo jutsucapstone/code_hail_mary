@@ -16,7 +16,7 @@ protect it; everything in Phase 2 depends on chunk offsets and the ACL filter be
 | S5 | D | Chunker with original-document offsets (§9.2) | done |
 | S6 | A | Embedder + HNSW (§9.3) | done |
 | S7 | B | ACL capture + filtered search + 7 adversarial tests (§12, §17) | not started |
-| S8 | B | Job queue, idempotent pipeline, crash resume | not started |
+| S8 | B | Job queue, idempotent pipeline, crash resume | done |
 | S9 | A | Gate harness `scripts/gate.py --phase 1` | not started |
 
 ---
@@ -715,6 +715,88 @@ No fusion, no rerank, no graph expansion, no `/v1/ask` — §12's full pipeline 
 embeds a question yet, which is also why there is no search *route*: a search endpoint with
 no query embedding would be a surface that is not real (§4.11). No graph-side evidence
 filtering. No UI beyond the regenerated client types.
+
+---
+
+## S8 - Production ingestion pipeline
+
+**Goal:** connector to searchable evidence, idempotently, with the queue in Postgres.
+
+```
+ingest.source -> ingest.document -> embed.document
+  walk+cursor    fetch/mask/chunk    vectors
+```
+
+### The discovery that shaped it
+
+Putting RLS on `jobs` - which it had always needed - makes cross-tenant discovery
+impossible, and the mechanism planned for reclaiming crashed work does not function.
+Migration 0002 warned that `FORCE ROW LEVEL SECURITY` covers the table's own owner; it was
+**verified rather than trusted**, first with an invalid probe (a superuser owner bypasses
+RLS regardless) and then correctly: a `SECURITY DEFINER` function over such a table returns
+**zero rows with no error**.
+
+Four options were put up; **option D** was chosen - no global sweeper, recovery org-scoped
+at the start of each source run. The cost is recorded rather than hidden.
+
+### Deliverables
+
+- Migration **0010** - RLS + FORCE on `jobs` and `sources`; document uniqueness becomes
+  partial (`WHERE superseded_by IS NULL`); `fk_documents_superseded_by` becomes DEFERRABLE;
+  `jobs` gains `failure_kind`, `next_attempt_at`, `updated_at` and a claim index.
+- `jutsu_worker.jobs` - claim with `FOR UPDATE SKIP LOCKED` plus a `locked_until` lease,
+  deterministic idempotency keys, jittered bounded retry, dead-letter, org-scoped
+  reclamation.
+- `jutsu_worker.runner` - **three transactions per job**: claim commits, then work, then
+  failure in a fresh transaction.
+- `jutsu_worker.pipeline` - fetch, mask, chunk, persist, version. Reuses S3/S4/S5 whole.
+- `jutsu_worker.ingest` - the source walk, the audit trail, failure classification.
+- `jutsu_worker.cli` plus `make seed`, idempotent, no bundled corpus, embedding opt-in.
+- arq dispatch functions; **Redis added to CI**.
+- ADR 0012.
+
+### Two defects the tests caught
+
+1. **A completed job shadowed its identifier for ever.** Seeding twice showed the second run
+   doing no work at all - and a changed document would never have been re-ingested. Fixed by
+   reopening `completed` jobs on the walk, and deliberately not `failed` or `dead_letter`.
+2. **`audit_log.outcome` is a constrained three-value vocabulary.** Writing a job state into
+   it violated the CHECK constraint from migration 0002. States moved to `meta_json`.
+
+### Gate S8 - run 2026-08-28
+
+1. Migration 0010 upgrade to downgrade to upgrade produces an identical fingerprint; RLS
+   enabled **and forced** on both new tables; the partial index and deferrable FK verified
+   in the catalogue **and** exercised.
+2. Full suite green immediately after the migration, before any pipeline code.
+3. Job store, against real Postgres: duplicate enqueue refused by the constraint, claim
+   takes a lease and counts the attempt, a claimed job is not claimable again, scheduled
+   retries honour `next_attempt_at`, terminal jobs are never reclaimed.
+4. **Tenant isolation**: another tenant's job cannot be claimed even with its id, counts do
+   not leak, an unscoped session claims nothing, enqueueing into another tenant is refused
+   by `WITH CHECK`, and an org-scoped sweep leaves the other tenant's crashed job alone.
+5. **Crash recovery**: an expired lease is reclaimed, a live one is not, and a crash-looping
+   job still reaches `dead_letter` because reclamation does not reset the attempt count.
+6. **Embedding boundary**: the corpus is deleted outright, then the embedding fails - the
+   document job does not become claimable and nothing re-fetches.
+7. Versioning through a **real re-sync**: one current version, history preserved, superseded
+   chunks invisible to S7.
+8. ACLs survive with their namespace; no grant is invented; chunk text is masked; the
+   original is retained; offsets stay within the original body.
+9. `make seed` twice: the second run adds zero rows.
+10. Audit rows for run, document and embedding; no title, body, PII or principal in the
+    audit trail or the logs.
+11. **End to end**: fixture corpus, connector, source job, document job, mask, chunk, embed,
+    pgvector, then `search_chunks` returns the authorized document and the unauthorized one
+    stays invisible. Revoking the identity empties the result.
+12. `make preflight` green - **COUNT_PLACEHOLDER**.
+
+### Out of scope
+
+No KT, no GraphRAG, no LLM layer, no Claude integration, no graph writes, no provider
+connectors, no OAuth or credential storage, no real Enron ingestion. **No multi-tenant
+scheduler** - that is the slice that must decide how tenants are enumerated, and it closes
+the orphaned-job gap as a side effect.
 
 ---
 

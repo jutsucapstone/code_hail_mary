@@ -466,9 +466,16 @@ class TestGroups:
     async def test_a_group_grant_does_not_cross_tenants(
         self, db_session: AsyncSession, world: dict[str, Any]
     ) -> None:
-        """A group of the same name in Beta must not reach an Alpha document."""
-        beta_source = await make_source(db_session, world["beta"])
+        """A group of the same name in Beta must not reach an Alpha document.
+
+        The scope moves to Beta **before** its source is created, and that ordering is a
+        correction rather than a detail. It was the other way round, which meant this test
+        inserted a row attributed to Beta from inside Alpha's scope — a cross-tenant write
+        that succeeded only because `sources` had no policy over it. Migration 0010 put
+        one there and the insert is now refused, which is the policy working.
+        """
         await scope(db_session, world["beta"])
+        beta_source = await make_source(db_session, world["beta"])
         await make_document(
             db_session,
             world["beta"],

@@ -542,15 +542,19 @@ version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "arq" },
+    { name = "jutsu-connectors" },
     { name = "jutsu-core" },
     { name = "jutsu-db" },
+    { name = "jutsu-retrieval" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "arq", specifier = ">=0.26" },
+    { name = "jutsu-connectors", editable = "packages/connectors" },
     { name = "jutsu-core", editable = "packages/core" },
     { name = "jutsu-db", editable = "packages/db" },
+    { name = "jutsu-retrieval", editable = "packages/retrieval" },
 ]
 
 [[package]]

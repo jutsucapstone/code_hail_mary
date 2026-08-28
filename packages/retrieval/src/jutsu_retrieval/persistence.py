@@ -56,20 +56,34 @@ class EmbeddingRun:
     requests: int
 
 
-async def pending_chunks(org_id: UUID, *, limit: int) -> list[PendingChunk]:
+async def pending_chunks(
+    org_id: UUID, *, limit: int, document_id: UUID | None = None
+) -> list[PendingChunk]:
     """Chunks in this organisation that have no vector yet, oldest first.
 
     Ordered by id rather than left to the planner: a stable order makes a partial run
     reproducible, and makes "the same first hundred" mean something when debugging.
+
+    `document_id` narrows the selection to one document, which is what S8's per-document
+    embedding job passes. Without it a job named after one document would embed the whole
+    organisation's backlog — spending another document's budget and making the job's own
+    identity a lie. Omitted, the behaviour is unchanged: the whole organisation, which is
+    what a corpus-wide backfill wants.
     """
     async with org_session(org_id) as session:
         rows = await session.execute(
             text(
                 "SELECT id, text FROM chunks "
                 "WHERE embedding IS NULL AND org_id = :org_id "
+                "AND (CAST(:document_id AS uuid) IS NULL "
+                "     OR document_id = CAST(:document_id AS uuid)) "
                 "ORDER BY id LIMIT :limit"
             ),
-            {"org_id": str(org_id), "limit": limit},
+            {
+                "org_id": str(org_id),
+                "limit": limit,
+                "document_id": str(document_id) if document_id is not None else None,
+            },
         )
         return [PendingChunk(chunk_id=row.id, body=row.text) for row in rows]
 
@@ -119,9 +133,13 @@ async def store_embeddings(
 
 
 async def embed_pending_chunks(
-    org_id: UUID, embedder: Embedder, *, limit: int = 1000
+    org_id: UUID, embedder: Embedder, *, limit: int = 1000, document_id: UUID | None = None
 ) -> EmbeddingRun:
     """Embed up to `limit` unembedded chunks for one organisation, and store them.
+
+    `document_id` narrows the pass to a single document — S8's embedding job is scoped
+    that way so one poison document cannot stall the corpus, and so a retried job does the
+    same bounded amount of work every time.
 
     One pass. Looping until nothing is pending is the job runner's decision (S8), not
     this function's — a function that loops forever is one that cannot be given a budget.
@@ -129,7 +147,7 @@ async def embed_pending_chunks(
     If embedding raises, nothing is written for that pass. The chunks stay `NULL` and the
     next run picks them up, which is why the selection is the resume mechanism.
     """
-    pending = await pending_chunks(org_id, limit=limit)
+    pending = await pending_chunks(org_id, limit=limit, document_id=document_id)
     if not pending:
         return EmbeddingRun(embedded=0, tokens=0, requests=0)
 

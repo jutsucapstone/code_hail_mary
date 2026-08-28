@@ -265,6 +265,40 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   yet. When it lands it must call that primitive rather than looping — the audit rows are
   written inside it for exactly that reason.
 
+
+### Ingestion traps (`apps/worker`)
+
+- **A `SECURITY DEFINER` function over a FORCE-RLS table returns zero rows, with no error.**
+  Verified, not assumed - and it is why there is no cross-tenant job sweeper. Recovery is
+  org-scoped and runs at the start of each source run, so **an organisation whose source is
+  never processed again keeps its orphaned jobs** (ADR 0012). The multi-tenant scheduler is
+  the slice that closes this, and it is deliberately not built yet.
+- **The claim must commit before the work starts.** Claim and work in one transaction and a
+  failure rolls back the `attempts + 1` as well, so the job looks untouched and retries for
+  ever. Bounded attempts are only bounded if the counting survives the failure.
+- **Record a failure in a NEW transaction.** Postgres aborts a transaction at the first
+  error, so a handler writing `failure_kind` into the failed transaction records nothing and
+  raises something unrelated.
+- **A completed job shadows its identifier for ever unless the walk reopens it.** The
+  document key is the identity, not the version, so without `reopen_completed_job` a changed
+  document is never ingested again. `failed` and `dead_letter` are deliberately NOT reopened
+  - that would be an infinite loop nobody sees.
+- **Superseding needs the FK deferred, and the ORDER of the two statements is fixed.** Insert
+  first and the partial index sees two current versions; supersede first with an immediate
+  FK and it references a row that does not exist. `SET CONSTRAINTS
+  fk_documents_superseded_by DEFERRED`, then update, then insert.
+- **`migrate-pg-down` refuses once anything has been superseded.** That is the guard working:
+  the old non-partial constraint cannot represent version history. Clear the data or stay on
+  0010; do not "fix" the migration to delete versions.
+- **The cursor is taken BEFORE the walk.** Taken after, a file modified mid-walk falls
+  between the two instants and is never seen again. Taken before, it is re-listed next run
+  and costs one `unchanged` outcome.
+- **`audit_log.outcome` is `success | denied | failure` and nothing else.** A job state
+  written there fails the CHECK constraint from migration 0002; states go in `meta_json`.
+- **`org_session` caches one engine per process.** A test that changes `DATABASE_URL` must
+  call `dispose_engine()`, or it runs against a pool bound to a schema that no longer exists
+  - the suite then passes one test at a time and fails as a file.
+
 ### Postgres / RLS traps (`packages/db`)
 
 - **A superuser bypasses RLS unconditionally, and `FORCE` does not change that** — FORCE only

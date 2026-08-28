@@ -213,5 +213,17 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
             {"user": user_id, "org": org_id, "group": f"group-{label}"},
         )
 
+        # One job per organisation, for the same reason as the two rows above: migration
+        # 0010 put `jobs` and `sources` under the policy, and `test_counts_do_not_leak`
+        # covers a table only if each tenant actually holds a row in it. `sources` already
+        # has one from the seeding above; the queue did not.
+        await conn.execute(
+            text(
+                "INSERT INTO jobs (id, org_id, kind, state, idempotency_key) "
+                "VALUES (:id, :org, 'ingest.document', 'pending', :key)"
+            ),
+            {"id": uuid.uuid4(), "org": org_id, "key": f"ingest.document:{org_id}:seed"},
+        )
+
     await conn.commit()
     return org_a, org_b
