@@ -22,6 +22,10 @@ jutsu-evals = { workspace = true }
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # §21's M1 coverage clause. A dev dependency rather than a package one: coverage is
+    # something the gate measures about this repository, not something any deployed
+    # artefact needs.
+    "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -54,3 +58,27 @@ exclude = ['.venv', 'node_modules']
 testpaths = ["packages", "apps"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
+
+# §21 · M1 — "≥70% coverage on core/graph/retrieval". Measured per package by the gate;
+# this section only decides what counts as a measurable line.
+#
+# `branch = false` deliberately. The clause names a percentage of statements, and turning
+# branch coverage on here would silently change what that percentage means — the number
+# would move without a single line of code or test changing, which is the one thing a
+# threshold must never do.
+[tool.coverage.run]
+source = ["jutsu_core", "jutsu_graph", "jutsu_retrieval"]
+branch = false
+# src-layout: the same module is importable via several paths, and without this the
+# report splits one file into two half-covered entries.
+relative_files = true
+
+[tool.coverage.report]
+# Tests are not the thing being measured, and a `TYPE_CHECKING` import can never run.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    '\.\.\.$',
+    "if __name__ == .__main__.:",
+]
+omit = ["*/tests/*", "*/migrations/*"]

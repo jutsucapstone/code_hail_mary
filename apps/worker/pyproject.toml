@@ -6,7 +6,15 @@ requires-python = ">=3.12,<3.13"
 # The ingestion pipeline composes the existing packages rather than reimplementing them:
 # jutsu-connectors fetches, jutsu-core masks and chunks, jutsu-retrieval embeds and
 # persists vectors, jutsu-db owns the schema and the org-scoped session.
-dependencies = ["jutsu-core", "jutsu-db", "jutsu-connectors", "jutsu-retrieval", "arq>=0.26"]
+dependencies = [
+    "jutsu-core",
+    "jutsu-db",
+    "jutsu-connectors",
+    "jutsu-retrieval",
+    # `make seed` writes a run receipt, which is the only record of what a seed cost.
+    "jutsu-evals",
+    "arq>=0.26",
+]
 
 [build-system]
 requires = ["hatchling"]

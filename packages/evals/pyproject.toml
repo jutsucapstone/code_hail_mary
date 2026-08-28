@@ -2,7 +2,11 @@
 name = "jutsu-evals"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["jutsu-core"]
+# Reads the application's own tables through the application's own role, so it depends on
+# jutsu-db for `org_session` and jutsu-core for the detectors it scans captured logs with.
+# Deliberately NOT on jutsu-worker: a package must not depend on an application, so the
+# one check that re-runs ingestion takes it as an injected callable (`gate.ReseedFn`).
+dependencies = ["jutsu-core", "jutsu-db", "jutsu-retrieval"]
 
 [build-system]
 requires = ["hatchling"]

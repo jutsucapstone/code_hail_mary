@@ -13,9 +13,18 @@ bundled sample and no generated stand-in. A seed command that quietly produced s
 documents would put fabricated data behind every downstream measurement, and §4.11 is
 explicit that unfinished work is flagged off rather than faked.
 
-**The real Enron corpus is not wired to anything here.** Pointing `--root` at it is a
-deliberate act by an operator who has downloaded it, and §19's sampling belongs to
-`sample_enron` rather than to this command.
+**`--sample` is how the real Enron corpus is ingested, and on that corpus it is not
+optional.** Without it this command walks the directory and takes whatever it meets up to
+`--max-documents` — which is a *directory walk*, and on a 500k-message maildir that is
+precisely the random sampling §19 forbids. It shreds the reply graph, leaves entity
+resolution with nothing to resolve, and the symptom appears weeks later somewhere that
+looks unrelated.
+
+`--sample` runs `sample_enron` first, writes `sample_manifest.json` beside the corpus, and
+records it on the source row. Every subsequent seed of that source ingests the sampled
+identifiers and nothing else, with the thread ids the whole-corpus index assigned.
+Downloading the corpus is still a deliberate act by an operator; this command never
+fetches one.
 """
 
 from __future__ import annotations
@@ -28,10 +37,17 @@ import sys
 import uuid
 from pathlib import Path
 
+from jutsu_connectors.enron import (
+    DEFAULT_CUSTODIAN_COUNT,
+    DEFAULT_SEED,
+    DEFAULT_TARGET_MESSAGES,
+    sample_enron,
+)
 from jutsu_db.engine import org_session
+from jutsu_evals.receipts import SeedReceipt, utcnow, write_receipt
 from jutsu_retrieval.client import VertexTransport
-from jutsu_retrieval.config import get_embedding_settings
-from jutsu_retrieval.embeddings import Embedder
+from jutsu_retrieval.config import MissingEmbeddingSettings, get_embedding_settings
+from jutsu_retrieval.embeddings import Embedder, TokenLedger
 from sqlalchemy import text
 
 from jutsu_worker.ingest import source_job_key
@@ -40,21 +56,34 @@ from jutsu_worker.runner import process_document, process_embedding, process_sou
 
 logger = logging.getLogger("jutsu.worker.cli")
 
+#: Where `evals/runs/` lives. The workspace is installed editable, so this file sits at
+#: `<repo>/apps/worker/src/jutsu_worker/cli.py` and the fourth parent is the root.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 #: A bound on one seed run, so a mistyped `--root` cannot start an unbounded job. It is
 #: deliberately low: §20's budget guardrails are about not discovering a spend after the
 #: fact, and a corpus-wide run is a decision, not a default.
 DEFAULT_MAX_DOCUMENTS = 500
 
 
-async def ensure_source(org_id: uuid.UUID, root: str) -> uuid.UUID:
+async def ensure_source(org_id: uuid.UUID, root: str, manifest: str | None = None) -> uuid.UUID:
     """The `local` source for this corpus, created once and reused.
 
     Keyed on the resolved path so re-seeding the same directory reuses the same source
     row — and therefore the same cursor and the same document identities. A fresh source
     each run would make every document look new, which is the failure this whole slice
     exists to prevent.
+
+    `manifest` switches the source from a directory walk to §19's thread sample. It is
+    written onto an existing row as well as a new one: the corpus is the same corpus, so
+    the identities and the cursor must be kept, and creating a second source for the
+    sampled view would re-ingest every document as new.
     """
-    config = json.dumps({"root": root})
+    payload: dict[str, str] = {"root": root}
+    if manifest is not None:
+        payload["manifest"] = manifest
+    config = json.dumps(payload)
+
     async with org_session(org_id) as session:
         existing = (
             await session.execute(
@@ -66,7 +95,12 @@ async def ensure_source(org_id: uuid.UUID, root: str) -> uuid.UUID:
             )
         ).scalar_one_or_none()
         if existing is not None:
-            return uuid.UUID(str(existing))
+            source_id = uuid.UUID(str(existing))
+            await session.execute(
+                text("UPDATE sources SET config_json = CAST(:config AS jsonb) WHERE id = :id"),
+                {"id": str(source_id), "config": config},
+            )
+            return source_id
 
         source_id = uuid.uuid4()
         await session.execute(
@@ -79,8 +113,35 @@ async def ensure_source(org_id: uuid.UUID, root: str) -> uuid.UUID:
         return source_id
 
 
+async def count_current_chunks(org_id: uuid.UUID) -> int:
+    """Chunks belonging to current-version documents in this organisation.
+
+    For the run receipt. Org-scoped through `org_session` like everything else, so the
+    figure recorded is the one the application can actually see — a count taken through
+    a privileged connection would describe a different database from the one the gate
+    later measures.
+    """
+    async with org_session(org_id) as session:
+        return int(
+            (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
+                        "WHERE d.superseded_by IS NULL"
+                    )
+                )
+            ).scalar_one()
+        )
+
+
 async def seed(
-    org_id: uuid.UUID, root: str, *, embed: bool, max_documents: int = DEFAULT_MAX_DOCUMENTS
+    org_id: uuid.UUID,
+    root: str,
+    *,
+    embed: bool,
+    max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    ledger: TokenLedger | None = None,
+    manifest: str | None = None,
 ) -> int:
     """Walk the corpus, ingest every document, optionally embed. Returns documents handled.
 
@@ -91,8 +152,14 @@ async def seed(
     `root` arrives already resolved and already checked. Validating a path is filesystem
     work and belongs at the command boundary, not inside the async path where it blocks
     the loop for every caller that reuses this function.
+
+    `ledger` lets the caller keep the token account after this returns. `Embedder` builds
+    its own when none is passed, which is what every existing caller relies on — but a
+    ledger that only ever lives inside this function is a cost that is spent and then
+    forgotten, which is exactly why M1's last clause was unmeasurable. Passing one in is
+    additive: the ingestion path is unchanged either way.
     """
-    source_id = await ensure_source(org_id, root)
+    source_id = await ensure_source(org_id, root, manifest)
 
     async with org_session(org_id) as session:
         await enqueue_job(
@@ -126,7 +193,7 @@ async def seed(
         settings = get_embedding_settings()
         transport = VertexTransport(settings)
         try:
-            embedder = Embedder(transport, settings)
+            embedder = Embedder(transport, settings, ledger=ledger)
             for _ in range(max_documents):
                 if await process_embedding(org_id, embedder) is None:
                     break
@@ -137,6 +204,100 @@ async def seed(
 
     logger.info("seed_completed org=%s source=%s documents=%d", org_id, source_id, handled)
     return handled
+
+
+async def build_sample(
+    root: Path, *, seed_value: int, target_messages: int, custodian_count: int
+) -> Path:
+    """Run §19's sampler over the corpus and write the manifest. Returns its path.
+
+    Reads headers only — that is what makes half a million messages tractable — and
+    writes `sample_manifest.json` beside the corpus rather than into `evals/runs/`,
+    because it describes *that corpus* and belongs with it. The file is the input to
+    every subsequent seed of this source, so re-running the sampler with the same seed
+    is a no-op on the bytes and re-running it with a different one is a visible change.
+
+    Nothing is ingested here. Selection and persistence stay separate, which is the
+    division ADR 0008 already drew.
+    """
+    result = await sample_enron(
+        root,
+        seed=seed_value,
+        target_messages=target_messages,
+        custodian_count=custodian_count,
+    )
+    manifest_path = root.parent / "sample_manifest.json"
+    manifest_path.write_text(result.manifest.to_json(), encoding="utf-8")
+
+    # Counts only — no custodian names, no message ids, no addresses (§4.9).
+    logger.info(
+        "sample_built corpus_messages=%d sampled_messages=%d sampled_threads=%d unparsable=%d",
+        result.manifest.corpus_messages,
+        result.manifest.sampled_messages,
+        result.manifest.sampled_threads,
+        result.manifest.corpus_unparsable,
+    )
+    return manifest_path
+
+
+async def seed_and_measure(
+    org_id: uuid.UUID,
+    root: str,
+    *,
+    embed: bool,
+    max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    manifest: str | None = None,
+) -> SeedReceipt:
+    """Run the seed and record what it cost (§21 M1, "seed-run token cost recorded").
+
+    The ledger has to exist before the run, because `Embedder` charges into it as it
+    goes and its budget is what stops a retry loop re-embedding a corpus. Reading the
+    settings early would otherwise move *when* a misconfigured `--embed` run fails —
+    today it ingests first and raises afterwards — so a missing configuration is caught
+    and dropped here, leaving `seed` to raise it at exactly the point it always has.
+
+    Nothing about ingestion changes. This wraps the run, times it, and writes down the
+    numbers that were previously discarded at process exit.
+    """
+    ledger: TokenLedger | None = None
+    model: str | None = None
+    dimension: int | None = None
+
+    if embed:
+        try:
+            settings = get_embedding_settings()
+        except MissingEmbeddingSettings:
+            settings = None
+        if settings is not None:
+            ledger = TokenLedger(budget=settings.token_budget)
+            model, dimension = settings.model, settings.dimensions
+
+    started = utcnow()
+    documents = await seed(
+        org_id,
+        root,
+        embed=embed,
+        max_documents=max_documents,
+        ledger=ledger,
+        manifest=manifest,
+    )
+    chunks = await count_current_chunks(org_id)
+    finished = utcnow()
+
+    return SeedReceipt.build(
+        org_id=org_id,
+        root=root,
+        started_at=started,
+        finished_at=finished,
+        documents=documents,
+        chunks=chunks,
+        embedded=embed,
+        # Zero on a run without `--embed`: a recorded cost of nothing, not a missing one.
+        tokens=ledger.spent if ledger else 0,
+        requests=ledger.requests if ledger else 0,
+        model=model,
+        dimension=dimension,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,9 +313,39 @@ def main(argv: list[str] | None = None) -> int:
         help="also embed the chunks — this calls the provider and costs money",
     )
     run.add_argument("--max-documents", type=int, default=DEFAULT_MAX_DOCUMENTS)
+    run.add_argument(
+        "--log-file",
+        type=Path,
+        help="also write this run's log here, so `scripts/gate.py --log` can scan it for PII",
+    )
+    run.add_argument(
+        "--no-receipt", action="store_true", help="do not write a run receipt to evals/runs/"
+    )
+    run.add_argument(
+        "--sample",
+        action="store_true",
+        help="sample complete threads first (§19) and ingest only those — required for Enron",
+    )
+    run.add_argument("--sample-seed", type=int, default=DEFAULT_SEED)
+    run.add_argument("--sample-target", type=int, default=DEFAULT_TARGET_MESSAGES)
+    run.add_argument("--sample-custodians", type=int, default=DEFAULT_CUSTODIAN_COUNT)
+    run.add_argument(
+        "--manifest",
+        type=Path,
+        help="use an existing sample manifest instead of building one",
+    )
 
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    # A file handler alongside the stream one, not instead of it. The gate's PII clause
+    # is about the log this run actually emitted, so the captured copy has to be the
+    # same lines at the same level — a quieter file would be a check that passes because
+    # it was shown less.
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(args.log_file, encoding="utf-8"))
+    logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=handlers)
 
     # Resolved and checked here, synchronously, before any connection is opened. A corpus
     # that is not there should fail in the first millisecond rather than after a migration
@@ -163,17 +354,47 @@ def main(argv: list[str] | None = None) -> int:
     if not root.is_dir():
         raise SystemExit(f"corpus root does not exist: {root}")
 
-    handled = asyncio.run(
-        seed(
+    if args.sample and args.manifest:
+        raise SystemExit("--sample builds a manifest and --manifest supplies one; pick one")
+
+    manifest: str | None = None
+    if args.manifest:
+        manifest_path = Path(args.manifest).resolve()
+        if not manifest_path.is_file():
+            raise SystemExit(f"manifest does not exist: {manifest_path}")
+        manifest = str(manifest_path)
+    elif args.sample:
+        # Runs before any connection is opened, like the root check above: sampling a
+        # 500k-message corpus is minutes of header parsing, and discovering a bad
+        # `--root` afterwards would waste all of it.
+        manifest = str(
+            asyncio.run(
+                build_sample(
+                    root,
+                    seed_value=args.sample_seed,
+                    target_messages=args.sample_target,
+                    custodian_count=args.sample_custodians,
+                )
+            )
+        )
+        sys.stdout.write(f"sample manifest: {manifest}\n")
+
+    receipt = asyncio.run(
+        seed_and_measure(
             uuid.UUID(args.org),
             str(root),
             embed=args.embed,
             max_documents=args.max_documents,
+            manifest=manifest,
         )
     )
+    if not args.no_receipt:
+        write_receipt(REPO_ROOT, receipt)
+
     # Printed rather than logged: this is the command's answer, and a second run printing
     # 0 is the idempotency claim being demonstrated rather than asserted.
-    sys.stdout.write(f"documents handled: {handled}\n")
+    sys.stdout.write(f"documents handled: {receipt.documents}\n")
+    sys.stdout.write(f"tokens spent: {receipt.tokens}\n")
     return 0
 
 

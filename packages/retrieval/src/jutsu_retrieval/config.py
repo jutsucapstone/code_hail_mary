@@ -97,6 +97,13 @@ class EmbeddingSettings:
     #: this is the one that lives in the code rather than in the billing console, and it
     #: is what stops a retry loop re-embedding a corpus. `None` disables it, which is
     #: only appropriate for a test.
+    #:
+    #: Set from `EMBEDDING_TOKEN_BUDGET`, and deliberately **not** from
+    #: `TOKEN_BUDGET_PER_REQUEST`. That variable is §13's per-request ceiling for the
+    #: agent layer — "an agent that loops is a billing incident" — and it is 120 000,
+    #: which is a sane bound on one question and an absurd one on a corpus. Reading it
+    #: here would have stopped a 45k-document seed after a few dozen documents while
+    #: appearing to satisfy the guardrail.
     token_budget: int | None = None
 
     def __post_init__(self) -> None:
@@ -112,6 +119,14 @@ class EmbeddingSettings:
             raise MissingEmbeddingSettings("max_batch_tokens must be at least 1")
         if self.max_attempts < 1:
             raise MissingEmbeddingSettings("max_attempts must be at least 1")
+        if self.token_budget is not None and self.token_budget < 1:
+            # A ceiling of zero or less is not "unlimited" — `None` is. Silently reading
+            # a mistyped `EMBEDDING_TOKEN_BUDGET=0` as no ceiling is how a guardrail
+            # disappears without anybody removing it.
+            raise MissingEmbeddingSettings(
+                f"EMBEDDING_TOKEN_BUDGET={self.token_budget} is not a ceiling. Unset the "
+                f"variable for no ceiling; a positive integer to enforce one."
+            )
 
     @property
     def endpoint(self) -> str:
@@ -129,6 +144,24 @@ class EmbeddingSettings:
             f"EmbeddingSettings(project={self.project!r}, location={self.location!r}, "
             f"model={self.model!r}, dimensions={self.dimensions})"
         )
+
+
+def _optional_int(name: str) -> int | None:
+    """An integer environment variable that may legitimately be absent.
+
+    An empty string is absent, not zero. `.env` files routinely carry a bare `KEY=` for
+    a value nobody has chosen yet, and `int("")` raises — which would turn "I have not
+    set a ceiling" into a crash on startup rather than into no ceiling.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as error:
+        raise MissingEmbeddingSettings(
+            f"{name}={raw!r} is not an integer. Unset it for no ceiling."
+        ) from error
 
 
 def get_embedding_settings() -> EmbeddingSettings:
@@ -157,4 +190,9 @@ def get_embedding_settings() -> EmbeddingSettings:
             os.environ.get("EMBEDDING_MAX_BATCH_TOKENS", DEFAULT_MAX_BATCH_TOKENS)
         ),
         max_concurrency=int(os.environ.get("EMBEDDING_CONCURRENCY", DEFAULT_MAX_CONCURRENCY)),
+        # Absent means no ceiling, which is a deliberate choice an operator makes by not
+        # setting it — not the default it used to be by accident. Before this was read,
+        # `token_budget` was `None` on every code path, so `TokenLedger` had no ceiling
+        # anywhere in production and §20's in-code guardrail did not exist.
+        token_budget=_optional_int("EMBEDDING_TOKEN_BUDGET"),
     )

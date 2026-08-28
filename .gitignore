@@ -56,3 +56,10 @@ __pycache__/
 # Regeneration artefacts from `make api-types-check`. Compared, then deleted.
 apps/web/lib/.openapi.check.json
 apps/web/lib/.api-schema.check.d.ts
+
+# Eval harness (S9). Reports ARE committed — §18 wants a metric to name a commit, and a
+# report holds only check names, outcomes and scalars. Run receipts are not: they are
+# per-run local evidence about a local corpus.
+/evals/runs/
+coverage.json
+.coverage

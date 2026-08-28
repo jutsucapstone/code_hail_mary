@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from jutsu_connectors import LocalConnector
+from jutsu_connectors.enron import ManifestConnector, SampleManifest, UnparsableManifest
 from jutsu_core import Connector, SourceSystem
 
 __all__ = ["UnsupportedSource", "connector_for"]
@@ -45,5 +46,26 @@ def connector_for(system: SourceSystem, config: dict[str, Any]) -> Connector:
     root = config.get("root")
     if not isinstance(root, str) or not root:
         raise UnsupportedSource("local source config is missing a corpus root")
+
+    # A source that names a manifest ingests the sample, not the directory (§19).
+    #
+    # This is the one seam where "sample complete threads, never random messages" reaches
+    # the ingestion path. Without it `make seed` walks the corpus and takes whatever it
+    # meets up to `--max-documents`, which on the real Enron tree is exactly the random
+    # sampling §19 forbids — and the damage is invisible until entity resolution has
+    # nothing to resolve, weeks later.
+    manifest_path = config.get("manifest")
+    if manifest_path is not None:
+        if not isinstance(manifest_path, str) or not manifest_path:
+            raise UnsupportedSource("local source config has an unusable manifest path")
+        try:
+            manifest = SampleManifest.from_json(Path(manifest_path).read_text(encoding="utf-8"))
+        except OSError as error:
+            raise UnsupportedSource("the sample manifest could not be read") from error
+        except UnparsableManifest as error:
+            # Permanent by construction: re-reading the same file gives the same answer,
+            # and the fix is to re-run the sampler rather than to retry the job.
+            raise UnsupportedSource(f"the sample manifest is unusable: {error}") from error
+        return ManifestConnector(Path(root), manifest)
 
     return LocalConnector(Path(root))

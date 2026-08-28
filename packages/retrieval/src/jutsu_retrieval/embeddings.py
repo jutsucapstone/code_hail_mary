@@ -81,20 +81,46 @@ class TokenLedger:
 
     §20 wants cost guardrails on day one. The budget alert in the billing console is the
     backstop that tells a human afterwards; this is the one that stops the job.
+
+    **`spent` only ever moves on a provider figure.** `charge` is called with the sum of
+    `Embedding.token_count`, which is what the response said was billed — never with
+    `estimate_tokens`, which under-counts masked text by about a quarter. An estimate
+    driving the ceiling would let a job overrun it and still report itself inside.
+
+    Two guards, not one. `charge` closes the door after a batch settles; `check` refuses
+    to open it for the next one. Without the second, a ceiling reached by batch three is
+    still paid for by every batch already queued behind it.
     """
 
     budget: int | None = None
     spent: int = 0
     requests: int = 0
 
+    @property
+    def exhausted(self) -> bool:
+        return self.budget is not None and self.spent >= self.budget
+
+    def _exceeded(self) -> EmbeddingBudgetExceeded:
+        assert self.budget is not None  # noqa: S101 - only reachable with a ceiling set
+        return EmbeddingBudgetExceeded(
+            f"token budget exhausted after {self.spent} tokens",
+            spent=self.spent,
+            budget=self.budget,
+        )
+
+    def check(self) -> None:
+        """Refuse before spending. Called immediately before every provider request.
+
+        This is the half of the guarantee that costs money when it is missing: charging
+        after the fact detects an overrun, it does not prevent the next one.
+        """
+        if self.exhausted:
+            raise self._exceeded()
+
     def charge(self, tokens: int) -> None:
         self.spent += tokens
         if self.budget is not None and self.spent > self.budget:
-            raise EmbeddingBudgetExceeded(
-                f"token budget exhausted after {self.spent} tokens",
-                spent=self.spent,
-                budget=self.budget,
-            )
+            raise self._exceeded()
 
 
 def l2_normalise(vector: Sequence[float]) -> tuple[float, ...]:
@@ -187,10 +213,29 @@ class Embedder:
 
         async def run(bounds: tuple[int, int]) -> list[Embedding]:
             async with self._semaphore:
+                # Inside the semaphore, immediately before the call. Checked here rather
+                # than before dispatch because the ledger moves while this batch waits:
+                # a budget exhausted by an earlier batch must stop this one, and the only
+                # moment that is knowable is the moment before spending.
+                self._ledger.check()
                 start, end = bounds
                 return await self._embed_one_batch(list(texts[start:end]), task, offset=start)
 
-        results = await asyncio.gather(*(run(bounds) for bounds in batches))
+        # Explicit tasks rather than a bare `gather`, so the rest can be cancelled. A
+        # `gather` that propagates the first exception leaves its siblings running: they
+        # acquire the semaphore and call the provider after the budget is already gone,
+        # which is the exact failure the ceiling exists to prevent — and it is silent,
+        # because the caller already has its exception by then.
+        tasks = [asyncio.create_task(run(bounds)) for bounds in batches]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for pending in tasks:
+                pending.cancel()
+            # Awaited so nothing is left orphaned mid-request; exceptions from the
+            # cancelled siblings are discarded in favour of the one being raised.
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return [embedding for batch in results for embedding in batch]
 
     async def _embed_one_batch(

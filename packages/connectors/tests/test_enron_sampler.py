@@ -13,6 +13,7 @@ Two properties carry this module, and both are named in the spec:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from jutsu_connectors.enron import (
     DEFAULT_CUSTODIAN_COUNT,
     DEFAULT_SEED,
     DEFAULT_TARGET_MESSAGES,
+    EmptyCorpus,
     custodian_of,
     load_documents,
     sample_enron,
@@ -219,12 +221,38 @@ class TestCorpusHygiene:
         assert result.manifest.corpus_messages == len(THREADED_CORPUS)
         assert "allen/README" not in result.external_ids
 
-    async def test_an_empty_corpus_samples_nothing(self, tmp_path: Path) -> None:
+    async def test_an_empty_corpus_is_refused(self, tmp_path: Path) -> None:
+        """Behaviour change: this used to return an empty sample.
+
+        It returned `external_ids == ()` and a manifest of zero messages, which is
+        indistinguishable from a corpus that failed to *load* — and that is exactly what
+        happened on the real corpus, where every one of 517 401 files was unreadable and
+        the run still exited 0. A sample of nothing is now a refusal.
+        """
         root = tmp_path / "empty"
         root.mkdir()
-        result = await sample_enron(root, target_messages=100, custodian_count=10)
-        assert result.external_ids == ()
-        assert result.manifest.sampled_messages == 0
+        with pytest.raises(EmptyCorpus, match="no parsable messages"):
+            await sample_enron(root, target_messages=100, custodian_count=10)
+
+    async def test_a_corpus_of_only_unreadable_files_is_refused(self, tmp_path: Path) -> None:
+        """The shape the Windows trailing-dot defect produced: files found, none parsed."""
+        root = tmp_path / "junk"
+        (root / "allen").mkdir(parents=True)
+        (root / "allen" / "README").write_text("not mail", encoding="utf-8")
+        (root / "allen" / "binary").write_bytes(bytes(range(256)))
+
+        with pytest.raises(EmptyCorpus) as caught:
+            await sample_enron(root, target_messages=100, custodian_count=10)
+
+        # The count is the diagnosis: files present but unreadable is a loading failure,
+        # not an empty directory.
+        assert "2 file(s)" in str(caught.value)
+
+    async def test_the_refusal_names_the_corpus_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "empty"
+        root.mkdir()
+        with pytest.raises(EmptyCorpus, match=re.escape(str(root))):
+            await sample_enron(root, target_messages=100, custodian_count=10)
 
     @pytest.mark.parametrize(("target", "custodians"), [(0, 5), (-1, 5), (5, 0), (5, -1)])
     async def test_impossible_parameters_are_refused(

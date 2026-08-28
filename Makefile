@@ -15,7 +15,7 @@
 # Package names are the ones in pyproject.toml: `jutsu-api`, not `api`. The short forms
 # were wrong here from the start, so `make api` and `make worker` had never run.
 
-.PHONY: help dev api worker up down migrate migrate-pg migrate-graph migrate-down migrate-pg-down migrate-graph-down migrate-status migrate-rev psql seed test preflight eval gate deploy clean api-types api-types-check
+.PHONY: help dev api worker up down migrate migrate-pg migrate-graph migrate-down migrate-pg-down migrate-graph-down migrate-status migrate-rev psql seed test test-py-cov preflight eval gate deploy clean api-types api-types-check
 
 help:
 	@echo "JUTSU targets"
@@ -28,11 +28,12 @@ help:
 	@echo "  make migrate-down  roll both back to base"
 	@echo "  make migrate-status  what is applied, in both stores"
 	@echo "  make psql       psql shell into the dev database"
-	@echo "  make seed       ingest a local corpus   ORG=<uuid> ROOT=<dir> [EMBED=--embed]"
+	@echo "  make seed       ingest a local corpus   ORG=<uuid> ROOT=<dir> [EMBED=--embed] [SAMPLE=--sample] [LOG=<file>]"
 	@echo "  make test       full test suite"
+	@echo "  make test-py-cov  the suite with per-package coverage"
 	@echo "  make preflight  lint + typecheck + tests  (required before commit, §4.15)"
-	@echo "  make eval       evaluation harness                     [S9]"
-	@echo "  make gate       phase gate harness                     [S9]"
+	@echo "  make eval       phase 1 gate report      ORG=<uuid> [LOG=<file>]"
+	@echo "  make gate       the same, --strict        ORG=<uuid> [LOG=<file>]"
 
 # ---------------------------------------------------------------- run
 
@@ -90,6 +91,15 @@ typecheck-py:
 
 test-py:
 	uv run pytest -q
+
+# §21's M1 clause is "≥70% coverage on core/graph/retrieval", per package rather than
+# blended — a well-covered jutsu_core must not be able to carry a thin jutsu_graph over
+# the line. Deliberately NOT part of `preflight`: coverage instrumentation roughly
+# doubles the suite's runtime and preflight runs on every commit. `make gate` is where
+# the floor is enforced.
+test-py-cov:
+	uv run pytest -q --cov=jutsu_core --cov=jutsu_graph --cov=jutsu_retrieval \
+		--cov-report=term-missing:skip-covered --cov-report=json:coverage.json
 
 test-hooks:
 	node scripts/hooks/preflight-on-commit.test.mjs
@@ -175,15 +185,22 @@ psql:
 #
 # Embedding is opt-in and costs money: add EMBED=--embed once you mean it.
 seed:
-	uv run --env-file .env --package jutsu-worker python -m jutsu_worker.cli seed --org "$(ORG)" --root "$(ROOT)" $(EMBED)
+	uv run --env-file .env --package jutsu-worker python -m jutsu_worker.cli seed --org "$(ORG)" --root "$(ROOT)" $(EMBED) $(SAMPLE) $(if $(LOG),--log-file "$(LOG)",) $(SEED_ARGS)
 
+# §18 — the only sanctioned source of a number this project quotes (CLAUDE.md rule 8).
+#
+# `eval` is the report a human reads; `gate` is the same measurement with `--strict`, so
+# a clause that could not be measured fails the run rather than being quietly absent from
+# the tally. That difference is the whole point: on a laptop with the containers stopped
+# `make eval` is informative and `make gate` is red, and both are honest.
+#
+# ORG is required by every tenant-scoped clause. LOG is optional and points at a captured
+# seed-run log for the PII clause — see `make seed LOG=...`.
 eval:
-	@echo "eval is implemented in S9. See docs/plan-phase-1.md"
-	@exit 1
+	uv run --env-file .env python scripts/gate.py --phase 1 --org "$(ORG)" $(if $(LOG),--log "$(LOG)",) $(GATE_ARGS)
 
 gate:
-	@echo "gate is implemented in S9. See docs/plan-phase-1.md"
-	@exit 1
+	uv run --env-file .env python scripts/gate.py --phase 1 --org "$(ORG)" $(if $(LOG),--log "$(LOG)",) --strict $(GATE_ARGS)
 
 deploy:
 	@echo "deploy is implemented in S29. See docs/jutsu-master-spec.md"

@@ -148,7 +148,30 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   corpus-sized job it spends real quota to be told so repeatedly.
 - **`estimate_tokens` under-counts masked text** (0.75x on `[EMAIL_A7]` pseudonyms). Safe
   only because 768 sits far below the 2048 input limit. Do not raise `target_tokens`
-  toward the limit on the assumption that it over-counts.
+  toward the limit on the assumption that it over-counts. It also must never reach
+  `TokenLedger.charge` — the estimate picks batch boundaries, the provider's
+  `token_count` is what is billed and therefore what the ceiling counts.
+- **`TOKEN_BUDGET_PER_REQUEST` is NOT the embedding ceiling.** It is §13's per-request
+  bound for the agent layer, which does not exist yet, and nothing reads it. The
+  embedding job ceiling is `EMBEDDING_TOKEN_BUDGET`. Wiring the former into
+  `EmbeddingSettings` looks like a fix and would stop a 45k-document seed after a few
+  dozen documents.
+- **A ceiling checked only after a batch returns still pays for the queue behind it.**
+  `charge` detects an overrun; `TokenLedger.check()` before each request prevents the
+  next one. And `asyncio.gather` propagates the first exception *without cancelling its
+  siblings*, so those batches called the provider after the budget was gone — the tasks
+  are now cancelled explicitly. Both halves are pinned by tests that assert
+  `FakeTransport.calls`, because raising correctly while still spending looks identical
+  from the caller.
+- **`EMBEDDING_TOKEN_BUDGET=0` is refused, not read as unlimited.** Unset means no
+  ceiling; zero is a mistyped ceiling, and silently treating it as infinite is how a
+  guardrail disappears without anybody removing it.
+- **The model is `gemini-embedding-001`, and §9.3 of the spec disagrees.** ADR 0009
+  supersedes it on measurements; spec amendment **A3** records that so the two documents
+  no longer conflict. `text-embedding-004` is the documented fallback. Every measured
+  constant here — the 0.58 norm, the 2048 truncation boundary, the 250-instance batch,
+  the recorded fixture — describes `gemini-embedding-001` in `asia-south1` and describes
+  nothing at all on another model.
 - **Running Alembic in-process disables the application's loggers.** `fileConfig` defaults
   to `disable_existing_loggers=True`; `env.py` now passes `False`. An audit line that is
   never emitted is indistinguishable from an action that never happened.
@@ -195,6 +218,17 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 
 ### Corpus traps (`packages/connectors`)
 
+- **`make seed` on the real corpus needs `--sample`.** Without it the walk is a directory
+  walk that takes whatever it meets up to `--max-documents`, which on a 500k-message
+  maildir is the random sampling §19 forbids. `--sample` runs `sample_enron`, writes
+  `sample_manifest.json` beside the corpus and records it on the source row; the source
+  then ingests those identifiers and nothing else, with the whole-corpus thread ids.
+- **Manifest version 2 carries `message_threads`, and version 1 is refused.** Without the
+  map an ingest driven from a manifest falls back to `LocalConnector.fetch`, whose own
+  docstring calls its thread "best-effort" and "wrong for a corpus" — so it would sample
+  complete threads and then reassemble them incorrectly. A stale manifest is refused
+  rather than upgraded, and every manifest failure is `UnsupportedSource` (permanent),
+  because retrying a bad file re-reads the same bad file.
 - **Never commit mail fixtures as files.** `.gitattributes` is `* text=auto eol=lf` and a
   MIME boundary is defined in terms of CRLF, so git rewrites the fixture into something
   that parses differently from the mail it imitates. Build them from Python with explicit
@@ -298,6 +332,44 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **`org_session` caches one engine per process.** A test that changes `DATABASE_URL` must
   call `dispose_engine()`, or it runs against a pool bound to a schema that no longer exists
   - the suite then passes one test at a time and fails as a file.
+
+### Eval and gate traps (`packages/evals`)
+
+- **A gate has three outcomes, and the third one is load-bearing.** `not_measured` is not
+  a failure and not a pass. `CheckResult` *refuses* to hold an `observed` or a `threshold`
+  alongside it, because the way rule 8 actually gets broken is a check that could not run
+  reporting the value of a variable nobody assigned — `count(*)` over a database nobody
+  named returns 0, and `0 >= 45_000` is a well-formed failure that means nothing (ADR 0013).
+- **A skipped test is unmeasured, never green and never red.** M1 says "all 7 ACL tests
+  pass"; a suite that skipped exits 0 having proven nothing. Calling that a failure blames
+  the code for the harness's circumstances, and calling it a pass is the exact defect the
+  root `conftest.py` reachability probe was written to fix.
+- **Coverage is the one clause where a skip moves the number rather than leaving a gap.**
+  With the containers stopped, `jutsu_graph` measured 59.3% and the clause went red — a
+  confident figure about a run where 394 tests never executed. Any skip during the coverage
+  run makes `coverage_core` unmeasured.
+- **Select a test by `-k`, not by node id.** A node id has to name the class, so
+  `TestReversibility` becomes part of the gate's contract with a file it does not own, and
+  moving the test turns the clause into "collected no tests" — unmeasured, and silent.
+- **`make` is `mingw32-make` here.** There is no `make` on the Windows dev machine, so
+  `shutil.which("make")` alone reported the preflight clause unmeasured on the machine the
+  slice was written on. `_MAKE_NAMES` tries three.
+- **The offset check must not replay the chunker.** Re-running `chunk_document` proves
+  determinism, and a chunker with an off-by-one reproduces it perfectly. `remask_slice`
+  uses only the two stored numbers, the mask spans and string slicing.
+- **`evals/reports/` is committed; `evals/runs/` is not.** A report holds check names,
+  outcomes, scalars and a commit — §18 wants a metric to name a commit. A receipt describes
+  a local corpus, so it stores a *hash* of the corpus root: a resolved path on a developer
+  machine contains their account name, and §4.9 has no carve-out for files that are not
+  called logs.
+- **`seed_idempotent` is the only check that writes, and it must keep asking.** "A second
+  `make seed` adds zero rows" cannot be observed without a second `make seed`. It takes the
+  ingestion entry point as an injected callable — `jutsu_evals` is a package and must never
+  import `apps/worker`.
+- **S9 shipping is not an M1 pass.** The harness exists; nine clauses on this machine are
+  unmeasured for want of services and a corpus. The summary line will not print
+  "gate PASSED" over any run with an unmeasured clause.
+
 
 ### Postgres / RLS traps (`packages/db`)
 

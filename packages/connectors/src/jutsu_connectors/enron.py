@@ -30,10 +30,11 @@ import random
 from collections import Counter
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from jutsu_core import RawDocument
+from jutsu_core import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.local import LocalConnector, PathEscape
 from jutsu_connectors.rfc822 import (
@@ -48,9 +49,13 @@ __all__ = [
     "DEFAULT_CUSTODIAN_COUNT",
     "DEFAULT_SEED",
     "DEFAULT_TARGET_MESSAGES",
+    "MANIFEST_VERSION",
     "CustodianStat",
+    "EmptyCorpus",
+    "ManifestConnector",
     "SampleManifest",
     "SampleResult",
+    "UnparsableManifest",
     "custodian_of",
     "load_documents",
     "sample_enron",
@@ -63,7 +68,11 @@ DEFAULT_CUSTODIAN_COUNT: Final = 150
 
 #: Manifest format version. A change to what the manifest contains changes every
 #: downstream comparison, so it is versioned rather than silently reshaped.
-MANIFEST_VERSION: Final = 1
+#:
+#: **2** adds `message_threads`, without which a manifest cannot reproduce the canonical
+#: thread ids and an ingest driven from it rebuilds the reply graph from each message in
+#: isolation (§19).
+MANIFEST_VERSION: Final = 2
 
 
 def custodian_of(external_id: str) -> str:
@@ -104,6 +113,17 @@ class SampleManifest:
     custodians: tuple[CustodianStat, ...]
     thread_sizes: tuple[tuple[str, int], ...]
     message_ids: tuple[str, ...]
+    #: `(external_id, thread_id)` for every sampled message, sorted by external id.
+    #:
+    #: The manifest exists to reproduce a sample, and until this field it could not
+    #: reproduce the one property the sample is *for*. `LocalConnector.fetch` derives a
+    #: thread from the message alone — its first `References` header, or its own id —
+    #: which its docstring says is "best-effort" and "wrong for a corpus". The canonical
+    #: thread comes from `build_thread_index`, which has seen every message, and it only
+    #: exists while the whole-corpus index is in memory. Ingesting from a manifest
+    #: without it would sample complete threads and then reassemble them incorrectly,
+    #: which is the §19 failure with an extra step.
+    message_threads: tuple[tuple[str, str], ...] = ()
 
     def to_json(self) -> str:
         """Canonical JSON. Sorted keys, fixed indent, no trailing whitespace.
@@ -126,8 +146,70 @@ class SampleManifest:
             ],
             "threads": [{"thread_id": thread, "size": size} for thread, size in self.thread_sizes],
             "messages": list(self.message_ids),
+            "message_threads": [
+                {"external_id": external_id, "thread_id": thread}
+                for external_id, thread in self.message_threads
+            ],
         }
         return json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+    @staticmethod
+    def from_json(document: str) -> SampleManifest:
+        """Read a manifest back. Refuses a version it does not understand.
+
+        Only the fields an ingest needs are reconstructed — the counts and the custodian
+        statistics are provenance for a human, not inputs to the walk. A manifest older
+        than `MANIFEST_VERSION` is refused rather than upgraded: version 1 has no
+        `message_threads`, so ingesting from it would silently fall back to per-message
+        thread guesses, which is the failure the field was added to prevent.
+        """
+        try:
+            payload = json.loads(document)
+        except json.JSONDecodeError as error:
+            # Wrapped rather than propagated, so the worker classifies it as permanent.
+            # A `JSONDecodeError` reaching `classify` falls through to INTERNAL, which is
+            # retryable — and retrying a truncated file re-reads the same truncated file
+            # until the job dead-letters.
+            raise UnparsableManifest("the manifest is not valid JSON") from error
+        if not isinstance(payload, dict):
+            raise UnparsableManifest("the manifest is not a JSON object")
+
+        version = payload.get("version")
+        if version != MANIFEST_VERSION:
+            raise UnparsableManifest(
+                f"manifest version {version!r} is not {MANIFEST_VERSION}; re-run the sampler"
+            )
+
+        pairs = tuple(
+            (str(entry["external_id"]), str(entry["thread_id"]))
+            for entry in payload.get("message_threads", [])
+        )
+        message_ids = tuple(str(value) for value in payload.get("messages", []))
+        if len(pairs) != len(message_ids):
+            raise UnparsableManifest(
+                "manifest lists a different number of messages and thread assignments"
+            )
+
+        return SampleManifest(
+            version=version,
+            seed=int(payload["seed"]),
+            target_messages=int(payload["target_messages"]),
+            custodian_count=int(payload["custodian_count"]),
+            corpus_messages=int(payload["corpus_messages"]),
+            corpus_unparsable=int(payload["corpus_unparsable"]),
+            sampled_messages=int(payload["sampled_messages"]),
+            sampled_threads=int(payload["sampled_threads"]),
+            custodians=tuple(
+                CustodianStat(name=str(entry["name"]), message_count=int(entry["message_count"]))
+                for entry in payload.get("custodians", [])
+            ),
+            thread_sizes=tuple(
+                (str(entry["thread_id"]), int(entry["size"]))
+                for entry in payload.get("threads", [])
+            ),
+            message_ids=message_ids,
+            message_threads=pairs,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +291,27 @@ async def sample_enron(
 
     connector = LocalConnector(root)
     links, custodian_by_id, unparsable = await _scan(connector)
+
+    # A corpus that yields nothing readable is a broken corpus, not an empty sample.
+    #
+    # This exists because the alternative happened. On Windows every Enron filename ends
+    # in a dot, the Win32 path parser stripped it, and all 517 401 messages failed to
+    # open — and the run *succeeded*: exit 0, a cheerful "sample manifest: …", and a
+    # syntactically valid manifest describing zero messages. Had the pilot been scripted
+    # straight through, it would have ingested nothing and reported success. §4.11 is
+    # about not faking unfinished work; this is the same rule applied to a corpus that
+    # is not there.
+    #
+    # `corpus_unparsable` is carried in the message because it is the diagnosis: a large
+    # count with zero parsed is a *reading* failure (permissions, path handling, a
+    # truncated download), while zero of both is a directory with no mail in it.
+    if not links:
+        raise EmptyCorpus(
+            f"no parsable messages under {root} — {unparsable} file(s) could not be read "
+            f"or parsed. A sample of nothing is not an empty sample, it is a corpus that "
+            f"did not load."
+        )
+
     index = build_thread_index(links)
 
     selected_custodians = _rank_custodians(custodian_by_id, custodian_count)
@@ -257,6 +360,7 @@ async def sample_enron(
         custodians=selected_custodians,
         thread_sizes=tuple(sorted(thread_sizes)),
         message_ids=external_ids,
+        message_threads=tuple((key, index.thread_of(key)) for key in external_ids),
     )
     return SampleResult(manifest=manifest, external_ids=external_ids, threads=index)
 
@@ -295,3 +399,98 @@ async def load_documents(
             thread_id=thread_id,
             fallback_sent_at=utc_from_timestamp(path.stat().st_mtime),
         )
+
+
+class EmptyCorpus(RuntimeError):
+    """A corpus from which not one message could be read.
+
+    Its own class so a caller can tell "this directory has no mail" from "this file is
+    not mail". The first is fatal to a sample; the second is routine and counted.
+    """
+
+
+class UnparsableManifest(RuntimeError):
+    """A sample manifest that cannot be used to drive an ingest.
+
+    Its own class so the worker can classify it as permanent: re-reading the same file
+    produces the same answer, and the fix is to re-run the sampler, not to retry.
+    """
+
+
+class ManifestConnector:
+    """A `LocalConnector` restricted to one sample, with the canonical thread ids.
+
+    This is what puts §19 on the ingestion path. `make seed --root <maildir>` walks a
+    directory; that is a *directory walk*, and on the real corpus it is precisely the
+    "random messages" §19 forbids — it takes whatever it finds up to `--max-documents`,
+    which shreds the reply graph and leaves entity resolution with nothing to resolve.
+
+    Driving the walk from a manifest instead means the set of documents is the set the
+    sampler chose: complete threads, seeded, reproducible. Two properties follow, and
+    both matter more than they look:
+
+      * **`list_since` yields the manifest's identifiers, not the corpus's.** A message
+        that is in the corpus but not in the sample is never listed, so it never gets a
+        job, so `--max-documents` stops bounding *which* documents arrive and only bounds
+        how many of the chosen ones are processed per run.
+      * **`fetch` overrides the thread id.** `LocalConnector.fetch` says in its own
+        docstring that its thread is best-effort and that the corpus knows better. The
+        corpus's answer lives in the manifest, and using it here is the difference
+        between reconstructing the threads that were sampled and reconstructing
+        something else.
+
+    Everything else — parsing, containment, ACL derivation — is `LocalConnector`,
+    unchanged and not re-implemented.
+    """
+
+    system = SourceSystem.LOCAL
+
+    __slots__ = ("_ids", "_local", "_threads")
+
+    def __init__(self, root: Path, manifest: SampleManifest) -> None:
+        self._local = LocalConnector(root)
+        self._ids = manifest.message_ids
+        self._threads = dict(manifest.message_threads)
+
+    @property
+    def root(self) -> Path:
+        return self._local.root
+
+    def resolve(self, external_id: str) -> Path:
+        return self._local.resolve(external_id)
+
+    async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
+        """The sampled identifiers, in manifest order, filtered by the cursor.
+
+        Same cursor semantics as `LocalConnector`: an ISO-8601 instant compared against
+        the file's modification time, so a re-run lists only what changed. An identifier
+        whose file has since vanished is skipped rather than raised — a sample of fifty
+        thousand must not be voided by one deleted file, which is the rule
+        `load_documents` already follows.
+        """
+        since = datetime.fromisoformat(cursor) if cursor else None
+
+        for external_id in self._ids:
+            try:
+                path = self._local.resolve(external_id)
+                if since is not None and utc_from_timestamp(path.stat().st_mtime) < since:
+                    continue
+                if not path.is_file():
+                    continue
+            except (OSError, PathEscape):
+                continue
+            yield external_id
+
+    async def fetch(self, external_id: str) -> RawDocument:
+        """The document, carrying the thread the whole-corpus index assigned it."""
+        document = await self._local.fetch(external_id)
+        thread_id = self._threads.get(external_id)
+        if thread_id is None:
+            # In the corpus and resolvable, but not in this sample. Refused rather than
+            # ingested with a guessed thread: a document nobody sampled has no business
+            # arriving through a sampled source.
+            raise UnparsableManifest(f"{external_id} is not in this sample")
+        return document.model_copy(update={"thread_id": thread_id})
+
+    async def acls(self, external_id: str) -> list[AclEntry]:
+        return await self._local.acls(external_id)

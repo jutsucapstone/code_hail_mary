@@ -22,6 +22,7 @@ unchanged; these override it where they conflict.
 |---|---------|-----------|--------|
 | A1 | §5 Stack | **Next.js 16.3.1**, not 15. | The landing page was built, audited and shipped on 16 before this spec landed. Downgrading is destructive with no benefit. |
 | A2 | §16 Design system | Tokens are **dark-first with a light mode**, brand green sampled from the logo (`#83d005` / `#499f02`), `--brand`/`--graph` flipping lightness per theme. Not `#2F7D32` on `#FAFAF8` paper. | §16 claims to inherit from the existing landing page but lists values that page never used. The built tokens are real, shipped and WCAG AA verified in both themes. |
+| A3 | §9.3 Embedding | The model is **`gemini-embedding-001` at `outputDimensionality=768`**, not `text-embedding-004`; batches are **250** instances, not 100; vectors are **L2-normalised in `packages/retrieval`** and `truncated=true` is a hard failure. `text-embedding-004` remains the documented fallback. | ADR 0009, measured against `asia-south1` on 2026-08-27 rather than read from documentation. 768 is fixed by the existing `vector(768)` column and its HNSW index; the binding batch constraint turned out to be requests per minute, not instances per request; and the MRL-truncated 768 vector comes back with an L2 norm of 0.58, not 1.0. |
 
 ---
 

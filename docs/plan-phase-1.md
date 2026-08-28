@@ -15,9 +15,9 @@ protect it; everything in Phase 2 depends on chunk offsets and the ACL filter be
 | S4 | D | PII masking + offset map, ten tests (§9.1) | done |
 | S5 | D | Chunker with original-document offsets (§9.2) | done |
 | S6 | A | Embedder + HNSW (§9.3) | done |
-| S7 | B | ACL capture + filtered search + 7 adversarial tests (§12, §17) | not started |
+| S7 | B | ACL capture + filtered search + 7 adversarial tests (§12, §17) | done |
 | S8 | B | Job queue, idempotent pipeline, crash resume | done |
-| S9 | A | Gate harness `scripts/gate.py --phase 1` | not started |
+| S9 | A | Gate harness `scripts/gate.py --phase 1` | done — harness only, M1 not passed |
 
 ---
 
@@ -789,7 +789,10 @@ at the start of each source run. The cost is recorded rather than hidden.
 11. **End to end**: fixture corpus, connector, source job, document job, mask, chunk, embed,
     pgvector, then `search_chunks` returns the authorized document and the unauthorized one
     stays invisible. Revoking the identity empties the result.
-12. `make preflight` green - **COUNT_PLACEHOLDER**.
+12. `make preflight` green - **725 passed, 394 skipped**, re-measured on 2026-08-28 during S9
+    with the containers stopped, so every skip is a database-backed suite. This line held
+    a literal `COUNT_PLACEHOLDER` until then; the services-up figure was never recorded at
+    the time, and this is a correction rather than a reconstruction of it.
 
 ### Out of scope
 
@@ -797,6 +800,144 @@ No KT, no GraphRAG, no LLM layer, no Claude integration, no graph writes, no pro
 connectors, no OAuth or credential storage, no real Enron ingestion. **No multi-tenant
 scheduler** - that is the slice that must decide how tenants are enumerated, and it closes
 the orphaned-job gap as a side effect.
+
+
+---
+
+## S9 — Phase 1 gate harness
+
+**Goal:** make Gate M1 a command, and make "I did not measure that" a thing the command
+can say.
+
+> A gate has three answers. The third one is what keeps the other two worth reading.
+
+### The problem, which is not "run eleven checks"
+
+`make eval` and `make gate` both exited 1 with "implemented in S9", so no number this
+project could quote had a mechanism behind it (CLAUDE.md rule 8). The design question was
+what a check may say when it *cannot* run, and that decided everything else.
+
+A boolean gate has one way to express "I could not look", and it is `False`. On a laptop
+with the containers stopped, `count(*)` over a database nobody named returns nothing,
+`0 >= 45_000` is false, and the gate reports a failure — every word well-formed, the
+conclusion worthless. The same shape appears three more times in M1: a **skipped** suite
+exits 0 and satisfies "all 7 ACL tests pass" having run nothing; reversibility cannot be
+measured against a seeded database at all; and "token cost recorded" has no answer if
+nobody wrote the cost down.
+
+### Deliverables
+
+- `packages/evals` — `gate.py` (the three outcomes, `GateContext`, `run_phase`),
+  `thresholds.py` (`Phase1Thresholds`, frozen), `phase1.py` (the eleven checks),
+  `receipts.py`, `report.py`.
+- `scripts/gate.py` — `--phase 1 --org <uuid> [--log F] [--json] [--strict]
+  [--sample N | --full] [--allow-writes] [--skip CHECK]`. Thin: parsing, wiring, printing.
+- `make eval` / `make gate` — the same run, the second with `--strict`. `make test-py-cov`.
+- `apps/worker/cli.py` — a run receipt under `evals/runs/`, and `--log-file`. Additive:
+  `seed()` gains an optional `ledger` parameter and is otherwise untouched.
+- `pytest-cov` plus per-package coverage configuration.
+- ADR 0013.
+
+### The eleven clauses
+
+| M1 clause | Check | How |
+|---|---|---|
+| ≥45k documents | `documents_ingested` | `count(*)` over current versions, org-scoped |
+| second seed adds zero rows | `seed_idempotent` | snapshot, re-walk each source, compare |
+| offsets resolve | `offsets_resolve` | re-mask the stored original slice, compare to the chunk |
+| zero raw PII in logs | `no_raw_pii_in_logs` | `DEFAULT_DETECTORS` over a captured log |
+| 100% embedded at 768 | `chunks_embedded` | NULL count plus `vector_dims` |
+| 7 ACL tests pass | `acl_suite` | `test_search_acl.py` (39 tests) |
+| org isolation | `org_isolation` | `test_rls.py` + `test_tenancy_and_identity.py` |
+| migrations reversible | `migrations_reversible` | the existing fingerprint round trip |
+| preflight green | `preflight` | exit status |
+| ≥70% coverage | `coverage_core` | pytest-cov, **lowest** of the three packages |
+| token cost recorded | `token_cost_recorded` | the run receipt |
+
+### Five decisions
+
+1. **`not_measured` carries no number, enforced by the type.** Constructing one with an
+   `observed` raises. `--strict` promotes it to failure; that is what CI and a milestone
+   use, and it is not the default because the default reader is a developer with the
+   containers stopped.
+2. **Every database check runs through `org_session`** as the restricted `jutsu_app` role.
+   Measuring through `MIGRATION_DATABASE_URL` would describe a database the application
+   cannot see (ADR 0003).
+3. **Reversibility is measured against `JUTSU_TEST_MIGRATION_URL`**, never the seeded
+   database — the round trip would destroy what every other clause measures.
+4. **The one check that writes asks.** `seed_idempotent` needs `--allow-writes`, and takes
+   ingestion as an injected callable because `jutsu_evals` is a package and must not depend
+   on `apps/worker`.
+5. **The offset check does not replay the chunker.** Replaying `chunk_document` would prove
+   determinism, and a chunker with an off-by-one reproduces its off-by-one perfectly. It
+   slices the original body with the two stored numbers, substitutes the mask spans inside
+   that range, and requires the result to equal the stored chunk text.
+
+### Three defects the first run found
+
+Running the harness against this machine caught three faults in the harness itself, each of
+which would otherwise have produced a confident wrong answer:
+
+1. **`coverage_core` reported 59.3% for `jutsu_graph` and went red** — with Neo4j stopped
+   and 394 tests skipping. A skipped test covers nothing, so the figure described a
+   different suite. Coverage is the one clause where a skip does not leave a gap but
+   *moves the number*, so any skip now makes it unmeasured.
+2. **`migrations_reversible` collected no tests.** It selected by node id, and the test
+   lives inside `TestReversibility` — so a class name had silently become part of this
+   module's contract with a file it does not own. Now selected with `-k`.
+3. **`preflight` looked only for `make`.** This repo is developed on Windows against MinGW,
+   where the binary is `mingw32-make` and there is no `make` at all, so the clause reported
+   unmeasured on the machine the slice was written on.
+
+### Gate S9 — run 2026-08-28
+
+**This slice does not pass M1, and the harness says so.** The summary line refuses to
+print "gate PASSED" over any run with an unmeasured clause, whatever the exit code is.
+
+1. `make preflight` green — **725 passed, 394 skipped** (1 119 collected). **104 tests
+   added**, 94 of them passing here; the 11 new skips are the database-backed gate suite,
+   which skips for the same reason the rest of the DB suite does. Baseline before the
+   slice was 1 015 collected.
+2. Outcome semantics: a `not_measured` result cannot be constructed with an observation or
+   a threshold; zero remains a legitimate observation.
+3. Strict promotion: unmeasured exits 0 without `--strict` and 1 with it, verified as exit
+   codes and not only as booleans.
+4. Every unmeasured path asserted individually — no org, no database, no log, no receipt,
+   no `--allow-writes`, no reseed callable, `--skip`, an unparsable receipt, and a check
+   that raises. None of them carries a number.
+5. A crashing check reports only the exception *type*; a message containing an address is
+   asserted absent from the result (§4.9).
+6. The PII clause reports detector types and counts and never a matched value — asserted
+   with a log containing a real-shaped address and phone number.
+7. Masked pseudonyms in a log (`[EMAIL_A7]`) are not mistaken for leaks.
+8. Offsets: every chunk of four fixtures — including Devanagari and a ZWJ emoji family —
+   replays exactly, against real `mask` and `chunk_document` output.
+9. **Sabotage, six ways.** A one-character shift of `char_start`; a shifted end; storing
+   *masked* coordinates instead of original ones (the §22 trap); storing raw text where
+   masked belongs; tampering with the stored chunk text; and a reseed that writes one
+   spurious row. Each turns exactly the matching check red.
+10. Thresholds are asserted against §21's Gate M1 paragraph **read from the spec file**, so
+    a moved goalpost fails a test rather than passing silently.
+11. Receipts: round trip, latest-wins, other-org ignored, unknown version ignored, a
+    truncated file survived, no colon in the filename, and **the corpus path never appears
+    in the written file** — only its hash.
+12. Reports carry no filesystem path and name the commit they describe.
+13. Live run, this machine, containers stopped: **1 passed · 0 failed · 10 not measured**
+    — `preflight` is the one clause that can be measured without services. Every other
+    line carries a distinct and accurate reason. `--strict` exits 1.
+
+### What remains unmeasured, and what it would take
+
+Nine clauses need services and two of those also need a corpus. Passing M1 needs, in order:
+Docker started, `make up`, `make migrate`, the Enron download (§19), `make seed` with
+`--embed` and `--log-file`, then `make gate ORG=... LOG=...`. The embedding spend is real
+and is an operator's decision, not the harness's.
+
+### Out of scope
+
+No Phase 2 checks, no extraction eval (S14), no 100-question benchmark (S23), no LLM judge,
+no load test (S29). No corpus download and no embedding spend. No change to ingestion
+semantics — the receipt records numbers the run already had.
 
 ---
 

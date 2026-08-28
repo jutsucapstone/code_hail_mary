@@ -53,6 +53,75 @@ _IGNORED_NAMES: Final = frozenset({".DS_Store", "Thumbs.db", ".gitkeep", "sample
 #: worker (§30 — source content is untrusted).
 MAX_MESSAGE_BYTES: Final = 32 * 1024 * 1024
 
+_WINDOWS: Final = os.name == "nt"
+
+#: Win32's extended-length prefix. A path carrying it skips the Win32 path parser, which
+#: is the only way to address a filename ending in a dot or a space.
+_EXTENDED: Final = "\\\\?\\"
+_UNC_EXTENDED: Final = "\\\\?\\UNC\\"
+
+
+def os_path(path: Path) -> str:
+    """The string to hand the operating system for I/O on `path`.
+
+    **Every Enron message filename ends in a dot** — `1.`, `10.` — and the Win32 path
+    parser silently strips a trailing dot before the filesystem ever sees the name. The
+    effect is not an error: `os.walk` lists `1.` perfectly, `Path.exists()` then answers
+    False, and every read raises `FileNotFoundError`. Measured on the real corpus, that
+    turned all **517 401** messages into "unparsable" and produced a syntactically valid
+    sample of zero messages, with a zero exit code.
+
+    Prefixing an already-absolute path with `\\\\?\\` bypasses that parser. Verified on
+    this corpus: `os.stat` returns 1775 bytes and the file opens to
+    `Message-ID: <16159836…@thyme>`, where the unprefixed path raises.
+
+    A no-op off Windows, where a trailing dot is an ordinary filename character and the
+    prefix would be a literal directory called `\\\\?\\`.
+    """
+    if not _WINDOWS:
+        return str(path)
+
+    text = str(path)
+    if text.startswith(_EXTENDED):
+        return text
+    if text.startswith("\\\\"):
+        # A UNC share: \\server\share -> \\?\UNC\server\share.
+        return _UNC_EXTENDED + text[2:]
+    return _EXTENDED + text
+
+
+def _strip_extended(text: str) -> str:
+    """Undo `os_path`, so a resolved path is stored and compared in its ordinary form.
+
+    The prefix is an instruction to the path parser, not part of the file's identity.
+    Letting it into `external_id` would change every document's idempotency key on
+    Windows and nowhere else.
+    """
+    if text.startswith(_UNC_EXTENDED):
+        return "\\\\" + text[len(_UNC_EXTENDED) :]
+    if text.startswith(_EXTENDED):
+        return text[len(_EXTENDED) :]
+    return text
+
+
+def real_path(path: Path) -> Path:
+    """`Path.resolve()`, but able to see a trailing-dot name on Windows.
+
+    This is a containment control, not a convenience. `Path.resolve()` follows symlinks
+    by asking the filesystem — and for a trailing-dot path Windows cannot answer, so it
+    silently degrades to lexical normalisation and **stops resolving symlinks at all**.
+    Making such files readable without fixing this would have opened exactly the escape
+    the class docstring says is closed: a symlink named `evil.` pointing outside the
+    corpus would resolve to itself, pass `is_relative_to`, and then be read through the
+    extended path.
+
+    So resolution goes through the same prefix the read does, and the answer is stripped
+    back to ordinary form. Off Windows this is `Path.resolve()` unchanged.
+    """
+    if not _WINDOWS:
+        return path.resolve()
+    return Path(_strip_extended(os.path.realpath(os_path(path))))
+
 
 class PathEscape(ValueError):
     """An identifier resolved outside the corpus root.
@@ -106,7 +175,7 @@ class LocalConnector:
             # a rule.
             raise PathEscape("identifier must be a POSIX-relative path")
 
-        target = (self._root / candidate).resolve()
+        target = real_path(self._root / candidate)
         if not target.is_relative_to(self._root):
             raise PathEscape("identifier resolves outside the corpus root")
         return target
@@ -119,7 +188,7 @@ class LocalConnector:
         file that points somewhere else entirely.
         """
         try:
-            resolved = path.resolve()
+            resolved = real_path(path)
         except OSError:
             return None
         if not resolved.is_relative_to(self._root):
@@ -152,7 +221,7 @@ class LocalConnector:
                     continue
                 if since is not None:
                     try:
-                        modified = utc_from_timestamp(path.stat().st_mtime)
+                        modified = utc_from_timestamp(os.stat(os_path(path)).st_mtime)
                     except OSError:
                         continue
                     if modified < since:
@@ -178,7 +247,7 @@ class LocalConnector:
             source_system=self.system,
             uri=external_id,
             thread_id=local_thread,
-            fallback_sent_at=utc_from_timestamp(path.stat().st_mtime),
+            fallback_sent_at=utc_from_timestamp(os.stat(os_path(path)).st_mtime),
         )
 
     async def acls(self, external_id: str) -> list[AclEntry]:
@@ -188,7 +257,9 @@ class LocalConnector:
     # ----------------------------------------------------------------- internals
 
     def _parse(self, path: Path) -> ParsedMessage:
-        size = path.stat().st_size
+        target = os_path(path)
+        size = os.stat(target).st_size
         if size > MAX_MESSAGE_BYTES:
             raise UnparsableMessage("message exceeds the maximum size")
-        return parse_message(path.read_bytes())
+        with open(target, "rb") as handle:
+            return parse_message(handle.read())
