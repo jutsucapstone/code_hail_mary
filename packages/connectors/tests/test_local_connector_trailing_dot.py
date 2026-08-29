@@ -219,3 +219,89 @@ class TestOsPathHelper:
         """Requirement: POSIX behaviour is untouched."""
         target = corpus / "allen-p" / "inbox" / "plain"
         assert real_path(target) == target.resolve()
+
+
+class TestTheSamplerAndManifestReadThemToo:
+    """The call sites the first fix missed.
+
+    `LocalConnector` was fixed and verified; `enron.py` reads paths directly and was not,
+    so `sample_enron` still saw all 517 401 real messages as unreadable while the
+    connector saw them fine. `ManifestConnector.list_since` then guarded each identifier
+    with `Path.is_file()`, which answers about `1` rather than `1.` — so even a correct
+    manifest would have listed nothing.
+
+    Three silent zeros in one defect class. These tests exercise the *modules that read*,
+    not just the connector, which is the distinction the first round of tests missed.
+    """
+
+    async def test_the_sampler_parses_a_trailing_dot_corpus(self, corpus: Path) -> None:
+        from jutsu_connectors.enron import sample_enron
+
+        result = await sample_enron(corpus, target_messages=10, custodian_count=5)
+        assert result.manifest.corpus_unparsable == 0, "the sampler could not read the corpus"
+        assert result.manifest.corpus_messages == 2
+        assert "allen-p/inbox/1." in result.external_ids
+
+    async def test_load_documents_streams_a_trailing_dot_message(self, corpus: Path) -> None:
+        from jutsu_connectors.enron import load_documents, sample_enron
+
+        result = await sample_enron(corpus, target_messages=10, custodian_count=5)
+        bodies = [
+            document
+            async for document in load_documents(corpus, result.external_ids, result.threads)
+        ]
+        assert len(bodies) == len(result.external_ids), "a sampled message failed to load"
+        assert any("filename ends in a dot" in d.body for d in bodies)
+
+    async def test_the_manifest_connector_lists_trailing_dot_files(self, corpus: Path) -> None:
+        """`is_file()` answering about `1` instead of `1.` skipped every document."""
+        from jutsu_connectors.enron import ManifestConnector, SampleManifest, sample_enron
+
+        result = await sample_enron(corpus, target_messages=10, custodian_count=5)
+        manifest = SampleManifest.from_json(result.manifest.to_json())
+        connector = ManifestConnector(corpus, manifest)
+
+        listed = [external_id async for external_id in connector.list_since(None)]
+        assert "allen-p/inbox/1." in listed
+        assert len(listed) == len(manifest.message_ids)
+
+    async def test_the_manifest_connector_cursor_path_too(self, corpus: Path) -> None:
+        from jutsu_connectors.enron import ManifestConnector, SampleManifest, sample_enron
+
+        result = await sample_enron(corpus, target_messages=10, custodian_count=5)
+        manifest = SampleManifest.from_json(result.manifest.to_json())
+        connector = ManifestConnector(corpus, manifest)
+
+        past = "2000-01-01T00:00:00+00:00"
+        listed = [e async for e in connector.list_since(past)]
+        assert "allen-p/inbox/1." in listed
+
+
+class TestEveryHelperAgreesOnTheSameFile:
+    """Read, resolve and ask-about must all see the file, or one of them lies silently."""
+
+    def test_all_three_helpers_see_a_trailing_dot_file(self, corpus: Path) -> None:
+        from jutsu_connectors.local import is_file, read_bytes
+
+        dotted = corpus / "allen-p" / "inbox" / "1."
+        assert is_file(dotted), "is_file() denied a file that exists"
+        assert read_bytes(dotted), "read_bytes() returned nothing"
+        assert real_path(dotted).name == "1.", "real_path() lost the dot"
+
+    def test_the_pathlib_equivalents_are_what_differ(self, corpus: Path) -> None:
+        """The reason the helpers exist, pinned so nobody 'simplifies' them away.
+
+        Asserted without a skip: on Windows plain `pathlib` denies the file, on POSIX it
+        agrees with the helpers, and both are stated here. A platform skip would leave
+        one branch permanently unexecuted on each machine.
+        """
+        from jutsu_connectors.local import is_file
+
+        dotted = corpus / "allen-p" / "inbox" / "1."
+        assert is_file(dotted), "the helper must see it on every platform"
+
+        if os.name == "nt":
+            assert not dotted.is_file(), "Windows resolved a trailing dot — helpers moot?"
+            assert not dotted.exists()
+        else:
+            assert dotted.is_file(), "POSIX should need no help with a trailing dot"

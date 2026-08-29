@@ -26,6 +26,7 @@ Three deliberate departures from §19's sketch, each recorded in ADR 0008:
 from __future__ import annotations
 
 import json
+import os
 import random
 from collections import Counter
 from collections.abc import AsyncIterator, Sequence
@@ -36,7 +37,7 @@ from typing import Final
 
 from jutsu_core import AclEntry, RawDocument, SourceSystem
 
-from jutsu_connectors.local import LocalConnector, PathEscape
+from jutsu_connectors.local import LocalConnector, PathEscape, is_file, os_path, read_bytes
 from jutsu_connectors.rfc822 import (
     UnparsableMessage,
     parse_message,
@@ -237,7 +238,7 @@ async def _scan(connector: LocalConnector) -> tuple[list[MessageLinks], dict[str
 
     async for external_id in connector.list_since(None):
         try:
-            parsed = parse_message(connector.resolve(external_id).read_bytes())
+            parsed = parse_message(read_bytes(connector.resolve(external_id)))
         except (UnparsableMessage, OSError, PathEscape):
             unparsable += 1
             continue
@@ -379,7 +380,7 @@ async def load_documents(
     for external_id in external_ids:
         path = connector.resolve(external_id)
         try:
-            parsed = parse_message(path.read_bytes())
+            parsed = parse_message(read_bytes(path))
         except (UnparsableMessage, OSError):
             # Selected from a header scan, unreadable now: the corpus changed underneath
             # the sample. Skipped rather than raised, so one vanished file cannot void a
@@ -397,7 +398,7 @@ async def load_documents(
             source_system=connector.system,
             uri=external_id,
             thread_id=thread_id,
-            fallback_sent_at=utc_from_timestamp(path.stat().st_mtime),
+            fallback_sent_at=utc_from_timestamp(os.stat(os_path(path)).st_mtime),
         )
 
 
@@ -473,9 +474,12 @@ class ManifestConnector:
         for external_id in self._ids:
             try:
                 path = self._local.resolve(external_id)
-                if since is not None and utc_from_timestamp(path.stat().st_mtime) < since:
+                if (
+                    since is not None
+                    and utc_from_timestamp(os.stat(os_path(path)).st_mtime) < since
+                ):
                     continue
-                if not path.is_file():
+                if not is_file(path):
                     continue
             except (OSError, PathEscape):
                 continue

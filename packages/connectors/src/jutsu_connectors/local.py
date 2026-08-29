@@ -104,6 +104,41 @@ def _strip_extended(text: str) -> str:
     return text
 
 
+def read_bytes(path: Path) -> bytes:
+    """`Path.read_bytes()` that can also read a trailing-dot name on Windows.
+
+    One function so there is a single place where a corpus file is opened. Before this
+    existed the extended-length form was applied in `LocalConnector` and *not* in
+    `enron.py`, which reads paths directly — so the sampler still saw every Enron message
+    as unreadable while the connector saw them fine. The fix was correct and incomplete,
+    which is the failure mode a shared helper removes.
+
+    Blocking, and called from `async def`. That is unchanged from the `read_bytes()` it
+    replaces: the corpus walk is synchronous I/O either way, and pretending otherwise
+    with a thread per message would cost more than it saves on a 500k-file scan.
+    """
+    with open(os_path(path), "rb") as handle:
+        return handle.read()
+
+
+def is_file(path: Path) -> bool:
+    """`Path.is_file()` that does not lie about a trailing-dot name on Windows.
+
+    Every `Path`-level filesystem predicate goes through the Win32 parser and therefore
+    answers about `1`, not `1.` — `exists()`, `is_file()` and `stat()` alike. Measured:
+    `Path.is_file()` is False and `os.path.isfile(os_path(path))` is True for the same
+    real file.
+
+    This exists because the first fix missed it. `ManifestConnector.list_since` guards
+    each sampled identifier with `is_file()`, so every Enron document would have been
+    skipped and the ingest walk would have listed nothing — a third silent zero in the
+    same defect class. Reading, resolving and *asking about* a path all need the same
+    treatment; that is why they are three helpers in one place rather than fixes at each
+    call site.
+    """
+    return os.path.isfile(os_path(path))
+
+
 def real_path(path: Path) -> Path:
     """`Path.resolve()`, but able to see a trailing-dot name on Windows.
 
@@ -257,9 +292,7 @@ class LocalConnector:
     # ----------------------------------------------------------------- internals
 
     def _parse(self, path: Path) -> ParsedMessage:
-        target = os_path(path)
-        size = os.stat(target).st_size
+        size = os.stat(os_path(path)).st_size
         if size > MAX_MESSAGE_BYTES:
             raise UnparsableMessage("message exceeds the maximum size")
-        with open(target, "rb") as handle:
-            return parse_message(handle.read())
+        return parse_message(read_bytes(path))
