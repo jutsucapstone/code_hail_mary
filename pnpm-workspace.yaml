@@ -5,4 +5,7 @@ packages:
 # eslint-config-next resolves imports through a native binary (unrs-resolver);
 # its postinstall must run or `next lint` cannot resolve any module.
 allowBuilds:
+  # Vitest bundles test files through esbuild; without its postinstall the
+  # platform binary is missing and every frontend test fails to start.
+  esbuild: true
   unrs-resolver: true

@@ -131,6 +131,8 @@ type AcceptResponse =
 
 type SearchBody =
   paths["/v1/search"]["post"]["requestBody"]["content"]["application/json"];
+export type Evidence =
+  paths["/v1/evidence/{chunk_id}"]["get"]["responses"][200]["content"]["application/json"];
 export type SearchResponse =
   paths["/v1/search"]["post"]["responses"][200]["content"]["application/json"];
 export type SearchResult = SearchResponse["items"][number];
@@ -183,6 +185,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  /**
+   * The source span behind one citation.
+   *
+   * The only correct way to render a highlight. `search()` returns `char_start` and
+   * `char_end` that index the ORIGINAL document while its `text` is the masked body, so
+   * applying those offsets to that string lands somewhere else — masking changes
+   * lengths. This endpoint returns the pair that belong together.
+   *
+   * A chunk the caller may not read is a 404, not a 403, so this cannot be walked to
+   * enumerate documents.
+   */
+  evidence: (chunkId: string) =>
+    call<Evidence>(`/v1/evidence/${encodeURIComponent(chunkId)}`, { method: "GET" }),
 
   me: () => call<MeResponse>("/v1/me", { method: "GET" }),
 

@@ -60,6 +60,11 @@ lint-web:
 typecheck-web:
 	pnpm --filter web typecheck
 
+# Component tests for the surfaces that call the API. jsdom, scripted `fetch`, no
+# network and no provider — a frontend test that reached Vertex would bill CI.
+test-web:
+	pnpm --filter web test
+
 # --no-cache, and it is not paranoia. Ruff caches per file, keyed on that file content
 # and the config — so a change elsewhere that alters how an import is *classified* leaves
 # the cached verdict in place. Adding a root conftest.py did exactly that: `make
@@ -130,7 +135,7 @@ api-types-check:
 	node -e "for (const f of process.argv.slice(1)) require('fs').rmSync(f, { force: true })" apps/web/lib/.openapi.check.json apps/web/lib/.api-schema.check.d.ts
 
 # §4.15 — this is what the commit hook runs. Keep it fast enough to run every time.
-preflight: lint-web typecheck-web test-hooks lint-py format-check-py typecheck-py test-py api-types-check
+preflight: lint-web typecheck-web test-web test-hooks lint-py format-check-py typecheck-py test-py api-types-check
 	@echo "preflight OK"
 
 # ---------------------------------------------------------------- schema

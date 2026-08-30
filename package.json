@@ -11,8 +11,9 @@
     "build": "pnpm --filter web build",
     "lint": "pnpm --filter web lint",
     "typecheck": "pnpm --filter web typecheck",
+    "test:web": "pnpm --filter web test",
     "test:hooks": "node scripts/hooks/preflight-on-commit.test.mjs",
-    "preflight": "pnpm lint && pnpm typecheck && pnpm test:hooks"
+    "preflight": "pnpm lint && pnpm typecheck && pnpm test:web && pnpm test:hooks"
   },
   "devDependencies": {
     "openapi-typescript": "^7.13.0"
