@@ -460,6 +460,21 @@ async def reclaim_expired_leases(
     **Org-scoped, and that is a real limitation rather than an oversight.** See the module
     docstring: nothing can read `jobs` across tenants under FORCE RLS, so this recovers the
     tenant whose scope is set and no other.
+
+    **An expired lease is not sufficient to reclaim a job, and must not be made so.** The
+    work transaction writes the row (`record_state`) before it does anything slow, so a
+    running worker holds a row-level write lock for the whole job. This `UPDATE` needs the
+    same lock and blocks; `claim_job` skips the row outright. That is what makes a long
+    but healthy job safe - an embedding job obeying a 120-second `Retry-After` can outlive
+    `DEFAULT_LEASE_SECONDS` five times over and still cannot be taken, because the lease is
+    only *reachable* once the transaction is gone, which is precisely what a dead worker
+    leaves behind.
+
+    The consequence is that moving a state write after the slow call, or committing it
+    early to avoid holding a lock across a network call, silently converts this from
+    crash recovery into duplicate provider spend. `TestALiveWorkerKeepsItsJob` pins all
+    four halves of that, including the read-only case that proves the lock is the
+    mechanism rather than the open transaction.
     """
     selected = [kind.value for kind in (kinds or tuple(JobKind))]
     working = [

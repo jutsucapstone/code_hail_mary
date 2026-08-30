@@ -37,11 +37,21 @@ class TransientEmbeddingError(EmbeddingError):
 
     Carries `status` where there was one, so a caller can log the class of failure
     without logging the response body.
+
+    `retry_after` is the provider's own instruction, in seconds, taken from the
+    `Retry-After` header when it sends one. It exists because guessing is measurably
+    worse: the 200-document drain issued 551 requests and 405 of them were rejected —
+    a 73% rejection rate — because every retry picked its own jittered delay while the
+    provider was saying exactly how long to wait. `None` means the response carried no
+    usable header and the caller should fall back to backoff.
     """
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, status: int | None = None, retry_after: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 class PermanentEmbeddingError(EmbeddingError):

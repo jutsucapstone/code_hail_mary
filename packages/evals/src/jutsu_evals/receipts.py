@@ -73,6 +73,13 @@ class SeedReceipt:
     requests: int
     model: str | None
     dimension: int | None
+    #: Short git revision of the tree that produced this run, `-dirty` when tracked
+    #: files differed from it. Optional, and `RECEIPT_VERSION` deliberately does NOT
+    #: move for it: the version exists to reject a shape that would be *misread*, and
+    #: an added optional key is not one. Bumping it would make the three receipts
+    #: already on disk unreadable and silently turn M1's recorded-cost clause from
+    #: measured into unmeasured — losing the pilot's cost record to gain nothing.
+    revision: str | None = None
 
     @staticmethod
     def build(
@@ -88,6 +95,7 @@ class SeedReceipt:
         requests: int,
         model: str | None,
         dimension: int | None,
+        revision: str | None = None,
     ) -> SeedReceipt:
         return SeedReceipt(
             version=RECEIPT_VERSION,
@@ -103,6 +111,7 @@ class SeedReceipt:
             requests=requests,
             model=model,
             dimension=dimension,
+            revision=revision,
         )
 
     def to_dict(self) -> dict[str, Any]:

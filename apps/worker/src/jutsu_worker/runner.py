@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Final, final
 
 from jutsu_db.engine import org_session
 from jutsu_retrieval.embeddings import Embedder
@@ -45,6 +46,7 @@ from jutsu_worker.jobs import Job, JobKind, JobState, claim_job
 from jutsu_worker.pipeline import IngestOutcome
 
 __all__ = [
+    "JOB_FAILED",
     "process_document",
     "process_embedding",
     "process_source",
@@ -94,14 +96,43 @@ async def process_source(
     return True
 
 
+@final
+class _JobFailed:
+    """A job was claimed and its attempt failed.
+
+    Its own type because the previous contract returned `None` for this *and* for "the
+    queue had nothing to claim", and a drain loop cannot act correctly on an answer that
+    conflates them. The old docstring argued the caller's next action was the same. It is
+    not: on an empty queue the caller stops, on a failed job it moves to the next one.
+
+    Measured cost of the conflation: the 200-document pilot embedded 12 documents, met one
+    HTTP 429, took the `None` as "queue empty", stopped, and exited **0** with 187 jobs
+    never attempted. A 45 000-document run would report success the same way.
+
+    Falsy, so `if outcome:` at an existing call site still treats a failure as "nothing
+    useful happened" rather than silently becoming truthy.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "JOB_FAILED"
+
+
+#: Singleton. Compare with `is`, never with `==`.
+JOB_FAILED: Final = _JobFailed()
+
+
 async def process_document(
     org_id: uuid.UUID, *, job_id: uuid.UUID | None = None
-) -> IngestOutcome | None:
-    """Fetch, mask, chunk and store one document. Returns its outcome, or None.
+) -> IngestOutcome | _JobFailed | None:
+    """Fetch, mask, chunk and store one document.
 
-    None means either that nothing was claimable — the ordinary idle case — or that the
-    attempt failed and was classified. The two are deliberately not distinguished here:
-    the caller's next action is the same, and the job row records which happened.
+    Returns the outcome on success, `JOB_FAILED` if a claimed job failed (the failure is
+    recorded on the row before returning), and `None` only when nothing was claimable.
     """
     job = await _claim(org_id, JobKind.INGEST_DOCUMENT, job_id)
     if job is None:
@@ -113,13 +144,16 @@ async def process_document(
     except Exception as error:
         state = await _record_failure(job, error)
         logger.info("document_job_failed job=%s state=%s", job.id, state.value)
-        return None
+        return JOB_FAILED
 
 
 async def process_embedding(
     org_id: uuid.UUID, embedder: Embedder, *, job_id: uuid.UUID | None = None
-) -> int | None:
-    """Embed one document's pending chunks. Returns vectors written, or None.
+) -> int | _JobFailed | None:
+    """Embed one document's pending chunks.
+
+    Returns vectors written on success, `JOB_FAILED` if a claimed job failed, and `None`
+    only when nothing was claimable.
 
     A failure here can never cause a re-fetch: the document job committed before this job
     existed, and nothing in this path touches an `ingest.document` row.
@@ -134,4 +168,4 @@ async def process_embedding(
     except Exception as error:
         state = await _record_failure(job, error)
         logger.info("embedding_job_failed job=%s state=%s", job.id, state.value)
-        return None
+        return JOB_FAILED

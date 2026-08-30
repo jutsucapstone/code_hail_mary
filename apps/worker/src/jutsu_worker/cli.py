@@ -45,6 +45,7 @@ from jutsu_connectors.enron import (
 )
 from jutsu_db.engine import org_session
 from jutsu_evals.receipts import SeedReceipt, utcnow, write_receipt
+from jutsu_evals.report import revision
 from jutsu_retrieval.client import VertexTransport
 from jutsu_retrieval.config import MissingEmbeddingSettings, get_embedding_settings
 from jutsu_retrieval.embeddings import Embedder, TokenLedger
@@ -52,7 +53,7 @@ from sqlalchemy import text
 
 from jutsu_worker.ingest import source_job_key
 from jutsu_worker.jobs import JobKind, enqueue_job
-from jutsu_worker.runner import process_document, process_embedding, process_source
+from jutsu_worker.runner import JOB_FAILED, process_document, process_embedding, process_source
 
 logger = logging.getLogger("jutsu.worker.cli")
 
@@ -140,6 +141,7 @@ async def seed(
     *,
     embed: bool,
     max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    max_embed_jobs: int | None = None,
     ledger: TokenLedger | None = None,
     manifest: str | None = None,
 ) -> int:
@@ -183,20 +185,45 @@ async def seed(
 
     await process_source(org_id, source_id, correlation_id="seed")
 
+    # A failed job is skipped, not treated as the end of the queue.
+    #
+    # Both loops used to `break` on `None`, and `None` meant both "nothing claimable" and
+    # "this job failed". The 200-document pilot proved what that costs: one HTTP 429 on
+    # the thirteenth embedding job ended the whole phase, leaving 187 jobs untouched, and
+    # the command still exited 0. Only an empty queue ends a drain now; a failure is
+    # already recorded on its row, so the loop moves on.
     handled = 0
     for _ in range(max_documents):
-        if await process_document(org_id) is None:
+        outcome = await process_document(org_id)
+        if outcome is None:
             break
+        if outcome is JOB_FAILED:
+            continue
         handled += 1
 
     if embed:
+        # `max_documents` bounds the *ingest* loop. Reusing it for the embedding loop was
+        # a coincidence of the two loops being written together, not a contract - and it
+        # is the wrong bound, because the two stages do not cost the same thing. Ingest is
+        # local IO; embedding is a metered provider call. An operator resuming a stalled
+        # queue wants to say "spend five jobs' worth", and saying it through a document
+        # limit only works while every document is also exactly one embedding job.
+        #
+        # `None` keeps the old behaviour exactly, so no existing caller or Makefile
+        # target changes meaning.
+        embed_budget = max_documents if max_embed_jobs is None else max_embed_jobs
         settings = get_embedding_settings()
         transport = VertexTransport(settings)
         try:
             embedder = Embedder(transport, settings, ledger=ledger)
-            for _ in range(max_documents):
-                if await process_embedding(org_id, embedder) is None:
+            for _ in range(embed_budget):
+                result = await process_embedding(org_id, embedder)
+                if result is None:
                     break
+                if result is JOB_FAILED:
+                    # Recorded and either rescheduled or dead-lettered. The next job is
+                    # unrelated to this one's provider error, so keep draining.
+                    continue
         finally:
             # `VertexTransport` exposes `aclose` rather than the context-manager protocol,
             # and an unclosed httpx client leaks a connection pool per run.
@@ -246,6 +273,7 @@ async def seed_and_measure(
     *,
     embed: bool,
     max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    max_embed_jobs: int | None = None,
     manifest: str | None = None,
 ) -> SeedReceipt:
     """Run the seed and record what it cost (§21 M1, "seed-run token cost recorded").
@@ -278,6 +306,7 @@ async def seed_and_measure(
         root,
         embed=embed,
         max_documents=max_documents,
+        max_embed_jobs=max_embed_jobs,
         ledger=ledger,
         manifest=manifest,
     )
@@ -297,6 +326,10 @@ async def seed_and_measure(
         requests=ledger.requests if ledger else 0,
         model=model,
         dimension=dimension,
+        # Which tree produced these numbers. `-dirty` when tracked files differ from the
+        # commit, because a receipt naming a commit that does not contain the code is a
+        # reproducibility claim nobody can honour.
+        revision=revision(REPO_ROOT),
     )
 
 
@@ -313,6 +346,16 @@ def main(argv: list[str] | None = None) -> int:
         help="also embed the chunks — this calls the provider and costs money",
     )
     run.add_argument("--max-documents", type=int, default=DEFAULT_MAX_DOCUMENTS)
+    run.add_argument(
+        "--max-embed-jobs",
+        type=int,
+        default=None,
+        help=(
+            "how many embedding jobs to drain, separately from --max-documents. "
+            "Each one is a provider call and costs money. Defaults to --max-documents, "
+            "which is what this command did before the flag existed."
+        ),
+    )
     run.add_argument(
         "--log-file",
         type=Path,
@@ -357,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.sample and args.manifest:
         raise SystemExit("--sample builds a manifest and --manifest supplies one; pick one")
 
+    # `range(-1)` is empty, so a mistyped limit would embed nothing, print a cheerful
+    # "tokens spent: 0" and exit 0 - a resume that silently did not happen.
+    if args.max_embed_jobs is not None and args.max_embed_jobs < 0:
+        raise SystemExit("--max-embed-jobs cannot be negative")
+
     manifest: str | None = None
     if args.manifest:
         manifest_path = Path(args.manifest).resolve()
@@ -385,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             str(root),
             embed=args.embed,
             max_documents=args.max_documents,
+            max_embed_jobs=args.max_embed_jobs,
             manifest=manifest,
         )
     )

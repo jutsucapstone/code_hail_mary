@@ -23,8 +23,10 @@ it on the outgoing request.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -40,6 +42,10 @@ from jutsu_retrieval.errors import (
     TransientEmbeddingError,
     TruncatedInput,
 )
+
+#: Named for the module the ingestion path already logs embedding events under
+#: (`persistence.py`), so a retry and its outcome read as one stream.
+logger = logging.getLogger("jutsu.retrieval.embeddings")
 
 __all__ = [
     "Embedder",
@@ -174,7 +180,16 @@ class Embedder:
     the wrong chunk. There is a test for it because the failure is invisible.
     """
 
-    __slots__ = ("_count_tokens", "_ledger", "_semaphore", "_settings", "_sleep", "_transport")
+    __slots__ = (
+        "_clock",
+        "_count_tokens",
+        "_ledger",
+        "_not_before",
+        "_semaphore",
+        "_settings",
+        "_sleep",
+        "_transport",
+    )
 
     def __init__(
         self,
@@ -184,6 +199,7 @@ class Embedder:
         count_tokens: TokenCounter = estimate_tokens,
         ledger: TokenLedger | None = None,
         sleep: Callable[[float], Any] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._transport = transport
         self._settings = settings
@@ -191,6 +207,10 @@ class Embedder:
         self._ledger = ledger or TokenLedger(budget=settings.token_budget)
         # Injected so a retry test does not spend a real minute proving the backoff grows.
         self._sleep = sleep
+        self._clock = clock
+        #: Monotonic deadline shared by every batch this embedder runs. Set when a
+        #: request is rejected, awaited before the next one is sent.
+        self._not_before = 0.0
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
 
     @property
@@ -296,22 +316,73 @@ class Embedder:
         last: Exception | None = None
 
         for attempt in range(self._settings.max_attempts):
+            # The only wait in this loop, and deliberately so. A failure publishes a
+            # deadline instead of sleeping on it directly, so the batch that hit the
+            # limit and the `max_concurrency - 1` batches that did not all resume at the
+            # same instant. Sleeping here *and* again after a failure would make every
+            # batch serve its own backoff twice.
+            await self._await_cooldown()
+
             self._ledger.requests += 1
             try:
                 return await self._transport.predict(instances=instances, parameters=parameters)
             except TransientEmbeddingError as error:
                 last = error
-                if attempt == self._settings.max_attempts - 1:
-                    break
-                ceiling = min(
-                    self._settings.base_backoff_s * (2**attempt), self._settings.max_backoff_s
+                delay = self._retry_delay(error, attempt)
+                # Status, delay, and whether the provider told us how long to wait -
+                # numbers this module produced, never the request or the response body
+                # (§4.9). Without this a rate-limit storm is visible only as slowness,
+                # which is how the 200-document drain reached a 73% rejection rate before
+                # anybody could see why.
+                logger.warning(
+                    "embedding_retry attempt=%d/%d status=%s retry_after=%s delay=%.2f",
+                    attempt + 1,
+                    self._settings.max_attempts,
+                    error.status if error.status is not None else "none",
+                    "absent" if error.retry_after is None else f"{error.retry_after:.1f}",
+                    delay,
                 )
-                # S311: not cryptographic, and must not be — this is jitter, and a
-                # CSPRNG here would buy nothing while making the retry untestable.
-                await self._sleep(random.uniform(0.0, ceiling))  # noqa: S311
+                # Published even on the final attempt: this batch is giving up, but its
+                # siblings are still running and the quota window it just learned about
+                # applies to them too.
+                self._publish_cooldown(delay)
 
         assert last is not None  # noqa: S101 - the loop cannot exit without one
         raise last
+
+    def _retry_delay(self, error: TransientEmbeddingError, attempt: int) -> float:
+        """How long to wait before the next attempt.
+
+        The provider's own `Retry-After` wins when it sends one — it knows when its
+        window reopens and this code does not. Measured cost of guessing instead: the
+        200-document drain made 551 requests for 147 successes, a 73% rejection rate,
+        because every retry invented its own delay while the header sat unread.
+
+        Without a usable header it falls back to full-jitter exponential backoff, which
+        is the right shape for a *shared* per-minute quota: an unjittered schedule
+        retries every rejected batch at the same instant and trips the limit again.
+        """
+        if error.retry_after is not None:
+            return error.retry_after
+
+        ceiling = min(self._settings.base_backoff_s * (2**attempt), self._settings.max_backoff_s)
+        # S311: not cryptographic, and must not be — this is jitter, and a CSPRNG here
+        # would buy nothing while making the retry untestable.
+        return random.uniform(0.0, ceiling)  # noqa: S311
+
+    def _publish_cooldown(self, delay: float) -> None:
+        """Tell every other batch in this process when the quota window reopens.
+
+        Without it the semaphore lets `max_concurrency` batches march straight back into
+        a limit one of them has already hit. Monotonic so a clock adjustment cannot make
+        the deadline jump.
+        """
+        self._not_before = max(self._not_before, self._clock() + delay)
+
+    async def _await_cooldown(self) -> None:
+        remaining = self._not_before - self._clock()
+        if remaining > 0:
+            await self._sleep(remaining)
 
 
 #: The §9.3 signature, kept as a module-level helper so the spec's shape is reachable.

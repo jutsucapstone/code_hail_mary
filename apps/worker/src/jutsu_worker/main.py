@@ -27,6 +27,7 @@ from jutsu_retrieval.config import get_embedding_settings
 from jutsu_retrieval.embeddings import Embedder
 from sqlalchemy import text
 
+from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.runner import process_document, process_embedding, process_source
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
@@ -70,7 +71,9 @@ async def ingest_document(
     outcome = await process_document(
         uuid.UUID(org_id), job_id=uuid.UUID(job_id) if job_id else None
     )
-    return outcome.value if outcome else None
+    # `JOB_FAILED` and `None` both mean "no outcome to report" to the dispatcher; the
+    # job row carries what actually happened.
+    return outcome.value if isinstance(outcome, IngestOutcome) else None
 
 
 async def embed_document(ctx: dict[str, Any], org_id: str, job_id: str | None = None) -> int | None:
@@ -83,11 +86,12 @@ async def embed_document(ctx: dict[str, Any], org_id: str, job_id: str | None = 
     settings = get_embedding_settings()
     transport = VertexTransport(settings)
     try:
-        return await process_embedding(
+        result = await process_embedding(
             uuid.UUID(org_id),
             Embedder(transport, settings),
             job_id=uuid.UUID(job_id) if job_id else None,
         )
+        return result if isinstance(result, int) else None
     finally:
         await transport.aclose()
 

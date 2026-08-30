@@ -90,6 +90,21 @@ async def migrated(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[str, 
 
 
 @pytest.fixture
+async def sessions(
+    migrated: tuple[str, str],
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A factory for **independent** transactions against the same migrated schema.
+
+    `session` yields one transaction, which is the right shape for nearly everything in
+    this file. Lease safety is not one of them: it is a property *between* transactions,
+    and a session cannot observe a row lock that it is itself holding.
+    """
+    engine = create_async_engine(migrated[0])
+    yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    await engine.dispose()
+
+
+@pytest.fixture
 async def session(migrated: tuple[str, str]) -> AsyncIterator[AsyncSession]:
     """One transaction as the restricted application role."""
     engine = create_async_engine(migrated[0])
@@ -636,3 +651,158 @@ class TestStateTransitions:
         await record_state(session, job_id=job_id, state=JobState.MASKED)
 
         assert (await state_of(session, job_id)).locked_until == before
+
+
+class TestALiveWorkerKeepsItsJob:
+    """The lease recovers **crashed** workers, and must not touch running ones.
+
+    This exists because of a defect that was reported and turned out not to be real. A
+    `Retry-After` from the embedding provider can legitimately park a job for minutes,
+    and the arithmetic looks alarming: five attempts, each able to wait up to
+    `MAX_RETRY_AFTER_S` (120s), against a `DEFAULT_LEASE_SECONDS` of 300. On paper the
+    lease expires while the worker is still healthily waiting, another worker reclaims
+    the row, and the document is embedded twice at full price.
+
+    It cannot happen, and the reason is not the lease. `run_embedding_job` calls
+    `record_state` **before** the provider call and inside the work transaction, so the
+    job row carries a row-level write lock for the whole duration of the work. A
+    reclaiming `UPDATE` must take that same lock and cannot; a claiming
+    `SELECT ... FOR UPDATE SKIP LOCKED` steps over the row entirely. The lease only
+    becomes reachable once the transaction is gone, which is exactly what a dead worker
+    leaves behind.
+
+    So these tests pin an invariant that already holds and that nothing states, because
+    the obvious "improvement" - committing the state transition early so that a network
+    call is not made while holding a lock - would silently make the original defect real.
+    `test_the_protection_is_the_row_lock` is the one that would go red.
+
+    Deterministic on purpose: the lease is expired by committing a past `locked_until`
+    rather than by sleeping, so nothing here waits on a clock.
+    """
+
+    async def _claimed_job(
+        self, factory: async_sessionmaker[AsyncSession], label: str
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        """An org with one claimed `embed.document` job whose lease has already expired.
+
+        Every step commits, because each assertion below is about what a *different*
+        transaction can see and do.
+        """
+        async with factory() as opened, opened.begin():
+            org = await make_org(opened, label)
+            await enqueue_job(
+                opened,
+                org_id=org,
+                kind=JobKind.EMBED_DOCUMENT,
+                idempotency_key=f"embed-{label}",
+                payload={"document_id": str(uuid.uuid4())},
+            )
+
+        async with factory() as opened, opened.begin():
+            await scope(opened, org)
+            job = await claim_job(opened, kind=JobKind.EMBED_DOCUMENT)
+        assert job is not None
+
+        async with factory() as opened, opened.begin():
+            await scope(opened, org)
+            await expire_lease(opened, job.id)
+
+        return org, job.id
+
+    async def test_a_reclaimer_cannot_take_a_row_a_live_worker_holds(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        org, job_id = await self._claimed_job(sessions, "live")
+
+        async with sessions() as worker, worker.begin():
+            await scope(worker, org)
+            # Exactly what `run_embedding_job` does before it calls the provider.
+            await record_state(worker, job_id=job_id, state=JobState.EMBEDDING)
+
+            async with sessions() as reaper, reaper.begin():
+                await scope(reaper, org)
+                # Without this the reclaim blocks until the worker commits and the test
+                # hangs instead of failing. The timeout makes "blocked" observable.
+                await reaper.execute(text("SET LOCAL lock_timeout = '2s'"))
+                with pytest.raises(Exception, match="LockNotAvailable"):
+                    await reclaim_expired_leases(reaper, kinds=[JobKind.EMBED_DOCUMENT])
+
+        async with sessions() as check, check.begin():
+            await scope(check, org)
+            row = await state_of(check, job_id)
+        assert row.state == JobState.EMBEDDING.value, "a live job was moved out from under it"
+        assert row.attempts == 1, "a live job was charged a second attempt"
+
+    async def test_a_second_worker_does_not_claim_a_live_job(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`SKIP LOCKED` steps over the row rather than waiting for it.
+
+        This is the half that prevents duplicate provider spend: a blocked reclaimer is
+        merely slow, but a second *claim* would embed the same document again at cost.
+        """
+        org, job_id = await self._claimed_job(sessions, "dup")
+
+        async with sessions() as worker, worker.begin():
+            await scope(worker, org)
+            await record_state(worker, job_id=job_id, state=JobState.EMBEDDING)
+
+            async with sessions() as other, other.begin():
+                await scope(other, org)
+                await other.execute(text("SET LOCAL lock_timeout = '2s'"))
+                assert await claim_job(other, kind=JobKind.EMBED_DOCUMENT) is None
+
+    async def test_the_lease_still_recovers_a_crashed_worker(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The protection must not have cost us stale-job recovery.
+
+        A killed process leaves no transaction, so the lock is gone and the expired lease
+        is reachable again - which is the whole design.
+        """
+        org, job_id = await self._claimed_job(sessions, "crash")
+
+        worker = sessions()
+        await worker.__aenter__()
+        transaction = await worker.begin().__aenter__()
+        await scope(worker, org)
+        await record_state(worker, job_id=job_id, state=JobState.EMBEDDING)
+        # SIGKILL leaves the server to roll the transaction back. This is that rollback.
+        await transaction.rollback()
+        await worker.__aexit__(None, None, None)
+
+        async with sessions() as reaper, reaper.begin():
+            await scope(reaper, org)
+            assert await reclaim_expired_leases(reaper, kinds=[JobKind.EMBED_DOCUMENT]) == 1
+
+        async with sessions() as check, check.begin():
+            await scope(check, org)
+            row = await state_of(check, job_id)
+        assert row.state == JobState.RETRY_SCHEDULED.value
+        assert row.attempts == 1, "recovery must not re-charge the attempt already counted"
+
+    async def test_the_protection_is_the_row_lock(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Name what the invariant actually rests on.
+
+        An open transaction is not enough - the row has to have been *written*. A work
+        transaction that only read would leave the lease reachable, so moving
+        `record_state` after the provider call, or committing it early, reopens the
+        duplicate-spend hole this class exists to describe.
+        """
+        org, job_id = await self._claimed_job(sessions, "readonly")
+
+        async with sessions() as worker, worker.begin():
+            await scope(worker, org)
+            await state_of(worker, job_id)  # a read, and nothing else
+
+            async with sessions() as reaper, reaper.begin():
+                await scope(reaper, org)
+                await reaper.execute(text("SET LOCAL lock_timeout = '2s'"))
+                reclaimed = await reclaim_expired_leases(reaper, kinds=[JobKind.EMBED_DOCUMENT])
+
+        assert reclaimed == 1, (
+            "a read-only work transaction did not lose the row - the protection proven "
+            "in the tests above may be coming from something other than the row lock"
+        )

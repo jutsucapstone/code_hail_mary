@@ -324,6 +324,16 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **`migrate-pg-down` refuses once anything has been superseded.** That is the guard working:
   the old non-partial constraint cannot represent version history. Clear the data or stay on
   0010; do not "fix" the migration to delete versions.
+- **An expired lease does NOT make a running job reclaimable, and that is load-bearing.**
+  The arithmetic looks broken - five attempts each able to obey a 120s `Retry-After`
+  against `DEFAULT_LEASE_SECONDS = 300` - but `run_embedding_job` writes the job row
+  before the provider call, so the work transaction holds a row lock for the whole job.
+  A reclaiming `UPDATE` blocks on it and `claim_job` skips the row. Measured, not
+  assumed. It means the "improvement" of committing the state transition early, or
+  moving it after the slow call, turns crash recovery into duplicate provider spend.
+- **`--max-documents` no longer bounds the embedding drain; `--max-embed-jobs` does.**
+  The old coupling worked only because every fixture document was exactly one embedding
+  job. Omitting the new flag keeps the old behaviour exactly.
 - **The cursor is taken BEFORE the walk.** Taken after, a file modified mid-walk falls
   between the two instants and is never seen again. Taken before, it is re-listed next run
   and costs one `unchanged` outcome.

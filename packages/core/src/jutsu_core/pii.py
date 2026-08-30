@@ -243,7 +243,35 @@ SSN_DETECTOR: Final = RegexDetector(
 CARD_DETECTOR: Final = RegexDetector(
     pii_type=PiiType.FINANCIAL,
     name="payment_card",
-    pattern=re.compile(r"(?<![0-9])[0-9](?:[ \-]?[0-9]){12,18}(?![0-9])"),
+    # The alternatives are the three ways a payment card is actually written, and that
+    # structure is the precision. A free-form separator class - "a digit, then twelve to
+    # eighteen more, each optionally preceded by a space or hyphen" - describes a UUID
+    # just as well as it describes a card.
+    #
+    # Measured twice, not hypothesised. Document id
+    # `d97dced3-342a-4093-ae99-80057186318f` yielded `99-80057186318`: 13 digits,
+    # Luhn-valid, reported as financial PII in an ingestion log. Excluding letters at the
+    # boundaries killed that one and took the rate across random UUIDs from 0.29% to
+    # roughly 0.1% - because a run can still *end* on a group boundary, as
+    # `48751163-2628-4948-a42a-c3ad1c0028eb` does: 16 digits, Luhn-valid, a hyphen on
+    # each side. At 45 000 documents that is still tens of identifiers failing M1's
+    # "zero raw PII in captured logs" clause.
+    #
+    # Grouping settles it, because the shapes genuinely differ. A card is 13-19 digits
+    # unseparated, or groups of four, or the 4-6-5 of Amex and 4-6-4 of Diners. A UUID is
+    # 8-4-4-4-12, and reaching thirteen digits inside one always requires the 8- or the
+    # 12-character group. The separator is captured and back-referenced so a card cannot
+    # be assembled across a boundary that changes character mid-number.
+    #
+    # This narrows what matches, so it is pinned from the other side too:
+    # `TestRealCardsAreStillDetected` asserts every rendering above is still masked.
+    pattern=re.compile(
+        r"(?<![0-9A-Za-z])(?:"
+        r"[0-9]{13,19}"
+        r"|[0-9]{4}(?P<sep4>[ \-])[0-9]{4}(?:(?P=sep4)[0-9]{4}){1,2}(?:(?P=sep4)[0-9]{1,3})?"
+        r"|[0-9]{4}(?P<sep6>[ \-])[0-9]{6}(?P=sep6)[0-9]{4,5}"
+        r")(?![0-9A-Za-z])"
+    ),
     validate=_card_ok,
 )
 

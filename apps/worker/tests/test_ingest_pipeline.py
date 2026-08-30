@@ -43,6 +43,7 @@ from jutsu_retrieval.errors import (
     TransientEmbeddingError,
 )
 from jutsu_retrieval.search import search_chunks
+from jutsu_worker.cli import main as cli_main
 from jutsu_worker.cli import seed
 from jutsu_worker.ingest import (
     run_document_job,
@@ -57,6 +58,7 @@ from jutsu_worker.jobs import (
 )
 from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.runner import (
+    JOB_FAILED,
     process_document,
     process_embedding,
 )
@@ -365,6 +367,8 @@ async def drain_documents(tenant: dict[str, Any], limit: int = 50) -> list[Inges
         outcome = await process_document(tenant["org_id"])
         if outcome is None:
             break
+        if not isinstance(outcome, IngestOutcome):
+            continue  # JOB_FAILED: recorded on the row, keep draining
         outcomes.append(outcome)
     return outcomes
 
@@ -379,6 +383,10 @@ async def drain_embeddings(
         count = await process_embedding(tenant["org_id"], worker)
         if count is None:
             break
+        if not isinstance(count, int):
+            # JOB_FAILED. Mirrors the production drain: a failed job is recorded and
+            # skipped, it does not mean the queue is empty.
+            continue
         written += count
     return written
 
@@ -997,7 +1005,7 @@ class TestEmbeddingBoundary:
         await drain_documents(tenant)
 
         transport = FakeTransport(failures=[PermanentEmbeddingError("400", status=400)])
-        assert await process_embedding(tenant["org_id"], embedder(transport)) is None
+        assert await process_embedding(tenant["org_id"], embedder(transport)) is JOB_FAILED
 
         await refresh(session, tenant)
         failed = (
@@ -1353,3 +1361,177 @@ class TestSeedCommand:
             await session.execute(text("SELECT count(*) FROM chunks WHERE embedding IS NULL"))
         ).scalar_one()
         assert pending > 0, "seed embedded without being asked to"
+
+
+class ClosableTransport(FakeTransport):
+    """`FakeTransport` plus the `aclose` that `seed` calls in its `finally`."""
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestEmbeddingJobLimit:
+    """`--max-embed-jobs` bounds provider spend on its own terms.
+
+    Before it existed the embedding drain was bounded by `--max-documents`, which worked
+    only because every fixture document happened to be exactly one embedding job. The two
+    stages do not cost the same thing - ingest is local IO, embedding is metered - so an
+    operator resuming a stalled queue could not say "spend five jobs' worth" without also
+    constraining ingestion.
+
+    The transport is faked, so nothing here touches a network or spends anything.
+    """
+
+    @staticmethod
+    def _offline(monkeypatch: pytest.MonkeyPatch) -> ClosableTransport:
+        """Point `seed`'s embed branch at a scripted transport instead of Vertex."""
+        transport = ClosableTransport()
+        monkeypatch.setattr("jutsu_worker.cli.get_embedding_settings", embedding_settings)
+        monkeypatch.setattr("jutsu_worker.cli.VertexTransport", lambda _settings: transport)
+        return transport
+
+    @staticmethod
+    async def _pending(session: AsyncSession) -> int:
+        return int(
+            (
+                await session.execute(text("SELECT count(*) FROM chunks WHERE embedding IS NULL"))
+            ).scalar_one()
+        )
+
+    async def test_it_stops_after_the_given_number_of_jobs(
+        self, session: AsyncSession, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tenant = await make_tenant(session, "grace", corpus)
+        await session.commit()
+        await scope(session, tenant["org_id"])
+
+        await seed(tenant["org_id"], str(corpus), embed=False)
+        await refresh(session, tenant)
+        before = await self._pending(session)
+        assert before >= 2, "the corpus must leave at least two embedding jobs to bound"
+
+        self._offline(monkeypatch)
+        await seed(tenant["org_id"], str(corpus), embed=True, max_embed_jobs=1)
+
+        await refresh(session, tenant)
+        remaining = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM jobs WHERE kind = 'embed.document' AND state = 'pending'"
+                )
+            )
+        ).scalar_one()
+        assert remaining >= 1, "the limit did not stop the drain — every job was run"
+
+    async def test_zero_spends_nothing_at_all(
+        self, session: AsyncSession, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`0` is a real answer, not a missing one: ingest, embed nothing."""
+        tenant = await make_tenant(session, "grace", corpus)
+        await session.commit()
+        await scope(session, tenant["org_id"])
+
+        transport = self._offline(monkeypatch)
+        await seed(tenant["org_id"], str(corpus), embed=True, max_embed_jobs=0)
+
+        assert transport.calls == 0, "a zero limit still called the provider"
+        await refresh(session, tenant)
+        assert await self._pending(session) > 0
+        documents = (await session.execute(text("SELECT count(*) FROM documents"))).scalar_one()
+        assert documents > 0, "bounding embedding also stopped ingestion"
+
+    async def test_omitting_it_keeps_the_old_behaviour(
+        self, session: AsyncSession, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backward compatibility, stated as a test rather than as a comment.
+
+        Every existing caller passes no limit and expects `--max-documents` to bound the
+        embedding loop, because that is what it did.
+        """
+        tenant = await make_tenant(session, "grace", corpus)
+        await session.commit()
+        await scope(session, tenant["org_id"])
+
+        self._offline(monkeypatch)
+        await seed(tenant["org_id"], str(corpus), embed=True)
+
+        await refresh(session, tenant)
+        assert await self._pending(session) == 0, "the unbounded drain left chunks unembedded"
+
+    async def test_max_documents_does_not_bound_embedding_when_the_limit_is_given(
+        self, session: AsyncSession, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two bounds are genuinely independent.
+
+        `max_documents=0` ingests nothing; the embedding limit must still drain the jobs
+        an earlier run queued. Before the split this combination could not be expressed.
+        """
+        tenant = await make_tenant(session, "grace", corpus)
+        await session.commit()
+        await scope(session, tenant["org_id"])
+
+        await seed(tenant["org_id"], str(corpus), embed=False)
+        await refresh(session, tenant)
+        assert await self._pending(session) > 0
+
+        self._offline(monkeypatch)
+        await seed(tenant["org_id"], str(corpus), embed=True, max_documents=0, max_embed_jobs=50)
+
+        await refresh(session, tenant)
+        assert await self._pending(session) == 0, (
+            "the embedding limit was overridden by 0 documents"
+        )
+
+
+class TestEmbeddingJobLimitCommandLine:
+    """The flag reaches `seed_and_measure`, and a nonsensical value is refused."""
+
+    def test_it_is_passed_through(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        seen: dict[str, Any] = {}
+
+        async def fake(org_id: Any, root: str, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            raise SystemExit(0)
+
+        monkeypatch.setattr("jutsu_worker.cli.seed_and_measure", fake)
+        with pytest.raises(SystemExit):
+            cli_main(
+                [
+                    "seed",
+                    "--org",
+                    str(uuid.uuid4()),
+                    "--root",
+                    str(tmp_path),
+                    "--max-embed-jobs",
+                    "5",
+                ]
+            )
+        assert seen["max_embed_jobs"] == 5
+
+    def test_it_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """None, not a number — so `seed` keeps deferring to `--max-documents`."""
+        seen: dict[str, Any] = {}
+
+        async def fake(org_id: Any, root: str, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            raise SystemExit(0)
+
+        monkeypatch.setattr("jutsu_worker.cli.seed_and_measure", fake)
+        with pytest.raises(SystemExit):
+            cli_main(["seed", "--org", str(uuid.uuid4()), "--root", str(tmp_path)])
+        assert seen["max_embed_jobs"] is None
+
+    def test_a_negative_limit_is_refused(self, tmp_path: Path) -> None:
+        """`range(-1)` is empty, so a typo would silently embed nothing and exit 0."""
+        with pytest.raises(SystemExit):
+            cli_main(
+                [
+                    "seed",
+                    "--org",
+                    str(uuid.uuid4()),
+                    "--root",
+                    str(tmp_path),
+                    "--max-embed-jobs",
+                    "-1",
+                ]
+            )

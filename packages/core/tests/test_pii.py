@@ -17,6 +17,8 @@ the wrong words — which is a visible product bug, not a rounding error.
 
 from __future__ import annotations
 
+import random
+import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from itertools import pairwise, product
@@ -685,3 +687,103 @@ class TestExhaustiveCombinations:
                 assert original_end >= original_start, text
                 previous_end = original_end
             assert previous_end == len(text), text
+
+
+class TestUuidsAreNotPaymentCards:
+    """A UUID is an opaque internal id, and masking one is a false positive.
+
+    Measured on the 200-document pilot: document id
+    `d97dced3-342a-4093-ae99-80057186318f` produced the match `99-80057186318` - 13
+    digits, Luhn-valid - and the ingestion log was reported as containing raw financial
+    PII. Across 20 000 random UUIDs it happened 0.29% of the time, so a 45 000-document
+    run would fail M1's "zero raw PII in captured logs" clause roughly 130 times over
+    identifiers that carry nothing.
+
+    Excluding letters at the match boundaries fixed the first id and took the rate to
+    about 0.1%, because a run can still *end* on a group boundary with a hyphen on each
+    side - which is how `48751163-2628-4948-a42a-c3ad1c0028eb` was found, by this test
+    failing. The pattern now encodes card *grouping* instead of a free separator class.
+
+    **The bulk sweep is seeded on purpose.** It used `uuid.uuid4()`, so at a 0.1%
+    residual rate it passed roughly one run in three - and it did pass, on the run that
+    was used to call the first fix verified. A regression test that reports a real defect
+    only sometimes is worse than none: it teaches the reader that a red run is weather.
+    The generator below draws version-4-shaped ids from a fixed seed, so the same 20 000
+    identifiers are checked on every machine and a failure names one of them.
+    """
+
+    #: The exact ids from the pilot and from this test's own first failure. Kept verbatim
+    #: so neither can come back unnoticed.
+    PILOT_UUID = "d97dced3-342a-4093-ae99-80057186318f"
+    BOUNDARY_UUID = "48751163-2628-4948-a42a-c3ad1c0028eb"
+
+    @staticmethod
+    def _uuids(count: int, seed: int = 0) -> list[str]:
+        # S311: a seeded generator is the entire point - these identifiers are test
+        # input, and a CSPRNG here would put the flakiness straight back.
+        random_source = random.Random(seed)  # noqa: S311
+        values: list[str] = []
+        for _ in range(count):
+            body = "".join(random_source.choice("0123456789abcdef") for _ in range(31))
+            values.append(
+                f"{body[:8]}-{body[8:12]}-4{body[12:15]}-"
+                f"{random_source.choice('89ab')}{body[15:18]}-{body[18:30]}"
+            )
+        return values
+
+    @pytest.mark.parametrize("attribute", ["PILOT_UUID", "BOUNDARY_UUID"])
+    def test_a_measured_uuid_is_not_masked(self, attribute: str) -> None:
+        value = getattr(self, attribute)
+        line = f"document_created org=8f14e45f document={value} chunks=1"
+        assert not mask(line).spans
+
+    def test_a_log_line_shaped_like_the_pilots_is_clean(self) -> None:
+        line = (
+            f"document_created org=ff805d42-ac5c-4cdd-8ea9-b49873e3dbc5 "
+            f"source=f2c7bfd0-dd20-41c1-b579-1013be686516 document={self.PILOT_UUID} "
+            f"chunks=1 grants=2"
+        )
+        assert not mask(line).spans
+
+    def test_a_large_sample_of_uuids_is_never_masked(self) -> None:
+        """20 000 is the sample the 0.29% baseline was measured over."""
+        flagged = [value for value in self._uuids(20_000) if mask(f"document={value}").spans]
+        assert flagged == [], f"{len(flagged)} UUIDs masked, first {flagged[:1]}"
+
+    def test_uuid4_itself_is_never_masked(self) -> None:
+        """The seeded generator imitates `uuid4`; this checks the real one agrees."""
+        flagged = [
+            str(value)
+            for value in (uuid.uuid4() for _ in range(20_000))
+            if mask(f"document={value}").spans
+        ]
+        assert flagged == [], f"{len(flagged)} UUIDs masked, first {flagged[:1]}"
+
+
+class TestRealCardsAreStillDetected:
+    """The boundary fix must not buy quiet logs by going blind."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "card 4111 1111 1111 1111 on file",
+            "card 4111-1111-1111-1111 on file",
+            "card 4111111111111111 on file",
+            "4111111111111111",
+            "Please charge 5500 0000 0000 0004 today",
+            "(4111-1111-1111-1111)",
+        ],
+    )
+    def test_a_payment_card_is_masked(self, text: str) -> None:
+        result = mask(text)
+        assert result.spans, f"a real card went undetected in {text!r}"
+        assert any(span.pii_type is PiiType.FINANCIAL for span in result.spans)
+
+    def test_a_luhn_valid_run_in_prose_is_still_masked(self) -> None:
+        """Delimited by spaces, so the boundary guard does not apply."""
+        assert mask("reference 4111111111111111 follows").spans
+
+    def test_other_detectors_are_untouched(self) -> None:
+        result = mask("mail ada@example.com or call +1 415 555 0132")
+        kinds = {span.pii_type for span in result.spans}
+        assert PiiType.EMAIL in kinds

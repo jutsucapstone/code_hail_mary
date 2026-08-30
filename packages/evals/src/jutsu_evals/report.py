@@ -28,18 +28,14 @@ _MARKERS = {
 }
 
 
-def revision(repo_root: Path) -> str | None:
-    """Short git revision, or None outside a repository.
-
-    Best effort by design: a gate that refused to run because it could not find git
-    would be failing over its own provenance stamp.
-    """
+def _git(repo_root: Path, *args: str) -> str | None:
+    """Run one git command in `repo_root`, or None if git is unavailable or fails."""
     git = shutil.which("git")
     if git is None:
         return None
     try:
         completed = subprocess.run(  # noqa: S603 - resolved binary, fixed argv, no shell
-            [git, "rev-parse", "--short", "HEAD"],
+            [git, *args],
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -48,7 +44,43 @@ def revision(repo_root: Path) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return completed.stdout.strip() or None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def revision(repo_root: Path) -> str | None:
+    """Short git revision, suffixed `-dirty` when tracked files differ from it.
+
+    Best effort by design: a gate that refused to run because it could not find git
+    would be failing over its own provenance stamp.
+
+    **The suffix is the load-bearing half.** A report stamped `53a0f1c` over a run whose
+    code was uncommitted claims a reproducibility it does not have — checking that commit
+    out does not reproduce the measurement. Rule 8 asks a number to name its provenance,
+    and naming the wrong one is worse than naming none: the reader cannot tell, and the
+    report looks *more* trustworthy for having a commit on it. Measured on this repo:
+    the retry, PII and drain-loop fixes all sat uncommitted while the gate reported a
+    commit that contained none of them.
+
+    Only **tracked** modifications set it. Untracked files are excluded deliberately —
+    local tooling, receipts and scratch directories live in every working copy, and a
+    flag that is always on is one nobody reads. The cost is a new, never-added source
+    file: it changes the run and does not show here. `git status` does.
+    """
+    head = _git(repo_root, "rev-parse", "--short", "HEAD")
+    if head is None or not head.strip():
+        return None
+    short = head.strip()
+
+    # `--untracked-files=no`: see the docstring. Empty output means the tracked tree
+    # matches HEAD; anything at all means it does not.
+    status = _git(repo_root, "status", "--porcelain", "--untracked-files=no")
+    if status is None:
+        # HEAD is known but cleanliness is not, and silently implying "clean" is the
+        # failure this function exists to prevent.
+        return f"{short}-unknown"
+    return f"{short}-dirty" if status.strip() else short
 
 
 def render_text(report: GateReport, *, strict: bool) -> str:

@@ -26,14 +26,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any, Final, Protocol
 
 import httpx
 
 from jutsu_retrieval.config import EmbeddingSettings
 from jutsu_retrieval.errors import PermanentEmbeddingError, TransientEmbeddingError
 
-__all__ = ["EmbeddingTransport", "VertexTransport", "classify_status"]
+__all__ = [
+    "MAX_RETRY_AFTER_S",
+    "EmbeddingTransport",
+    "VertexTransport",
+    "classify_status",
+    "parse_retry_after",
+]
 
 #: Cloud Platform scope. The runtime service account holds `roles/aiplatform.user` and
 #: nothing wider, so the token this scope produces can call the model and very little else.
@@ -53,7 +61,54 @@ class EmbeddingTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
-def classify_status(status: int, *, detail: str = "") -> Exception | None:
+#: The longest `Retry-After` this client will obey. A provider that asks for an hour is
+#: telling the operator to come back later, not telling a worker to sleep through it; the
+#: job is failed instead so the queue can reschedule it under its own policy.
+MAX_RETRY_AFTER_S: Final = 120.0
+
+
+def parse_retry_after(value: str | None, *, now: float | None = None) -> float | None:
+    """`Retry-After` in seconds, or None when it is absent or unusable.
+
+    RFC 9110 permits two forms and providers use both: delta-seconds (`Retry-After: 30`)
+    and an HTTP-date (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`). Handling only the
+    first silently ignores the second, which is the same as having no handling at all on
+    a provider that happens to send dates.
+
+    Anything unparseable, negative, or beyond `MAX_RETRY_AFTER_S` returns None so the
+    caller falls back to its own bounded backoff rather than trusting a hostile or
+    mistaken value.
+    """
+    if value is None:
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    try:
+        seconds = float(text)
+    except ValueError:
+        # Not delta-seconds, so try the HTTP-date form. `parsedate_to_datetime` raises
+        # on anything it cannot read (it stopped returning None in 3.10), and a header
+        # we cannot read is one we decline to obey.
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        reference = now if now is not None else datetime.now(UTC).timestamp()
+        seconds = parsed.timestamp() - reference
+
+    if seconds < 0 or seconds > MAX_RETRY_AFTER_S:
+        return None
+    return seconds
+
+
+def classify_status(
+    status: int, *, detail: str = "", retry_after: float | None = None
+) -> Exception | None:
     """Map an HTTP status onto the retry decision. `None` means success.
 
     `detail` is a message this codebase wrote — a status name at most. The provider's
@@ -63,7 +118,9 @@ def classify_status(status: int, *, detail: str = "") -> Exception | None:
         return None
     if status in _RETRYABLE_STATUSES:
         return TransientEmbeddingError(
-            f"embedding request failed, retryable{detail}", status=status
+            f"embedding request failed, retryable{detail}",
+            status=status,
+            retry_after=retry_after,
         )
     return PermanentEmbeddingError(
         f"embedding request rejected, not retryable{detail}", status=status
@@ -179,7 +236,10 @@ class VertexTransport:
             # harmless, but the habit of forwarding library messages is not.
             raise TransientEmbeddingError("embedding request failed to complete") from error
 
-        failure = classify_status(response.status_code)
+        failure = classify_status(
+            response.status_code,
+            retry_after=parse_retry_after(response.headers.get("Retry-After")),
+        )
         if failure is not None:
             raise failure
 
