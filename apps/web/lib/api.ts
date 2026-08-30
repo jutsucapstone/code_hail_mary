@@ -129,6 +129,12 @@ type AcceptBody =
 type AcceptResponse =
   paths["/v1/invitations/accept"]["post"]["responses"][200]["content"]["application/json"];
 
+type SearchBody =
+  paths["/v1/search"]["post"]["requestBody"]["content"]["application/json"];
+export type SearchResponse =
+  paths["/v1/search"]["post"]["responses"][200]["content"]["application/json"];
+export type SearchResult = SearchResponse["items"][number];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -157,6 +163,23 @@ export const api = {
    */
   completeRegistration: (body: RegisterVerifyBody) =>
     call<RegisterVerifyResponse>("/v1/orgs/register/verify", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Ask the corpus a question. POST because the query is user-authored text and must
+   * not reach access logs, proxy logs or `Referer` headers in a URL.
+   *
+   * `items[].char_start` / `char_end` index the ORIGINAL document, while `text` is the
+   * masked body — do not highlight `text` with them. Fetch the span through
+   * `/v1/evidence/{chunk_id}` instead.
+   *
+   * `stats.exhausted` means the search stopped short of `k`, which usually means the
+   * caller is not authorized to see `k` documents. It is not an error.
+   */
+  search: (body: SearchBody) =>
+    call<SearchResponse>("/v1/search", {
       method: "POST",
       body: JSON.stringify(body),
     }),

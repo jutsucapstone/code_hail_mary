@@ -593,6 +593,165 @@
         "title": "Role",
         "type": "string"
       },
+      "SearchRequest": {
+        "description": "What the caller may ask. Every field here is a *relevance* control.\n\nThere is deliberately no filter over documents, sources, people or dates. Not because\nfiltering is unwanted \u2014 \u00a712 will want it \u2014 but because each one has to be pushed\ninto the same SQL that carries `ACL_PREDICATE`, and a filter applied after the ACL\nis a filter that can be made to reveal counts. They arrive with the query that\nsupports them, not before.",
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "k": {
+            "default": 30,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "K",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "query_tokens": {
+            "title": "Query Tokens",
+            "type": "integer"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/SearchStatsView"
+          }
+        },
+        "required": [
+          "items",
+          "stats",
+          "query_tokens"
+        ],
+        "title": "SearchResponse",
+        "type": "object"
+      },
+      "SearchResultView": {
+        "description": "One retrieved chunk (\u00a712 `Citation`).\n\n`char_start` and `char_end` index the **original** document body; `text` is the\nmasked body. Highlighting `text` with those offsets mis-highlights the span, because\nmasking changes lengths \u2014 the trap CLAUDE.md records. To render a highlight, call\n`GET /v1/evidence/{chunk_id}` and use them against the source document there.",
+        "properties": {
+          "char_end": {
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "text",
+          "char_start",
+          "char_end",
+          "score",
+          "occurred_at"
+        ],
+        "title": "SearchResultView",
+        "type": "object"
+      },
+      "SearchStatsView": {
+        "description": "What the search cost. Opaque counts and timings, safe to show and to log.\n\n`exhausted` is the one worth rendering: true means the escalation ladder stopped\nwith fewer than `k` rows, which usually means the caller is not authorized to see\n`k` documents. That is the system working, and a UI that reads it as an error\nteaches people the search is broken when it is being correct.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "ef_search": {
+            "title": "Ef Search",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "exhausted": {
+            "title": "Exhausted",
+            "type": "boolean"
+          },
+          "returned": {
+            "title": "Returned",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempts",
+          "ef_search",
+          "returned",
+          "elapsed_ms",
+          "exhausted"
+        ],
+        "title": "SearchStatsView",
+        "type": "object"
+      },
       "SourceIdentityPage": {
         "properties": {
           "items": {
@@ -1402,6 +1561,48 @@
         "summary": "Register Verify",
         "tags": [
           "orgs"
+        ]
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "description": "Top-`k` chunks this caller is authorized to read, nearest first.\n\nThe order of these three steps is the cost control, and it is not arbitrary.\n\nThe cursor is validated first, so a malformed pagination token is a free 422 rather\nthan one that has already paid the provider. The budget is spent second \u2014 **before**\nthe embedding call, so a caller over their limit costs nothing at all. The paid call\nhappens last, once the request is known to be well formed and permitted.\n\nThe spend commits on its own session, so a failure after this point still consumes\nthe quota. That is the policy: an attempt is what costs money, and counting only\nsuccesses would leave a caller whose requests all fail with no limit at all.",
+        "operationId": "search_v1_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search",
+        "tags": [
+          "search"
         ]
       }
     }

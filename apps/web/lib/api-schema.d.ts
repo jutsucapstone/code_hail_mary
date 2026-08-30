@@ -394,6 +394,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search
+         * @description Top-`k` chunks this caller is authorized to read, nearest first.
+         *
+         *     The order of these three steps is the cost control, and it is not arbitrary.
+         *
+         *     The cursor is validated first, so a malformed pagination token is a free 422 rather
+         *     than one that has already paid the provider. The budget is spent second — **before**
+         *     the embedding call, so a caller over their limit costs nothing at all. The paid call
+         *     happens last, once the request is known to be well formed and permitted.
+         *
+         *     The spend commits on its own session, so a failure after this point still consumes
+         *     the quota. That is the policy: an attempt is what costs money, and counting only
+         *     successes would leave a caller whose requests all fail with no limit at all.
+         */
+        post: operations["search_v1_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -647,6 +678,90 @@ export interface components {
          * @enum {string}
          */
         Role: "owner" | "super_admin" | "hr_admin" | "it_admin" | "analyst" | "viewer" | "member";
+        /**
+         * SearchRequest
+         * @description What the caller may ask. Every field here is a *relevance* control.
+         *
+         *     There is deliberately no filter over documents, sources, people or dates. Not because
+         *     filtering is unwanted — §12 will want it — but because each one has to be pushed
+         *     into the same SQL that carries `ACL_PREDICATE`, and a filter applied after the ACL
+         *     is a filter that can be made to reveal counts. They arrive with the query that
+         *     supports them, not before.
+         */
+        SearchRequest: {
+            /** Cursor */
+            cursor?: string | null;
+            /**
+             * K
+             * @default 30
+             */
+            k: number;
+            /** Query */
+            query: string;
+        };
+        /** SearchResponse */
+        SearchResponse: {
+            /** Items */
+            items: components["schemas"]["SearchResultView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Query Tokens */
+            query_tokens: number;
+            stats: components["schemas"]["SearchStatsView"];
+        };
+        /**
+         * SearchResultView
+         * @description One retrieved chunk (§12 `Citation`).
+         *
+         *     `char_start` and `char_end` index the **original** document body; `text` is the
+         *     masked body. Highlighting `text` with those offsets mis-highlights the span, because
+         *     masking changes lengths — the trap CLAUDE.md records. To render a highlight, call
+         *     `GET /v1/evidence/{chunk_id}` and use them against the source document there.
+         */
+        SearchResultView: {
+            /** Char End */
+            char_end: number;
+            /** Char Start */
+            char_start: number;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Score */
+            score: number;
+            /** Source System */
+            source_system: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * SearchStatsView
+         * @description What the search cost. Opaque counts and timings, safe to show and to log.
+         *
+         *     `exhausted` is the one worth rendering: true means the escalation ladder stopped
+         *     with fewer than `k` rows, which usually means the caller is not authorized to see
+         *     `k` documents. That is the system working, and a UI that reads it as an error
+         *     teaches people the search is broken when it is being correct.
+         */
+        SearchStatsView: {
+            /** Attempts */
+            attempts: number;
+            /** Ef Search */
+            ef_search: number;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Exhausted */
+            exhausted: boolean;
+            /** Returned */
+            returned: number;
+        };
         /** SourceIdentityPage */
         SourceIdentityPage: {
             /** Items */
@@ -1186,6 +1301,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RegistrationComplete"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_v1_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
                 };
             };
             /** @description Validation Error */

@@ -27,6 +27,7 @@ from jutsu_api.routers import evidence as evidence_router
 from jutsu_api.routers import identities as identities_router
 from jutsu_api.routers import me as me_router
 from jutsu_api.routers import orgs as orgs_router
+from jutsu_api.routers import search as search_router
 from jutsu_api.security import public
 
 REQUEST_ID_HEADER: Final = "x-request-id"
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     app.include_router(employees_router.router)
     app.include_router(identities_router.router)
     app.include_router(evidence_router.router)
+    app.include_router(search_router.router)
 
     return app
 
