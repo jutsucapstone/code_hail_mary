@@ -317,6 +317,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read My Profile
+         * @description This caller's employee profile.
+         *
+         *     **404 when there is none, and that is a normal state rather than a fault.** Migration
+         *     0002 is explicit that an IT Admin or an Owner is a `users` row with no profile at all.
+         *     Returning 200 with every field null would make "no profile" indistinguishable from "a
+         *     profile somebody saved empty", which are different things — the second has an
+         *     `updated_at`.
+         */
+        get: operations["read_my_profile_v1_me_profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update My Profile
+         * @description Create or patch this caller's own profile. Never anybody else's.
+         *
+         *     The user id comes from the authenticated principal and the organisation is read from
+         *     the session GUC inside the SQL, so neither is reachable from the request body — and
+         *     `extra="forbid"` refuses the attempt outright rather than ignoring it silently.
+         *
+         *     `model_fields_set` is what separates "not mentioned" from "explicitly null": a PATCH
+         *     that omits `department` must leave it alone, while one that sends `department: null`
+         *     must clear it. Both arrive as `None` on the model, so the value alone cannot say
+         *     which was meant.
+         */
+        patch: operations["update_my_profile_v1_me_profile_patch"];
+        trace?: never;
+    };
     "/v1/orgs/current": {
         parameters: {
             query?: never;
@@ -620,6 +659,65 @@ export interface components {
          * @enum {string}
          */
         Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query";
+        /**
+         * ProfilePatch
+         * @description A partial update. Absent means "leave alone"; explicit `null` means "clear".
+         *
+         *     `extra="forbid"` is a security control here, not tidiness — the same reasoning
+         *     `LinkPayload` records. Without it a client could post `user_id` or `org_id`, and any
+         *     future widening of this model would silently start accepting them. On an endpoint
+         *     that writes a tenant-scoped row, that is the difference between a profile form and a
+         *     way to write into somebody else's organisation.
+         *
+         *     Lengths mirror the column definitions from migration 0002 exactly, so a value that
+         *     would be truncated by the database is refused by validation with a message the caller
+         *     can act on instead.
+         */
+        ProfilePatch: {
+            /** Department */
+            department?: string | null;
+            /** Designation */
+            designation?: string | null;
+            /** Employee Code */
+            employee_code?: string | null;
+            /** Joining Date */
+            joining_date?: string | null;
+            /** Phone E164 */
+            phone_e164?: string | null;
+            /** Responsibilities */
+            responsibilities?: string | null;
+            /** Skills */
+            skills?: string[] | null;
+        };
+        /**
+         * ProfileView
+         * @description The caller's own employee profile — exactly the columns the table has.
+         *
+         *     No `user_id` and no `org_id`. They are identity rather than profile data, the caller
+         *     already has both from `GET /v1/me`, and leaving them off this model means there is no
+         *     field here that could ever be mistaken for an input.
+         */
+        ProfileView: {
+            /** Department */
+            department: string | null;
+            /** Designation */
+            designation: string | null;
+            /** Employee Code */
+            employee_code: string | null;
+            /** Joining Date */
+            joining_date: string | null;
+            /** Phone E164 */
+            phone_e164: string | null;
+            /** Responsibilities */
+            responsibilities: string | null;
+            /** Skills */
+            skills: string[];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** RegisterPayload */
         RegisterPayload: {
             /** Company Domain */
@@ -1224,6 +1322,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourceIdentityPage"];
+                };
+            };
+        };
+    };
+    read_my_profile_v1_me_profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileView"];
+                };
+            };
+        };
+    };
+    update_my_profile_v1_me_profile_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

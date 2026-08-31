@@ -134,6 +134,11 @@ type SearchBody =
 export type Evidence =
   paths["/v1/evidence/{chunk_id}"]["get"]["responses"][200]["content"]["application/json"];
 
+export type EmployeeProfile =
+  paths["/v1/me/profile"]["get"]["responses"][200]["content"]["application/json"];
+type ProfilePatchBody =
+  paths["/v1/me/profile"]["patch"]["requestBody"]["content"]["application/json"];
+
 export type SourceIdentityPage =
   paths["/v1/me/identities"]["get"]["responses"][200]["content"]["application/json"];
 export type SourceIdentity = SourceIdentityPage["items"][number];
@@ -217,6 +222,28 @@ export const api = {
    * no content is fetched; that is a different capability which does not exist yet.
    */
   myIdentities: () => call<SourceIdentityPage>("/v1/me/identities", { method: "GET" }),
+
+  /**
+   * The caller's own employee profile.
+   *
+   * **404 is a normal state**, not a fault: an owner or an IT admin is a user with no
+   * profile row at all. Callers should render an empty form for it rather than an error.
+   */
+  myProfile: () => call<EmployeeProfile>("/v1/me/profile", { method: "GET" }),
+
+  /**
+   * Create or patch the caller's own profile.
+   *
+   * A field left out is left alone; a field sent as `null` is cleared. The server takes
+   * the user from the session and the organisation from the request's tenant scope, so
+   * neither is in this body — and the endpoint rejects unknown fields outright rather
+   * than ignoring them.
+   */
+  updateMyProfile: (body: ProfilePatchBody) =>
+    call<EmployeeProfile>("/v1/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   /** One employee's linked identities. Requires `integration:read`. */
   employeeIdentities: (userId: string) =>

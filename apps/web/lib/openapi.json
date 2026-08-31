@@ -444,6 +444,197 @@
         "title": "Permission",
         "type": "string"
       },
+      "ProfilePatch": {
+        "additionalProperties": false,
+        "description": "A partial update. Absent means \"leave alone\"; explicit `null` means \"clear\".\n\n`extra=\"forbid\"` is a security control here, not tidiness \u2014 the same reasoning\n`LinkPayload` records. Without it a client could post `user_id` or `org_id`, and any\nfuture widening of this model would silently start accepting them. On an endpoint\nthat writes a tenant-scoped row, that is the difference between a profile form and a\nway to write into somebody else's organisation.\n\nLengths mirror the column definitions from migration 0002 exactly, so a value that\nwould be truncated by the database is refused by validation with a message the caller\ncan act on instead.",
+        "properties": {
+          "department": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation"
+          },
+          "employee_code": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Code"
+          },
+          "joining_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joining Date"
+          },
+          "phone_e164": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "pattern": "^\\+[1-9]\\d{1,14}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone E164"
+          },
+          "responsibilities": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responsibilities"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills"
+          }
+        },
+        "title": "ProfilePatch",
+        "type": "object"
+      },
+      "ProfileView": {
+        "description": "The caller's own employee profile \u2014 exactly the columns the table has.\n\nNo `user_id` and no `org_id`. They are identity rather than profile data, the caller\nalready has both from `GET /v1/me`, and leaving them off this model means there is no\nfield here that could ever be mistaken for an input.",
+        "properties": {
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation"
+          },
+          "employee_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Code"
+          },
+          "joining_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joining Date"
+          },
+          "phone_e164": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone E164"
+          },
+          "responsibilities": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responsibilities"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_code",
+          "department",
+          "designation",
+          "joining_date",
+          "phone_e164",
+          "skills",
+          "responsibilities",
+          "updated_at"
+        ],
+        "title": "ProfileView",
+        "type": "object"
+      },
       "RegisterPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1455,6 +1646,68 @@
         "summary": "Read My Identities",
         "tags": [
           "identities"
+        ]
+      }
+    },
+    "/v1/me/profile": {
+      "get": {
+        "description": "This caller's employee profile.\n\n**404 when there is none, and that is a normal state rather than a fault.** Migration\n0002 is explicit that an IT Admin or an Owner is a `users` row with no profile at all.\nReturning 200 with every field null would make \"no profile\" indistinguishable from \"a\nprofile somebody saved empty\", which are different things \u2014 the second has an\n`updated_at`.",
+        "operationId": "read_my_profile_v1_me_profile_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read My Profile",
+        "tags": [
+          "me"
+        ]
+      },
+      "patch": {
+        "description": "Create or patch this caller's own profile. Never anybody else's.\n\nThe user id comes from the authenticated principal and the organisation is read from\nthe session GUC inside the SQL, so neither is reachable from the request body \u2014 and\n`extra=\"forbid\"` refuses the attempt outright rather than ignoring it silently.\n\n`model_fields_set` is what separates \"not mentioned\" from \"explicitly null\": a PATCH\nthat omits `department` must leave it alone, while one that sends `department: null`\nmust clear it. Both arrive as `None` on the model, so the value alone cannot say\nwhich was meant.",
+        "operationId": "update_my_profile_v1_me_profile_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update My Profile",
+        "tags": [
+          "me"
         ]
       }
     },

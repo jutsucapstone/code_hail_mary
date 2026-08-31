@@ -12,12 +12,15 @@ under the tenant scope and belong to the organisation endpoint. This one answers
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from fastapi import APIRouter
 from jutsu_core.rbac import Permission, Role
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.profiles import EmployeeProfile, ProfileUpdate, read_profile, upsert_profile
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1/me", tags=["me"], route_class=GuardedAPIRoute)
@@ -68,3 +71,103 @@ async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
         role=principal.role,
         permissions=sorted(principal.permissions),
     )
+
+
+class ProfileView(BaseModel):
+    """The caller's own employee profile — exactly the columns the table has.
+
+    No `user_id` and no `org_id`. They are identity rather than profile data, the caller
+    already has both from `GET /v1/me`, and leaving them off this model means there is no
+    field here that could ever be mistaken for an input.
+    """
+
+    employee_code: str | None
+    department: str | None
+    designation: str | None
+    joining_date: date | None
+    phone_e164: str | None
+    skills: list[str]
+    responsibilities: str | None
+    updated_at: datetime
+
+
+class ProfilePatch(BaseModel):
+    """A partial update. Absent means "leave alone"; explicit `null` means "clear".
+
+    `extra="forbid"` is a security control here, not tidiness — the same reasoning
+    `LinkPayload` records. Without it a client could post `user_id` or `org_id`, and any
+    future widening of this model would silently start accepting them. On an endpoint
+    that writes a tenant-scoped row, that is the difference between a profile form and a
+    way to write into somebody else's organisation.
+
+    Lengths mirror the column definitions from migration 0002 exactly, so a value that
+    would be truncated by the database is refused by validation with a message the caller
+    can act on instead.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    employee_code: str | None = Field(default=None, max_length=64)
+    department: str | None = Field(default=None, max_length=128)
+    designation: str | None = Field(default=None, max_length=128)
+    joining_date: date | None = None
+    #: E.164: a leading `+`, a non-zero country digit, then up to 14 more. The column is
+    #: `varchar(20)`, which is wider than the standard permits; the pattern is the real
+    #: constraint.
+    phone_e164: str | None = Field(default=None, max_length=20, pattern=r"^\+[1-9]\d{1,14}$")
+    skills: list[str] | None = Field(default=None, max_length=64)
+    responsibilities: str | None = None
+
+
+def _view(profile: EmployeeProfile) -> ProfileView:
+    return ProfileView(
+        employee_code=profile.employee_code,
+        department=profile.department,
+        designation=profile.designation,
+        joining_date=profile.joining_date,
+        phone_e164=profile.phone_e164,
+        skills=list(profile.skills),
+        responsibilities=profile.responsibilities,
+        updated_at=profile.updated_at,
+    )
+
+
+@router.get("/profile")
+@requires(Permission.PROFILE_SELF_READ)
+async def read_my_profile(principal: CurrentPrincipal, session: Db) -> ProfileView:
+    """This caller's employee profile.
+
+    **404 when there is none, and that is a normal state rather than a fault.** Migration
+    0002 is explicit that an IT Admin or an Owner is a `users` row with no profile at all.
+    Returning 200 with every field null would make "no profile" indistinguishable from "a
+    profile somebody saved empty", which are different things — the second has an
+    `updated_at`.
+    """
+    return _view(await read_profile(session, user_id=principal.user_id))
+
+
+@router.patch("/profile")
+@requires(Permission.PROFILE_SELF_UPDATE)
+async def update_my_profile(
+    payload: ProfilePatch, principal: CurrentPrincipal, session: Db
+) -> ProfileView:
+    """Create or patch this caller's own profile. Never anybody else's.
+
+    The user id comes from the authenticated principal and the organisation is read from
+    the session GUC inside the SQL, so neither is reachable from the request body — and
+    `extra="forbid"` refuses the attempt outright rather than ignoring it silently.
+
+    `model_fields_set` is what separates "not mentioned" from "explicitly null": a PATCH
+    that omits `department` must leave it alone, while one that sends `department: null`
+    must clear it. Both arrive as `None` on the model, so the value alone cannot say
+    which was meant.
+    """
+    profile = await upsert_profile(
+        session,
+        user_id=principal.user_id,
+        update=ProfileUpdate(
+            values=payload.model_dump(),
+            provided=frozenset(payload.model_fields_set),
+        ),
+    )
+    return _view(profile)
