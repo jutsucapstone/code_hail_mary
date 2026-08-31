@@ -303,11 +303,12 @@ describe("navigation", () => {
     expect(entry?.permission).toBe("profile:self_read");
   });
 
-  it("keeps knowledge transfer pending, and integrations live", () => {
-    // The pin moves with the backend. My Integrations went live with migration 0012 +
-    // /v1/integrations; Knowledge Transfer still has no KT model and must not have
-    // been dragged along with it.
-    expect(MEMBER_SECTIONS.find((s) => s.href === "/me/integrations")?.status).toBe("live");
-    expect(MEMBER_SECTIONS.find((s) => s.href === "/handover")?.status).toBe("pending");
+  it("lists every member section as live now that each has a backend", () => {
+    // The pin moves with the backend: integrations went live with migration 0012,
+    // knowledge transfer with migration 0013. If a new section arrives without an
+    // endpoint, it starts pending and gets pinned here.
+    for (const section of MEMBER_SECTIONS) {
+      expect(section.status).toBe("live");
+    }
   });
 });

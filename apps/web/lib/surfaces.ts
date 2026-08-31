@@ -67,7 +67,7 @@ export const SURFACES: readonly Surface[] = [
       "One click to a cited leaver pack: open items, key decisions, stakeholders and gotchas, in under sixty seconds.",
     kind: "differentiator",
     slice: "S26–S27",
-    status: "stub",
+    status: "live",
   },
   {
     slug: "onboarding",

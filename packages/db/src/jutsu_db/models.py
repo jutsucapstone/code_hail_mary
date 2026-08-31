@@ -575,6 +575,44 @@ class ConnectionCredential(Base):
     updated_at: Mapped[datetime] = _now()
 
 
+class KtPackage(Base):
+    """A scoped, expiring, revocable knowledge-transfer package (migration 0013).
+
+    Never an access key: RLS bounds the code to one organisation, the recipient binding
+    bounds it to one person, and nothing here touches `document_acl` — what a recipient
+    reads inside the workspace is decided by their own grants, per query.
+    """
+
+    __tablename__ = "kt_packages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    kt_code: Mapped[str] = mapped_column(String(24), nullable=False, unique=True)
+    subject_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recipient_email: Mapped[str | None] = mapped_column(String(320))
+    recipient_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    counts_json: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = _now()
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 #: Tables carrying RLS. Kept as data so the migration and its tests cannot disagree
 #: about which tables are protected.
 #:
@@ -600,4 +638,7 @@ RLS_TABLES: tuple[str, ...] = (
     "connections",
     "connection_policies",
     "connection_credentials",
+    # Migration 0013 — the package row itself is tenant data; the code inside it is
+    # only meaningful inside the tenant, which is precisely the point.
+    "kt_packages",
 )

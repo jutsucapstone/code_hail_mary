@@ -102,14 +102,11 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
 
   // ---- Knowledge ----------------------------------------------------------------
   {
-    // Borrowed permission: there is no `kt:*` in the catalogue, because there is no
-    // knowledge-transfer domain — no table, no endpoint, no model. Moves to its own
-    // permission when that lands.
     slug: "knowledge-transfer",
     name: "Knowledge transfer",
     description: "Create and manage controlled knowledge-transfer packages.",
-    permission: "org:read",
-    status: "pending",
+    permission: "kt:manage",
+    status: "live",
     slice: "S26–S27",
     group: "Knowledge",
   },

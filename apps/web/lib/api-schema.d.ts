@@ -507,6 +507,148 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Packages */
+        get: operations["read_packages_v1_kt_get"];
+        put?: never;
+        /**
+         * Create
+         * @description Create a package. Creates no access: what the recipient reads inside it is
+         *     bounded by their own grants, per query, exactly as everywhere else.
+         */
+        post: operations["create_v1_kt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim
+         * @description Open a package addressed to you, claiming it on first open.
+         *
+         *     Every refusal is server-side and specific where it is safe to be (revoked, expired)
+         *     and deliberately uniform where it is not: a foreign tenant's code, a typo and a
+         *     package bound to someone else all answer with the same 404.
+         */
+        post: operations["claim_v1_kt_claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Supported Scopes */
+        get: operations["read_supported_scopes_v1_kt_scopes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Documents
+         * @description Documents inside the package window the RECIPIENT may already read.
+         *
+         *     The ACL filter is retrieval's own predicate, inside the SQL, against the caller's
+         *     principals resolved fresh for this request. The package contributes the period; it
+         *     grants nothing.
+         */
+        get: operations["read_kt_documents_v1_kt__kt_code__documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Package */
+        get: operations["read_package_v1_kt__package_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete */
+        post: operations["complete_v1_kt__package_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke
+         * @description Revoke. Takes effect at the next authorization check, which is every check —
+         *     the workspace stops answering whatever any browser has cached (§39).
+         */
+        post: operations["revoke_v1_kt__package_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me": {
         parameters: {
             query?: never;
@@ -1161,6 +1303,130 @@ export interface components {
             /** Failed 24H */
             failed_24h: number;
         };
+        /** KtAdminOut */
+        KtAdminOut: {
+            /** Claimed At */
+            claimed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kt Code */
+            kt_code: string;
+            /** Last Activity At */
+            last_activity_at: string | null;
+            /** Period End */
+            period_end: string | null;
+            /** Period Start */
+            period_start: string | null;
+            /** Recipient Email */
+            recipient_email: string | null;
+            /** Scope */
+            scope: string[];
+            /** Status */
+            status: string;
+            /** Subject Email */
+            subject_email: string;
+            /** Subject Name */
+            subject_name: string | null;
+            /**
+             * Subject User Id
+             * Format: uuid
+             */
+            subject_user_id: string;
+        };
+        /** KtAdminPageOut */
+        KtAdminPageOut: {
+            /** Items */
+            items: components["schemas"]["KtAdminOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** KtClaimPayload */
+        KtClaimPayload: {
+            /** Kt Code */
+            kt_code: string;
+        };
+        /** KtCreatePayload */
+        KtCreatePayload: {
+            /** Period Days */
+            period_days?: number | null;
+            /** Recipient Email */
+            recipient_email?: string | null;
+            /** Scope */
+            scope: string[];
+            /**
+             * Subject User Id
+             * Format: uuid
+             */
+            subject_user_id: string;
+            /** Validity Days */
+            validity_days: number;
+        };
+        /** KtDocumentOut */
+        KtDocumentOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Source System */
+            source_system: string;
+            /** Title */
+            title: string;
+        };
+        /** KtDocumentPageOut */
+        KtDocumentPageOut: {
+            /** Items */
+            items: components["schemas"]["KtDocumentOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** KtRecipientOut */
+        KtRecipientOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Kt Code */
+            kt_code: string;
+            /** Period End */
+            period_end: string | null;
+            /** Period Start */
+            period_start: string | null;
+            /** Scope */
+            scope: string[];
+            /** Status */
+            status: string;
+            subject: components["schemas"]["SubjectProfileOut"];
+        };
+        /** KtScopesOut */
+        KtScopesOut: {
+            /** Supported */
+            supported: string[];
+        };
         /** LinkPayload */
         LinkPayload: {
             source_system: components["schemas"]["SourceSystem"];
@@ -1243,7 +1509,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query";
+        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
         /** PoliciesOut */
         PoliciesOut: {
             /** Items */
@@ -1562,6 +1828,15 @@ export interface components {
          * @enum {string}
          */
         SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github";
+        /** SubjectProfileOut */
+        SubjectProfileOut: {
+            /** Department */
+            department: string | null;
+            /** Designation */
+            designation: string | null;
+            /** Display Name */
+            display_name: string | null;
+        };
         /** SummaryOut */
         SummaryOut: {
             /** Items */
@@ -2275,6 +2550,251 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobStatsOut"];
+                };
+            };
+        };
+    };
+    read_packages_v1_kt_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_v1_kt_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KtCreatePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_v1_kt_claim_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KtClaimPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtRecipientOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_supported_scopes_v1_kt_scopes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtScopesOut"];
+                };
+            };
+        };
+    };
+    read_kt_documents_v1_kt__kt_code__documents_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtDocumentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_package_v1_kt__package_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_v1_kt__package_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_v1_kt__package_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

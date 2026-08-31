@@ -54,6 +54,11 @@ class Permission(StrEnum):
 
     AUDIT_READ = "audit:read"
 
+    #: Knowledge-transfer lifecycle: create, list, revoke and complete packages.
+    #: Holding it grants access to no document — a package scopes what its RECIPIENT
+    #: may already read, and creating one moves no ACL row anywhere.
+    KT_MANAGE = "kt:manage"
+
     #: Held by every role, including `member`. These are the things a person may always
     #: do to their *own* record — the resource check, not the permission, is what stops
     #: them doing it to someone else's.
@@ -76,6 +81,9 @@ class Permission(StrEnum):
     #: decided by `document_acl` inside the SQL, per caller, per request. Holding it
     #: grants access to no document, and no permission in this enum ever will.
     RETRIEVAL_QUERY = "retrieval:query"
+
+    #: Open a KT package addressed to you. See _EVERYONE for why every role holds it.
+    KT_OPEN = "kt:open"
 
 
 class Role(StrEnum):
@@ -143,6 +151,11 @@ _EVERYONE = (
     Permission.PROFILE_SELF_UPDATE,
     Permission.INTEGRATION_SELF_MANAGE,
     Permission.RETRIEVAL_QUERY,
+    #: Opening a knowledge-transfer package addressed to you. In everyone's set because
+    #: the typical recipient is a brand-new Member — gating this on an admin permission
+    #: would make the one person KT exists for the one person who cannot open it. The
+    #: package's own binding (recipient, expiry, revocation) is the actual gate.
+    Permission.KT_OPEN,
 )
 
 ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = MappingProxyType(
@@ -159,6 +172,9 @@ ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = Mapping
                 Permission.MEMBER_UPDATE,
                 Permission.MEMBER_ASSIGN_ROLE,
                 Permission.AUDIT_READ,
+                # Knowledge transfer is a people-transition act — offboarding, role
+                # changes, onboarding — which is HR's domain, not IT's.
+                Permission.KT_MANAGE,
                 *_EVERYONE,
             }
         ),

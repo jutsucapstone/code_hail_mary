@@ -186,6 +186,16 @@ type SyncQueued =
 type PolicyOut =
   paths["/v1/connection-policies/{provider_id}"]["put"]["responses"][200]["content"]["application/json"];
 
+export type KtAdminPage =
+  paths["/v1/kt"]["get"]["responses"][200]["content"]["application/json"];
+export type KtAdmin = KtAdminPage["items"][number];
+export type KtRecipient =
+  paths["/v1/kt/claim"]["post"]["responses"][200]["content"]["application/json"];
+export type KtDocumentPage =
+  paths["/v1/kt/{kt_code}/documents"]["get"]["responses"][200]["content"]["application/json"];
+type KtCreateBody = paths["/v1/kt"]["post"]["requestBody"]["content"]["application/json"];
+type KtScopes = paths["/v1/kt/scopes"]["get"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -453,6 +463,49 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ allowed }),
     }),
+
+
+  /** The scope categories the backend can actually serve — the wizard offers no more. */
+  ktScopes: () => call<KtScopes>("/v1/kt/scopes", { method: "GET" }),
+
+  /** Create a package. Creates no access; scope narrows presentation only. */
+  ktCreate: (body: KtCreateBody) =>
+    call<KtAdmin>("/v1/kt", { method: "POST", body: JSON.stringify(body) }),
+
+  ktList: (params: { cursor?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtAdminPage>(`/v1/kt${suffix}`, { method: "GET" });
+  },
+
+  ktRevoke: (id: string) =>
+    call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
+
+  ktComplete: (id: string) =>
+    call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}/complete`, { method: "POST" }),
+
+  /**
+   * Open a package addressed to you, claiming it on first open. Every refusal is the
+   * server's: revoked and expired arrive as 403s carrying the exact sentence to show,
+   * everything else as an indistinguishable 404.
+   */
+  ktClaim: (ktCode: string) =>
+    call<KtRecipient>("/v1/kt/claim", {
+      method: "POST",
+      body: JSON.stringify({ kt_code: ktCode }),
+    }),
+
+  /** Documents in the package window the RECIPIENT may already read (their own ACL). */
+  ktDocuments: (ktCode: string, params: { cursor?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtDocumentPage>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/documents${suffix}`,
+      { method: "GET" },
+    );
+  },
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

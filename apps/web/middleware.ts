@@ -4,7 +4,7 @@ import { SESSION_COOKIE } from "@/lib/auth";
 import { PRODUCT_PATHS, SIGN_IN_PATH } from "@/lib/surfaces";
 
 /** Prefixes that need a session cookie before they are worth rendering. */
-const GATED_PREFIXES = [...PRODUCT_PATHS, "/admin"];
+const GATED_PREFIXES = [...PRODUCT_PATHS, "/admin", "/kt"];
 
 /**
  * Unauthenticated traffic sees the marketing site; authenticated traffic can reach the

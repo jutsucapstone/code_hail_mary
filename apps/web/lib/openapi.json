@@ -806,6 +806,380 @@
         "title": "JobStatsOut",
         "type": "object"
       },
+      "KtAdminOut": {
+        "properties": {
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kt_code": {
+            "title": "Kt Code",
+            "type": "string"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
+          "recipient_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Email"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scope",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject_email": {
+            "title": "Subject Email",
+            "type": "string"
+          },
+          "subject_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Name"
+          },
+          "subject_user_id": {
+            "format": "uuid",
+            "title": "Subject User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kt_code",
+          "subject_user_id",
+          "subject_name",
+          "subject_email",
+          "status",
+          "scope",
+          "period_start",
+          "period_end",
+          "expires_at",
+          "recipient_email",
+          "claimed_at",
+          "created_at",
+          "last_activity_at"
+        ],
+        "title": "KtAdminOut",
+        "type": "object"
+      },
+      "KtAdminPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KtAdminOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "KtAdminPageOut",
+        "type": "object"
+      },
+      "KtClaimPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kt_code": {
+            "maxLength": 24,
+            "minLength": 8,
+            "title": "Kt Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kt_code"
+        ],
+        "title": "KtClaimPayload",
+        "type": "object"
+      },
+      "KtCreatePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "period_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Days"
+          },
+          "recipient_email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Email"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Scope",
+            "type": "array"
+          },
+          "subject_user_id": {
+            "format": "uuid",
+            "title": "Subject User Id",
+            "type": "string"
+          },
+          "validity_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Validity Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subject_user_id",
+          "scope",
+          "validity_days"
+        ],
+        "title": "KtCreatePayload",
+        "type": "object"
+      },
+      "KtDocumentOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "source_system",
+          "created_at"
+        ],
+        "title": "KtDocumentOut",
+        "type": "object"
+      },
+      "KtDocumentPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KtDocumentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "KtDocumentPageOut",
+        "type": "object"
+      },
+      "KtRecipientOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "kt_code": {
+            "title": "Kt Code",
+            "type": "string"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scope",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectProfileOut"
+          }
+        },
+        "required": [
+          "kt_code",
+          "status",
+          "scope",
+          "period_start",
+          "period_end",
+          "expires_at",
+          "created_at",
+          "subject"
+        ],
+        "title": "KtRecipientOut",
+        "type": "object"
+      },
+      "KtScopesOut": {
+        "properties": {
+          "supported": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported",
+            "type": "array"
+          }
+        },
+        "required": [
+          "supported"
+        ],
+        "title": "KtScopesOut",
+        "type": "object"
+      },
       "LinkPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1009,10 +1383,12 @@
           "integration:connect",
           "integration:revoke",
           "audit:read",
+          "kt:manage",
           "profile:self_read",
           "profile:self_update",
           "integration:self_manage",
-          "retrieval:query"
+          "retrieval:query",
+          "kt:open"
         ],
         "title": "Permission",
         "type": "string"
@@ -1819,6 +2195,50 @@
         ],
         "title": "SourceSystem",
         "type": "string"
+      },
+      "SubjectProfileOut": {
+        "properties": {
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          }
+        },
+        "required": [
+          "display_name",
+          "designation",
+          "department"
+        ],
+        "title": "SubjectProfileOut",
+        "type": "object"
       },
       "SummaryOut": {
         "properties": {
@@ -2979,6 +3399,373 @@
         "summary": "Read Jobs Stats",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/kt": {
+      "get": {
+        "operationId": "read_packages_v1_kt_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Packages",
+        "tags": [
+          "kt"
+        ]
+      },
+      "post": {
+        "description": "Create a package. Creates no access: what the recipient reads inside it is\nbounded by their own grants, per query, exactly as everywhere else.",
+        "operationId": "create_v1_kt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KtCreatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/claim": {
+      "post": {
+        "description": "Open a package addressed to you, claiming it on first open.\n\nEvery refusal is server-side and specific where it is safe to be (revoked, expired)\nand deliberately uniform where it is not: a foreign tenant's code, a typo and a\npackage bound to someone else all answer with the same 404.",
+        "operationId": "claim_v1_kt_claim_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KtClaimPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtRecipientOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/scopes": {
+      "get": {
+        "operationId": "read_supported_scopes_v1_kt_scopes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtScopesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Supported Scopes",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/documents": {
+      "get": {
+        "description": "Documents inside the package window the RECIPIENT may already read.\n\nThe ACL filter is retrieval's own predicate, inside the SQL, against the caller's\nprincipals resolved fresh for this request. The package contributes the period; it\ngrants nothing.",
+        "operationId": "read_kt_documents_v1_kt__kt_code__documents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtDocumentPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Documents",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}": {
+      "get": {
+        "operationId": "read_package_v1_kt__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Package",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/complete": {
+      "post": {
+        "operationId": "complete_v1_kt__package_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/revoke": {
+      "post": {
+        "description": "Revoke. Takes effect at the next authorization check, which is every check \u2014\nthe workspace stops answering whatever any browser has cached (\u00a739).",
+        "operationId": "revoke_v1_kt__package_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke",
+        "tags": [
+          "kt"
         ]
       }
     },

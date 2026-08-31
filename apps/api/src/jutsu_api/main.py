@@ -27,6 +27,7 @@ from jutsu_api.routers import connections as connections_router
 from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import evidence as evidence_router
 from jutsu_api.routers import identities as identities_router
+from jutsu_api.routers import kt as kt_router
 from jutsu_api.routers import me as me_router
 from jutsu_api.routers import operations as operations_router
 from jutsu_api.routers import orgs as orgs_router
@@ -193,6 +194,7 @@ def create_app() -> FastAPI:
     app.include_router(search_router.router)
     app.include_router(operations_router.router)
     app.include_router(connections_router.router)
+    app.include_router(kt_router.router)
 
     return app
 

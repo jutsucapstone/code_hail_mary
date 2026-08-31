@@ -83,7 +83,7 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     name: "Knowledge transfer",
     description: "Open a knowledge-transfer package shared with you.",
     permission: null,
-    status: "pending",
+    status: "live",
     slice: "S26–S27",
   },
 ] as const;

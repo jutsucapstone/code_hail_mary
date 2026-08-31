@@ -131,6 +131,11 @@ class TestCatalogueInvariants:
             # comes back. Gating it on rank would make a role decide what a person may
             # read, which is the §17 conflation the test above exists to prevent.
             Permission.RETRIEVAL_QUERY,
+            # Opening a KT package addressed to you (migration 0013). Universal because
+            # the typical recipient is a brand-new Member; the package's own binding —
+            # recipient, expiry, revocation — is the actual gate, and holding this
+            # grants no document.
+            Permission.KT_OPEN,
         }
 
 
