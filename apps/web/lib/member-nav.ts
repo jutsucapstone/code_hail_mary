@@ -7,10 +7,10 @@ import type { Permission } from "@/lib/permissions";
  * `/me` was the only destination a Member could reach; it stopped being honest once
  * `/ask` and the identity endpoints existed.
  *
- * `status` is what keeps this list from lying. Four of §6's six destinations have **no
- * backend**: Profile needs an `employee_profiles` endpoint that no router references, My
- * Integrations needs a connector API that does not exist anywhere in the repository, and
- * Knowledge Transfer needs a KT model that has never been built. They are listed, because
+ * `status` is what keeps this list from lying. Three of §6's six destinations have **no
+ * backend**: My Integrations needs a connector API that does not exist anywhere in the
+ * repository, and Knowledge Transfer needs a KT model that has never been built. Profile
+ * was the fourth until Phase 3A gave it real endpoints. They are listed, because
  * showing the shape of the product is the point, and they are listed as text with the
  * slice that delivers them rather than as links onto 404s (§4.11).
  *
@@ -61,12 +61,16 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     slice: "P1",
   },
   {
+    // Live as of Phase 3A: GET/PATCH /v1/me/profile read and write the
+    // `employee_profiles` row that has existed since migration 0002. Both permissions
+    // are in `_EVERYONE`, so gating on `profile:self_read` hides this from nobody — it
+    // is stated because the endpoint requires it, not to filter anyone out.
     href: "/me/profile",
     name: "Profile",
     description: "Your role, team and working context.",
-    permission: null,
-    status: "pending",
-    slice: "P2",
+    permission: "profile:self_read",
+    status: "live",
+    slice: "P1",
   },
   {
     href: "/me/integrations",
