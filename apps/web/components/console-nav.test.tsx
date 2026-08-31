@@ -86,3 +86,48 @@ describe("the nav itself", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(ITEMS.length);
   });
 });
+
+describe("grouped sections", () => {
+  const GROUPS = [
+    { label: null, items: [ITEMS[1]] },
+    { label: "People", items: [ITEMS[0]] },
+    { label: "Operations", items: [ITEMS[2]] },
+  ];
+
+  it("renders each group's heading", () => {
+    render(<ConsoleNav groups={GROUPS} label="Admin sections" />);
+
+    expect(screen.getByRole("heading", { name: "People" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Operations" })).toBeInTheDocument();
+  });
+
+  it("keeps the authored order rather than sorting", () => {
+    // The IA is a designed sequence — Overview, then People, then Operations. Sorting it
+    // alphabetically would put Operations before People for no reason a reader benefits
+    // from, and would silently reorder itself when a group is renamed.
+    render(<ConsoleNav groups={GROUPS} label="Admin sections" />);
+
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+    expect(headings).toEqual(["People", "Operations"]);
+  });
+
+  it("gives the ungrouped run no heading", () => {
+    render(<ConsoleNav groups={GROUPS} label="Admin sections" />);
+
+    // Overview sits above the first heading and must not invent one.
+    expect(screen.getAllByRole("heading")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
+  });
+
+  it("still renders every item exactly once", () => {
+    render(<ConsoleNav groups={GROUPS} label="Admin sections" />);
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(ITEMS.length);
+  });
+
+  it("takes precedence over a flat list, rather than rendering both", () => {
+    render(<ConsoleNav items={ITEMS} groups={GROUPS} label="Admin sections" />);
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(ITEMS.length);
+  });
+});

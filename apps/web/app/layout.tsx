@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
+import { QueryProvider } from "@/components/query-provider";
 import { WordmarkGradientDefs } from "@/components/site/wordmark-art";
 import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 import { faq, siteConfig } from "@/lib/content";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
 import { OPENING_SEEN_SCRIPT } from "@/lib/opening";
@@ -142,7 +144,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           enableSystem
           disableTransitionOnChange
         >
-          {children}
+          {/* Server-state cache for the consoles. Wrapping here rather than inside each
+              console layout means one cache across both, so moving between /admin and
+              /me does not re-ask who the caller is. `children` is passed through as a
+              prop, so the marketing pages below stay server components. */}
+          <QueryProvider>{children}</QueryProvider>
+          {/* The toast channel. The primitive has existed since the console shipped and
+              was never mounted, so `toast()` anywhere in the app was a silent no-op —
+              which is worse than having no toasts at all, because a mutation looks like
+              it reported success. Mounted once at the root: two Toasters render two of
+              every notification. */}
+          <Toaster position="bottom-right" closeButton />
         </ThemeProvider>
         <script
           type="application/ld+json"

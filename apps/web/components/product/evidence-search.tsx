@@ -4,7 +4,8 @@ import { useCallback, useState } from "react";
 import { AlertTriangle, FileText, Loader2, Search } from "lucide-react";
 
 import { ErrorState, LoadingRegion, Skeleton } from "@/components/states";
-import { ApiError, api, type Evidence, type SearchResult } from "@/lib/api";
+import { api, type Evidence, type SearchResult } from "@/lib/api";
+import { classifyApiError, isRetryable, type Failure } from "@/lib/api-error";
 
 /**
  * Evidence retrieval over `POST /v1/search`. **Not** the cited-answer surface.
@@ -27,35 +28,6 @@ const PAGE_SIZE = 10;
 
 /** The API's own limit, mirrored so the field can refuse before a round trip. */
 const MAX_QUERY_CHARS = 4000;
-
-type Failure = { kind: "auth" | "invalid" | "throttled" | "unavailable" | "other"; message: string; requestId?: string };
-
-/**
- * Map a status onto what the reader should do about it.
- *
- * Deliberately not a lookup on `code`: the status is the contract the API commits to,
- * and a new code inside an existing status should not fall through to "unexpected".
- */
-function classify(error: unknown): Failure {
-  if (!(error instanceof ApiError)) {
-    return { kind: "other", message: "Something went wrong. Please try again." };
-  }
-  const requestId = error.requestId;
-  switch (error.status) {
-    case 401:
-      return { kind: "auth", message: "Your session has expired. Sign in again to continue.", requestId };
-    case 403:
-      return { kind: "other", message: error.message, requestId };
-    case 422:
-      return { kind: "invalid", message: error.message, requestId };
-    case 429:
-      return { kind: "throttled", message: error.message, requestId };
-    case 503:
-      return { kind: "unavailable", message: error.message, requestId };
-    default:
-      return { kind: "other", message: error.message, requestId };
-  }
-}
 
 function Score({ value }: { value: number }) {
   // Two decimals: the difference between 0.5929 and 0.5884 is not a difference a reader
@@ -88,7 +60,7 @@ function Result({ item }: { item: SearchResult }) {
     try {
       setEvidence(await api.evidence(item.chunk_id));
     } catch (error) {
-      setFailure(classify(error).message);
+      setFailure(classifyApiError(error).message);
     } finally {
       setLoading(false);
     }
@@ -172,7 +144,7 @@ export function EvidenceSearch() {
       setCursor(page.next_cursor ?? null);
       setSubmitted(query);
     } catch (error) {
-      setFailure(classify(error));
+      setFailure(classifyApiError(error));
       if (!appending) {
         setItems([]);
         setStats(null);
@@ -246,10 +218,8 @@ export function EvidenceSearch() {
             onRetry={
               // A 401 needs a sign-in, not a retry, and a 422 needs the query changed.
               // Offering "Try again" for either teaches people to click a button that
-              // cannot work.
-              failure.kind === "throttled" || failure.kind === "unavailable" || failure.kind === "other"
-                ? () => void run(submitted ?? draft.trim(), null)
-                : undefined
+              // cannot work. `isRetryable` is shared so every surface agrees which is which.
+              isRetryable(failure) ? () => void run(submitted ?? draft.trim(), null) : undefined
             }
           />
         </div>

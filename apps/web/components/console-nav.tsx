@@ -26,68 +26,114 @@ export interface ConsoleNavItem {
   description: string;
   status: "live" | "pending";
   slice: string;
+  /** Optional IA grouping. Only read when the caller passes `groups`. */
+  group?: string;
+}
+
+/** A titled run of sections. `label: null` renders the run with no heading. */
+export interface ConsoleNavGroup {
+  label: string | null;
+  items: readonly ConsoleNavItem[];
+}
+
+function Item({ item, current }: { item: ConsoleNavItem; current: boolean }) {
+  if (item.status === "pending") {
+    return (
+      <li className="shrink-0">
+        <span
+          // Not `aria-disabled` on a non-interactive element: there is no control
+          // here to disable. It is a list entry that says what is coming.
+          className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-muted-foreground/55"
+          title={`${item.description} Arrives in ${item.slice}.`}
+        >
+          {item.name}
+          <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/45">
+            {item.slice}
+          </span>
+        </span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="shrink-0">
+      <Link
+        href={item.href}
+        aria-current={current ? "page" : undefined}
+        className={cn(
+          "block rounded-lg px-3 py-2 text-sm transition-colors duration-200",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+          current
+            ? "border border-brand/40 bg-brand/8 text-foreground"
+            : "border border-transparent text-muted-foreground hover:text-foreground",
+        )}
+      >
+        {item.name}
+      </Link>
+    </li>
+  );
 }
 
 export function ConsoleNav({
   items,
+  groups,
   label,
   orientation = "vertical",
 }: {
-  items: readonly ConsoleNavItem[];
+  /** A flat section list. Equivalent to one unlabelled group. */
+  items?: readonly ConsoleNavItem[];
+  /** Sections under IA headings (§4). Takes precedence over `items`. */
+  groups?: readonly ConsoleNavGroup[];
   label: string;
   orientation?: "vertical" | "horizontal";
 }) {
   const pathname = usePathname();
+  const vertical = orientation === "vertical";
+
+  const resolved: readonly ConsoleNavGroup[] =
+    groups ?? (items ? [{ label: null, items }] : []);
+
+  // One scroller, not one per group.
+  //
+  // Below `lg` the sidebar collapses into a single horizontal strip. Putting
+  // `overflow-x-auto` on each group's `<ul>` — which is what it looked like it wanted —
+  // gives every group its own scrollbar sitting side by side, so the reader gets two or
+  // three little independently-scrolling rails instead of one list. The scroller belongs
+  // to the container that holds all of them; the lists inside just lay out.
+  const listClass = vertical ? "flex gap-1 lg:flex-col" : "flex flex-wrap gap-1";
 
   return (
-    <nav aria-label={label} className={orientation === "vertical" ? "lg:w-56 lg:shrink-0" : ""}>
-      <ul
+    <nav aria-label={label} className={vertical ? "lg:w-56 lg:shrink-0" : ""}>
+      <div
         className={cn(
           "flex gap-1",
-          orientation === "vertical"
-            ? "overflow-x-auto lg:flex-col lg:overflow-visible"
+          vertical
+            ? "overflow-x-auto lg:flex-col lg:gap-6 lg:overflow-visible"
             : "flex-wrap",
         )}
       >
-        {items.map((item) => {
-          if (item.status === "pending") {
-            return (
-              <li key={item.href} className="shrink-0">
-                <span
-                  // Not `aria-disabled` on a non-interactive element: there is no control
-                  // here to disable. It is a list entry that says what is coming.
-                  className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-muted-foreground/55"
-                  title={`${item.description} Arrives in ${item.slice}.`}
-                >
-                  {item.name}
-                  <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/45">
-                    {item.slice}
-                  </span>
-                </span>
-              </li>
-            );
-          }
-
-          const current = pathname === item.href;
-          return (
-            <li key={item.href} className="shrink-0">
-              <Link
-                href={item.href}
-                aria-current={current ? "page" : undefined}
-                className={cn(
-                  "block rounded-lg px-3 py-2 text-sm transition-colors duration-200",
-                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
-                  current
-                    ? "border border-brand/40 bg-brand/8 text-foreground"
-                    : "border border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {item.name}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+        {resolved.map((section, index) => (
+          <div
+            key={section.label ?? `ungrouped-${index}`}
+            className={vertical ? "shrink-0 lg:shrink" : "contents"}
+          >
+            {/* The IA heading, in the signature micro-label: mono, uppercase, tracked.
+                Hidden on the horizontal strip, where a heading between wrapped rows reads
+                as an orphan rather than as structure — the inline console has one group
+                and nothing to separate. */}
+            {section.label && vertical ? (
+              <h2 className="mb-1.5 hidden px-3 font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/60 lg:block">
+                {section.label}
+              </h2>
+            ) : null}
+            <ul className={listClass}>
+              {section.items.map((item) => (
+                <Item key={item.href} item={item} current={pathname === item.href} />
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
     </nav>
   );
 }

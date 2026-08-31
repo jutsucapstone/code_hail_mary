@@ -409,3 +409,36 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   breaks `aria-controls` and hides answers from crawlers.
 - Full-res logo lives in `assets/` and is **not served**. `public/jutsu-logo.png` is a generated
   256px copy — putting the 1254px original back costs ~900KB of deploy weight.
+
+### Console traps (`apps/web/components/console`)
+
+- **A paused query never becomes an error.** TanStack's default `networkMode: "online"`
+  refuses to start a fetch when the browser reports offline, and the query sits at
+  `status: "pending"`, `fetchStatus: "paused"` for ever — so no surface can render a failure
+  and the console shows a loading skeleton with no message and no way out. `lib/query.ts`
+  sets `"always"`: every request goes to a *same-origin* proxy, so `navigator.onLine` was
+  never evidence about whether it could succeed.
+- **Retries are gated on document focus in every network mode.** `retryer.ts` checks
+  `focusManager.isFocused()` before continuing one, so a failure in a background or
+  automated tab parks until the tab is looked at again. Driving the console from an
+  unfocused browser shows a permanent skeleton that has nothing to do with the code. Focus
+  the tab before concluding anything.
+- **Only a 401 may redirect to sign-in.** Both shells used to bounce on *any* rejection from
+  `GET /v1/me`, so a transient 503 sent a valid session to a login page that succeeds, lands
+  back, and fails again. A dependency being down is not a reason to doubt who somebody is.
+- **Component tests build their own `QueryClient` with retries off**, so they cannot see the
+  production defaults at all — the paused-query bug reached a browser because every test had
+  overridden the option that caused it. Anything only `createQueryClient` configures belongs
+  in `lib/query.test.ts`.
+- **`MAIN_CONTENT_ID` belongs on the `<main>` inside the shell**, never on a wrapper in the
+  route layout. Wrapping the whole shell put the skip link's target *above* the header, so
+  "Skip to main content" skipped nothing — a WCAG 2.4.1 failure that presents as a dead key
+  press.
+- **Source identities is filed under Access, not Integrations.** Linking one grants document
+  visibility; a connector fetches content. The heading is a label like any other, and filing
+  it under "Integrations" is what invites somebody to wire a Disconnect button to
+  `DELETE .../identities/{id}` and silently revoke a colleague's document access.
+- **A static image import is a Next build feature.** `next/image` requires the `width` and
+  `height` that its loader attaches; Vite hands the import back as a bare URL string, so any
+  test rendering the console header failed on the logo. `vitest.config.mts` supplies the
+  shape rather than mocking `next/image` away.
