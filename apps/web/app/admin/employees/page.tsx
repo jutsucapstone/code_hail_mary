@@ -8,6 +8,9 @@ import { Field } from "@/components/pilot/field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
 import type { components } from "@/lib/api-schema";
+import { toast } from "sonner";
+
+import { classifyApiError } from "@/lib/api-error";
 import { ROLE_LABELS, can } from "@/lib/permissions";
 
 type Employee = components["schemas"]["Employee"];
@@ -75,6 +78,8 @@ export default function EmployeesPage() {
 
   const mayRead = can(capabilities, "member:read");
   const mayInvite = can(capabilities, "member:invite");
+  const mayAssign = can(capabilities, "member:assign_role");
+  const [changingRole, setChangingRole] = useState<string | null>(null);
 
   const load = useCallback(
     (search: string) => {
@@ -125,6 +130,21 @@ export default function EmployeesPage() {
       );
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function onChangeRole(person: Employee, role: Role) {
+    setChangingRole(person.id);
+    try {
+      await api.assignRole(person.id, { role });
+      toast.success(`${person.display_name ?? person.email} is now ${ROLE_LABELS[role]}.`);
+      load(query);
+    } catch (error) {
+      // The server's refusals are the interesting ones — a peer, a rank above yours,
+      // yourself — and its message says which. Surface it verbatim.
+      toast.error(classifyApiError(error).message);
+    } finally {
+      setChangingRole(null);
     }
   }
 
@@ -274,7 +294,7 @@ export default function EmployeesPage() {
                     once the rows start scrolling under them. The background is opaque so
                     rows do not show through. */}
                 <tr className="text-left">
-                  {["Person", "JUTSU ID", "Role", "Status"].map((heading) => (
+                  {["Person", "JUTSU ID", "Role", "Status", ...(mayAssign ? ["Change role"] : [])].map((heading) => (
                     <th
                       key={heading}
                       scope="col"
@@ -305,6 +325,45 @@ export default function EmployeesPage() {
                     <td className="px-5 py-4">
                       <StatusPill status={person.status} />
                     </td>
+                    {mayAssign ? (
+                      <td className="px-5 py-4">
+                        {person.id === capabilities.user_id ? (
+                          /* The server refuses self-changes even for the owner; offering
+                             the control would teach people to click a button that cannot
+                             work. */
+                          <span className="text-xs text-muted-foreground">You</span>
+                        ) : person.role && (ROLE_RANKS[person.role] ?? 0) >= actorRank ? (
+                          /* At or above the actor's rank: the server will refuse, so the
+                             control says why instead of offering a doomed dropdown. */
+                          <span className="text-xs text-muted-foreground">Outranks you</span>
+                        ) : (
+                          <label className="flex items-center gap-2">
+                            <span className="sr-only">
+                              Change role for {person.display_name ?? person.email}
+                            </span>
+                            <select
+                              value={person.role ?? ""}
+                              disabled={changingRole === person.id || !person.role}
+                              onChange={(event) =>
+                                void onChangeRole(person, event.target.value as Role)
+                              }
+                              className="h-9 rounded-lg border border-hairline-strong bg-surface/40 px-2.5 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60"
+                            >
+                              {person.role && !grantable.includes(person.role) ? (
+                                <option value={person.role} disabled>
+                                  {ROLE_LABELS[person.role]}
+                                </option>
+                              ) : null}
+                              {grantable.map((role) => (
+                                <option key={role} value={role}>
+                                  {ROLE_LABELS[role]}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>

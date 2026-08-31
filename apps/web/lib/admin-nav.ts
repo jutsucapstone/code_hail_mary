@@ -76,14 +76,13 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     group: "People",
   },
   {
-    // Inviting already works, from the Employees page. What does not exist is a *list* of
-    // outstanding invitations: there is no `GET /v1/invitations`, so there is nothing to
-    // render here beyond the form that already has a home.
+    // Sending stays on the Employees page, next to the people list; this section is the
+    // ledger of what happened to each one, over `GET /v1/invitations`.
     slug: "invitations",
     name: "Invitations",
     description: "Outstanding invitations, and what happened to them.",
     permission: "member:invite",
-    status: "pending",
+    status: "live",
     slice: "P2",
     group: "People",
   },
@@ -115,14 +114,13 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     group: "Knowledge",
   },
   {
-    // Borrowed permission: `integration:read` is the nearest existing thing. The `sources`
-    // table exists and ingestion advances its cursor, but the only writer in production
-    // code is `make seed` — there is no HTTP surface to build this against.
+    // `GET /v1/sources` serves sync state and document counts. Creating a source still
+    // has no HTTP surface — rows come from ingestion — so this reads and never writes.
     slug: "sources",
     name: "Knowledge sources",
     description: "What has been ingested, from where, and what was excluded.",
     permission: "integration:read",
-    status: "pending",
+    status: "live",
     slice: "P3",
     group: "Knowledge",
   },
@@ -163,7 +161,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     name: "Roles & permissions",
     description: "Who can do what, and why.",
     permission: "member:assign_role",
-    status: "pending",
+    status: "live",
     slice: "P2",
     group: "Access",
   },
@@ -172,42 +170,40 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     name: "Organisation",
     description: "Name, domain and organisation-wide settings.",
     permission: "org:update",
-    status: "pending",
+    status: "live",
     slice: "P2",
     group: "Access",
   },
 
   // ---- Operations ---------------------------------------------------------------
   {
-    // Borrowed permission. The `jobs` table and its state machine are real and durable;
-    // `GET /v1/jobs/{id}` is not.
+    // `GET /v1/jobs` + `/v1/jobs/stats`, over the same durable queue the worker runs.
     slug: "jobs",
     name: "Jobs & sync",
     description: "Ingestion and embedding runs, their state, and what failed.",
     permission: "org:read",
-    status: "pending",
+    status: "live",
     slice: "P3",
     group: "Operations",
   },
   {
-    // `audit:read` is granted to four roles and declared by no route at all. The write
-    // side is complete and immutable; nothing can read it back yet.
+    // `GET /v1/audit` — the first route to declare `audit:read`. The write side was
+    // always immutable; now it can be read back by the roles that hold the permission.
     slug: "audit",
     name: "Audit log",
     description: "Every security-sensitive action, immutably recorded.",
     permission: "audit:read",
-    status: "pending",
+    status: "live",
     slice: "P2",
     group: "Operations",
   },
   {
-    // Borrowed permission. `/readyz` answers `degraded` unconditionally — its checks are
-    // hardcoded literals — so a health panel today could only ever report one thing.
+    // `/readyz` now probes Postgres for real, so this panel reports something measured.
     slug: "health",
     name: "System health",
     description: "API, queue and connector health, and recent failures.",
     permission: "org:read",
-    status: "pending",
+    status: "live",
     slice: "P3",
     group: "Operations",
   },

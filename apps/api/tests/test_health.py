@@ -6,16 +6,28 @@ error envelope with a propagated request id.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterator
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jutsu_api.main import REQUEST_ID_HEADER, create_app
 from jutsu_core import AclDenied, NotFound, ValidationFailed
+from jutsu_db.engine import dispose_engine
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(create_app())
+def client() -> Iterator[TestClient]:
+    yield TestClient(create_app())
+    # /readyz now really pings Postgres, and the first ping caches an engine bound to
+    # THIS TestClient's private event loop. jutsu_db caches one engine per process, so
+    # without this dispose the next db-touching test — on its own loop — inherits a pool
+    # whose connections belong to a loop that no longer runs. That is the `org_session
+    # caches one engine per process` trap, and under pytest-randomly it surfaces as a
+    # different test failing on every seed. Observed as an intermittent preflight
+    # failure before this line existed.
+    asyncio.run(dispose_engine())
 
 
 class TestHealth:

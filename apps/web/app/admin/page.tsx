@@ -5,6 +5,9 @@ import { Building2, IdCard, ShieldCheck, UserRound } from "lucide-react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { ErrorState, LoadingRegion, Skeleton } from "@/components/states";
+import { useQuery } from "@tanstack/react-query";
+
+import { StatStrip } from "@/components/admin/page-scaffold";
 import { ApiError, api } from "@/lib/api";
 import type { components } from "@/lib/api-schema";
 
@@ -24,6 +27,9 @@ type Organisation = components["schemas"]["OrganisationProfile"];
  */
 export default function AdminOverviewPage() {
   const capabilities = useCapabilities();
+  // Operational counts ride on their own query: the identity card must not wait for
+  // eight aggregate subqueries, and a failed count strip must not take down the page.
+  const overview = useQuery({ queryKey: ["overview"], queryFn: api.overview });
   const [organisation, setOrganisation] = useState<Organisation | null>(null);
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(
     null,
@@ -134,6 +140,31 @@ export default function AdminOverviewPage() {
           ))}
         </dl>
       </section>
+
+      {overview.data ? (
+        <section aria-labelledby="ops-heading" className="flex flex-col gap-4">
+          <h2 id="ops-heading" className="display text-xl font-semibold sm:text-2xl">
+            Knowledge & operations
+          </h2>
+          <StatStrip
+            columns={4}
+            stats={[
+              { id: "documents", label: "Documents indexed", value: overview.data.documents },
+              { id: "sources", label: "Knowledge sources", value: overview.data.sources },
+              {
+                id: "failed",
+                label: "Failed jobs, last 24h",
+                value: overview.data.jobs_failed_24h,
+              },
+              {
+                id: "invitations",
+                label: "Invitations pending",
+                value: overview.data.invitations_pending,
+              },
+            ]}
+          />
+        </section>
+      ) : null}
 
       <section aria-labelledby="identity-heading" className="flex flex-col gap-4">
         <h2 id="identity-heading" className="display text-xl font-semibold sm:text-2xl">

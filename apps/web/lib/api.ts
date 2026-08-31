@@ -148,6 +148,30 @@ export type SearchResponse =
   paths["/v1/search"]["post"]["responses"][200]["content"]["application/json"];
 export type SearchResult = SearchResponse["items"][number];
 
+
+export type AuditPage =
+  paths["/v1/audit"]["get"]["responses"][200]["content"]["application/json"];
+export type AuditEntry = AuditPage["items"][number];
+export type JobPage = paths["/v1/jobs"]["get"]["responses"][200]["content"]["application/json"];
+export type JobStats =
+  paths["/v1/jobs/stats"]["get"]["responses"][200]["content"]["application/json"];
+export type SourcePage =
+  paths["/v1/sources"]["get"]["responses"][200]["content"]["application/json"];
+export type InvitationPage =
+  paths["/v1/invitations"]["get"]["responses"][200]["content"]["application/json"];
+type RoleChangeBody =
+  paths["/v1/employees/{user_id}/role"]["patch"]["requestBody"]["content"]["application/json"];
+type RoleChangeResponse =
+  paths["/v1/employees/{user_id}/role"]["patch"]["responses"][200]["content"]["application/json"];
+type OrgRenameBody =
+  paths["/v1/orgs/current"]["patch"]["requestBody"]["content"]["application/json"];
+type OrgRenameResponse =
+  paths["/v1/orgs/current"]["patch"]["responses"][200]["content"]["application/json"];
+export type OrgOverview =
+  paths["/v1/orgs/current/overview"]["get"]["responses"][200]["content"]["application/json"];
+export type RoleCatalogue =
+  paths["/v1/roles"]["get"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -295,6 +319,84 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+
+  /**
+   * The audit trail. Requires `audit:read`. Actors arrive as opaque ids plus a
+   * display JUTSU ID — the API never returns an email here, and the UI must not
+   * try to resolve one.
+   */
+  audit: (
+    params: {
+      cursor?: string | null;
+      action?: string | null;
+      outcome?: string | null;
+      limit?: number;
+    } = {},
+  ) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    if (params.action) search.set("action", params.action);
+    if (params.outcome) search.set("outcome", params.outcome);
+    if (params.limit) search.set("limit", String(params.limit));
+    const suffix = search.size ? `?${search}` : "";
+    return call<AuditPage>(`/v1/audit${suffix}`, { method: "GET" });
+  },
+
+  /** Ingestion and embedding jobs. Requires `org:read`. */
+  jobs: (params: { cursor?: string | null; state?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    if (params.state) search.set("state", params.state);
+    const suffix = search.size ? `?${search}` : "";
+    return call<JobPage>(`/v1/jobs${suffix}`, { method: "GET" });
+  },
+
+  jobStats: () => call<JobStats>("/v1/jobs/stats", { method: "GET" }),
+
+  /** Knowledge sources with sync state. Requires `integration:read`. */
+  sources: () => call<SourcePage>("/v1/sources", { method: "GET" }),
+
+  /** Every invitation and what happened to it. Requires `member:invite`. */
+  invitations: (params: { cursor?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    const suffix = search.size ? `?${search}` : "";
+    return call<InvitationPage>(`/v1/invitations${suffix}`, { method: "GET" });
+  },
+
+  /**
+   * Change a member role. Requires `member:assign_role` — and the server refuses
+   * self-changes, peers, and any grant at or above the actor rank, whatever the
+   * browser believed.
+   */
+  assignRole: (userId: string, body: RoleChangeBody) =>
+    call<RoleChangeResponse>(`/v1/employees/${encodeURIComponent(userId)}/role`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  /** Rename the organisation. Requires `org:update`. The domain is immutable. */
+  renameOrganisation: (body: OrgRenameBody) =>
+    call<OrgRenameResponse>("/v1/orgs/current", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  /** Dashboard counts, each a real aggregate. Requires `org:read`. */
+  overview: () => call<OrgOverview>("/v1/orgs/current/overview", { method: "GET" }),
+
+  /**
+   * The readiness probe. Public on the API itself — the platform polls it with no
+   * session — and typed loosely because its checks map grows with the deployment.
+   */
+  ready: () =>
+    call<{ status: string; checks: Record<string, string>; request_id: string }>("/readyz", {
+      method: "GET",
+    }),
+
+  /** The role catalogue as the database seeds it. Requires `org:read`. */
+  roles: () => call<RoleCatalogue>("/v1/roles", { method: "GET" }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };
