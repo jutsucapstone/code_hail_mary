@@ -450,7 +450,9 @@ name = "jutsu-api"
 version = "0.1.0"
 source = { editable = "apps/api" }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jutsu-core" },
     { name = "jutsu-db" },
     { name = "jutsu-retrieval" },
@@ -465,7 +467,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=50.0.1" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jutsu-core", editable = "packages/core" },
     { name = "jutsu-db", editable = "packages/db" },
     { name = "jutsu-retrieval", editable = "packages/retrieval" },

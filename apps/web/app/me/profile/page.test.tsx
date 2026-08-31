@@ -303,11 +303,11 @@ describe("navigation", () => {
     expect(entry?.permission).toBe("profile:self_read");
   });
 
-  it("leaves the surfaces with no backend still pending", () => {
-    // Phase 3B flips exactly one entry. Integrations and knowledge transfer have no
-    // backend in this repository and must not have been dragged along with it.
-    for (const href of ["/me/integrations", "/handover"]) {
-      expect(MEMBER_SECTIONS.find((section) => section.href === href)?.status).toBe("pending");
-    }
+  it("keeps knowledge transfer pending, and integrations live", () => {
+    // The pin moves with the backend. My Integrations went live with migration 0012 +
+    // /v1/integrations; Knowledge Transfer still has no KT model and must not have
+    // been dragged along with it.
+    expect(MEMBER_SECTIONS.find((s) => s.href === "/me/integrations")?.status).toBe("live");
+    expect(MEMBER_SECTIONS.find((s) => s.href === "/handover")?.status).toBe("pending");
   });
 });

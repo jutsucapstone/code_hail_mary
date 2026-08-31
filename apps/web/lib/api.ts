@@ -172,6 +172,20 @@ export type OrgOverview =
 export type RoleCatalogue =
   paths["/v1/roles"]["get"]["responses"][200]["content"]["application/json"];
 
+export type IntegrationCatalogue =
+  paths["/v1/integrations"]["get"]["responses"][200]["content"]["application/json"];
+export type IntegrationEntry = IntegrationCatalogue["items"][number];
+export type ConnectionSummary =
+  paths["/v1/connections/summary"]["get"]["responses"][200]["content"]["application/json"];
+export type ConnectionPolicies =
+  paths["/v1/connection-policies"]["get"]["responses"][200]["content"]["application/json"];
+type ConnectStarted =
+  paths["/v1/me/connections/{provider_id}"]["post"]["responses"][201]["content"]["application/json"];
+type SyncQueued =
+  paths["/v1/me/connections/{connection_id}/sync"]["post"]["responses"][202]["content"]["application/json"];
+type PolicyOut =
+  paths["/v1/connection-policies/{provider_id}"]["put"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -397,6 +411,48 @@ export const api = {
 
   /** The role catalogue as the database seeds it. Requires `org:read`. */
   roles: () => call<RoleCatalogue>("/v1/roles", { method: "GET" }),
+
+
+  /**
+   * The integration catalogue with the caller's own connections merged in.
+   * `configured: false` renders as "not configured for this deployment" — the UI
+   * never fakes a Connect for a provider the backend cannot serve.
+   */
+  integrations: () => call<IntegrationCatalogue>("/v1/integrations", { method: "GET" }),
+
+  /**
+   * Begin the OAuth flow for the CALLING employee. The response carries the provider's
+   * authorize URL; the browser NAVIGATES there — it is never fetched.
+   */
+  connect: (providerId: string) =>
+    call<ConnectStarted>(`/v1/me/connections/${encodeURIComponent(providerId)}`, {
+      method: "POST",
+    }),
+
+  /** Disconnect the caller's own connection. Deletes the stored credential. */
+  disconnectIntegration: (connectionId: string) =>
+    call<void>(`/v1/me/connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    }),
+
+  /** Queue a sync of the caller's own connection into the durable job queue. */
+  syncNow: (connectionId: string) =>
+    call<SyncQueued>(`/v1/me/connections/${encodeURIComponent(connectionId)}/sync`, {
+      method: "POST",
+    }),
+
+  /** Per-provider aggregate for governance. Counts, never identities. */
+  connectionSummary: () => call<ConnectionSummary>("/v1/connections/summary", { method: "GET" }),
+
+  /** The organisation's allow/deny per provider. Absence of a row means allowed. */
+  connectionPolicies: () => call<ConnectionPolicies>("/v1/connection-policies", { method: "GET" }),
+
+  /** Allow or restrict one provider org-wide. Does not sever existing connections. */
+  setConnectionPolicy: (providerId: string, allowed: boolean) =>
+    call<PolicyOut>(`/v1/connection-policies/${encodeURIComponent(providerId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ allowed }),
+    }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

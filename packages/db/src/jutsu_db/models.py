@@ -505,6 +505,76 @@ class EvalResult(Base):
     __table_args__ = (Index("ix_eval_results_run_id_metric", "run_id", "metric"),)
 
 
+# --------------------------------------------------------------------- connections
+
+
+class Connection(Base):
+    """One person's authorization of one provider (migration 0012).
+
+    Created by its owner's session, never by an administrator — §2's product principle
+    as a schema fact. A connection is NOT a source identity: it stores the means to
+    fetch content, while visibility grants live in `document_acl` and require their
+    own deliberate act.
+    """
+
+    __tablename__ = "connections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="connecting")
+    account_label: Mapped[str | None] = mapped_column(String(320))
+    provider_subject: Mapped[str | None] = mapped_column(String(255))
+    scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    oauth_state: Mapped[str | None] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_kind: Mapped[str | None] = mapped_column(String(32))
+
+
+class ConnectionPolicy(Base):
+    """Per-provider allow/deny (migration 0012). Absence of a row means allowed."""
+
+    __tablename__ = "connection_policies"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    updated_at: Mapped[datetime] = _now()
+
+
+class ConnectionCredential(Base):
+    """Encrypted OAuth material (migration 0012). No API response is built from this
+    table, and no model that serialises ever joins it — the dangerous columns live
+    where no read model looks."""
+
+    __tablename__ = "connection_credentials"
+
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("connections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = _now()
+
+
 #: Tables carrying RLS. Kept as data so the migration and its tests cannot disagree
 #: about which tables are protected.
 #:
@@ -525,4 +595,9 @@ RLS_TABLES: tuple[str, ...] = (
     "user_groups",
     "jobs",
     "sources",
+    # Migration 0012 — all three carry tenant data; credentials additionally carry
+    # secrets, so the policy there is the second fence behind encryption.
+    "connections",
+    "connection_policies",
+    "connection_credentials",
 )

@@ -106,6 +106,14 @@ export async function PATCH(request: NextRequest, ctx: Context) {
   return forward(request, path);
 }
 
+// Added with the connection-policies endpoint, the API's first PUT. A method the
+// proxy does not export is a Next-level 405 that never reaches FastAPI — an
+// easy-to-misread failure, because the API's own OpenAPI says the route exists.
+export async function PUT(request: NextRequest, ctx: Context) {
+  const { path } = await ctx.params;
+  return forward(request, path);
+}
+
 export async function DELETE(request: NextRequest, ctx: Context) {
   const { path } = await ctx.params;
   return forward(request, path);

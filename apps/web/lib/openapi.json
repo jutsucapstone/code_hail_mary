@@ -200,6 +200,76 @@
         "title": "Capabilities",
         "type": "object"
       },
+      "CatalogueEntryOut": {
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "group_label": {
+            "title": "Group Label",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "group",
+          "group_label",
+          "description",
+          "configured",
+          "allowed",
+          "connection"
+        ],
+        "title": "CatalogueEntryOut",
+        "type": "object"
+      },
+      "CatalogueOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogueEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CatalogueOut",
+        "type": "object"
+      },
       "ChallengeAccepted": {
         "description": "Identical for every input. Carries no signal about whether the account exists.",
         "properties": {
@@ -225,6 +295,99 @@
           "email"
         ],
         "title": "ChallengeRequest",
+        "type": "object"
+      },
+      "ConnectStarted": {
+        "properties": {
+          "authorize_url": {
+            "title": "Authorize Url",
+            "type": "string"
+          },
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "authorize_url"
+        ],
+        "title": "ConnectStarted",
+        "type": "object"
+      },
+      "ConnectionOut": {
+        "properties": {
+          "account_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Label"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Kind"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "status",
+          "account_label",
+          "connected_at",
+          "last_sync_at",
+          "last_error_kind"
+        ],
+        "title": "ConnectionOut",
         "type": "object"
       },
       "Employee": {
@@ -302,6 +465,22 @@
           "last_activity_at"
         ],
         "title": "Employee",
+        "type": "object"
+      },
+      "EmployeeConnectionsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "EmployeeConnectionsOut",
         "type": "object"
       },
       "EmployeePage": {
@@ -838,6 +1017,59 @@
         "title": "Permission",
         "type": "string"
       },
+      "PoliciesOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PoliciesOut",
+        "type": "object"
+      },
+      "PolicyOut": {
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "allowed"
+        ],
+        "title": "PolicyOut",
+        "type": "object"
+      },
+      "PolicyPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allowed"
+        ],
+        "title": "PolicyPayload",
+        "type": "object"
+      },
       "ProfilePatch": {
         "additionalProperties": false,
         "description": "A partial update. Absent means \"leave alone\"; explicit `null` means \"clear\".\n\n`extra=\"forbid\"` is a security control here, not tidiness \u2014 the same reasoning\n`LinkPayload` records. Without it a client could post `user_id` or `org_id`, and any\nfuture widening of this model would silently start accepting them. On an endpoint\nthat writes a tenant-scoped row, that is the difference between a profile form and a\nway to write into somebody else's organisation.\n\nLengths mirror the column definitions from migration 0002 exactly, so a value that\nwould be truncated by the database is refused by validation with a message the caller\ncan act on instead.",
@@ -1027,6 +1259,37 @@
           "updated_at"
         ],
         "title": "ProfileView",
+        "type": "object"
+      },
+      "ProviderSummaryOut": {
+        "properties": {
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Status",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "total",
+          "by_status"
+        ],
+        "title": "ProviderSummaryOut",
         "type": "object"
       },
       "RegisterPayload": {
@@ -1557,6 +1820,41 @@
         "title": "SourceSystem",
         "type": "string"
       },
+      "SummaryOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderSummaryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SummaryOut",
+        "type": "object"
+      },
+      "SyncQueued": {
+        "properties": {
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "SyncQueued",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1901,6 +2199,139 @@
         ]
       }
     },
+    "/v1/connection-policies": {
+      "get": {
+        "operationId": "read_policies_v1_connection_policies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoliciesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Policies",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connection-policies/{provider_id}": {
+      "put": {
+        "description": "Allow or restrict one provider organisation-wide.\n\nRestricting does not sever existing connections \u2014 a policy toggle must not be a\nsilent mass revocation. The summary keeps showing them; revoking is per-connection\nand per-person, where the audit trail can name what happened.",
+        "operationId": "write_policy_v1_connection_policies__provider_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Policy",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connections/summary": {
+      "get": {
+        "description": "Counts per provider per status. Governance reads numbers, not identities.",
+        "operationId": "read_summary_v1_connections_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Summary",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connections/{connection_id}": {
+      "delete": {
+        "description": "Administrative revocation: rank-checked in the service, audited per connection.",
+        "operationId": "revoke_v1_connections__connection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/v1/employees": {
       "get": {
         "description": "Everyone in the caller's organisation.\n\nThe organisation is never a parameter. It comes from the session, and row-level\nsecurity scopes the query \u2014 so there is no combination of arguments that returns\nanother tenant's people.",
@@ -2019,6 +2450,49 @@
         "summary": "Create Invitation",
         "tags": [
           "employees"
+        ]
+      }
+    },
+    "/v1/employees/{user_id}/connections": {
+      "get": {
+        "operationId": "read_employee_connections_v1_employees__user_id__connections_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmployeeConnectionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Employee Connections",
+        "tags": [
+          "connections"
         ]
       }
     },
@@ -2260,6 +2734,28 @@
         "summary": "Read Evidence",
         "tags": [
           "evidence"
+        ]
+      }
+    },
+    "/v1/integrations": {
+      "get": {
+        "description": "The full catalogue with the caller's own state merged in.\n\n`configured: false` is a fact about this deployment, `allowed: false` a fact about\nthis organisation, and both render as honest refusals \u2014 never as a Connect button\nthat pretends.",
+        "operationId": "read_catalogue_v1_integrations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogueOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Catalogue",
+        "tags": [
+          "connections"
         ]
       }
     },
@@ -2505,6 +3001,129 @@
         "summary": "Read Me",
         "tags": [
           "me"
+        ]
+      }
+    },
+    "/v1/me/connections/{connection_id}": {
+      "delete": {
+        "description": "Disconnect the caller's OWN connection; anyone else's row is a 404 here.",
+        "operationId": "disconnect_v1_me_connections__connection_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/me/connections/{connection_id}/sync": {
+      "post": {
+        "operationId": "request_sync_v1_me_connections__connection_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncQueued"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Sync",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/me/connections/{provider_id}": {
+      "post": {
+        "description": "Begin the OAuth flow for the CALLING employee.\n\nThere is deliberately no variant that names another user: administrators govern\nconnections, they do not create them on people's behalf (\u00a72).",
+        "operationId": "connect_v1_me_connections__provider_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect",
+        "tags": [
+          "connections"
         ]
       }
     },

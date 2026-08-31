@@ -23,6 +23,7 @@ from jutsu_core import InternalError, JutsuError, ValidationFailed
 from jutsu_db.engine import ping as postgres_ping
 
 from jutsu_api.routers import auth as auth_router
+from jutsu_api.routers import connections as connections_router
 from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import evidence as evidence_router
 from jutsu_api.routers import identities as identities_router
@@ -191,6 +192,7 @@ def create_app() -> FastAPI:
     app.include_router(evidence_router.router)
     app.include_router(search_router.router)
     app.include_router(operations_router.router)
+    app.include_router(connections_router.router)
 
     return app
 

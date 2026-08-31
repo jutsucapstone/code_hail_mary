@@ -139,6 +139,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/connection-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Policies */
+        get: operations["read_policies_v1_connection_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/connection-policies/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Write Policy
+         * @description Allow or restrict one provider organisation-wide.
+         *
+         *     Restricting does not sever existing connections — a policy toggle must not be a
+         *     silent mass revocation. The summary keeps showing them; revoking is per-connection
+         *     and per-person, where the audit trail can name what happened.
+         */
+        put: operations["write_policy_v1_connection_policies__provider_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/connections/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Summary
+         * @description Counts per provider per status. Governance reads numbers, not identities.
+         */
+        get: operations["read_summary_v1_connections_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke
+         * @description Administrative revocation: rank-checked in the service, audited per connection.
+         */
+        delete: operations["revoke_v1_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/employees": {
         parameters: {
             query?: never;
@@ -174,6 +255,23 @@ export interface paths {
         put?: never;
         /** Create Invitation */
         post: operations["create_invitation_v1_employees_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/employees/{user_id}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Employee Connections */
+        get: operations["read_employee_connections_v1_employees__user_id__connections_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -284,6 +382,30 @@ export interface paths {
          *     another-tenant's, and not-granted-to-you.
          */
         get: operations["read_evidence_v1_evidence__chunk_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Catalogue
+         * @description The full catalogue with the caller's own state merged in.
+         *
+         *     `configured: false` is a fact about this deployment, `allowed: false` a fact about
+         *     this organisation, and both render as honest refusals — never as a Connect button
+         *     that pretends.
+         */
+        get: operations["read_catalogue_v1_integrations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -405,6 +527,66 @@ export interface paths {
         get: operations["read_me_v1_me_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect
+         * @description Disconnect the caller's OWN connection; anyone else's row is a 404 here.
+         */
+        delete: operations["disconnect_v1_me_connections__connection_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/connections/{connection_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Sync */
+        post: operations["request_sync_v1_me_connections__connection_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/connections/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Connect
+         * @description Begin the OAuth flow for the CALLING employee.
+         *
+         *     There is deliberately no variant that names another user: administrators govern
+         *     connections, they do not create them on people's behalf (§2).
+         */
+        post: operations["connect_v1_me_connections__provider_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -737,6 +919,29 @@ export interface components {
             /** User Id */
             user_id: string;
         };
+        /** CatalogueEntryOut */
+        CatalogueEntryOut: {
+            /** Allowed */
+            allowed: boolean;
+            /** Configured */
+            configured: boolean;
+            connection: components["schemas"]["ConnectionOut"] | null;
+            /** Description */
+            description: string;
+            /** Group */
+            group: string;
+            /** Group Label */
+            group_label: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
+        /** CatalogueOut */
+        CatalogueOut: {
+            /** Items */
+            items: components["schemas"]["CatalogueEntryOut"][];
+        };
         /**
          * ChallengeAccepted
          * @description Identical for every input. Carries no signal about whether the account exists.
@@ -755,6 +960,36 @@ export interface components {
              * Format: email
              */
             email: string;
+        };
+        /** ConnectStarted */
+        ConnectStarted: {
+            /** Authorize Url */
+            authorize_url: string;
+            /**
+             * Connection Id
+             * Format: uuid
+             */
+            connection_id: string;
+        };
+        /** ConnectionOut */
+        ConnectionOut: {
+            /** Account Label */
+            account_label: string | null;
+            /** Connected At */
+            connected_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Error Kind */
+            last_error_kind: string | null;
+            /** Last Sync At */
+            last_sync_at: string | null;
+            /** Provider */
+            provider: string;
+            /** Status */
+            status: string;
         };
         /** Employee */
         Employee: {
@@ -776,6 +1011,11 @@ export interface components {
             role: components["schemas"]["Role"] | null;
             /** Status */
             status: string;
+        };
+        /** EmployeeConnectionsOut */
+        EmployeeConnectionsOut: {
+            /** Items */
+            items: components["schemas"]["ConnectionOut"][];
         };
         /**
          * EmployeePage
@@ -1004,6 +1244,25 @@ export interface components {
          * @enum {string}
          */
         Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query";
+        /** PoliciesOut */
+        PoliciesOut: {
+            /** Items */
+            items: components["schemas"]["PolicyOut"][];
+        };
+        /** PolicyOut */
+        PolicyOut: {
+            /** Allowed */
+            allowed: boolean;
+            /** Name */
+            name: string;
+            /** Provider */
+            provider: string;
+        };
+        /** PolicyPayload */
+        PolicyPayload: {
+            /** Allowed */
+            allowed: boolean;
+        };
         /**
          * ProfilePatch
          * @description A partial update. Absent means "leave alone"; explicit `null` means "clear".
@@ -1062,6 +1321,19 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** ProviderSummaryOut */
+        ProviderSummaryOut: {
+            /** By Status */
+            by_status: {
+                [key: string]: number;
+            };
+            /** Name */
+            name: string;
+            /** Provider */
+            provider: string;
+            /** Total */
+            total: number;
         };
         /** RegisterPayload */
         RegisterPayload: {
@@ -1290,6 +1562,24 @@ export interface components {
          * @enum {string}
          */
         SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github";
+        /** SummaryOut */
+        SummaryOut: {
+            /** Items */
+            items: components["schemas"]["ProviderSummaryOut"][];
+        };
+        /** SyncQueued */
+        SyncQueued: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /**
+             * Status
+             * @default queued
+             */
+            status: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -1487,6 +1777,110 @@ export interface operations {
             };
         };
     };
+    read_policies_v1_connection_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoliciesOut"];
+                };
+            };
+        };
+    };
+    write_policy_v1_connection_policies__provider_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_summary_v1_connections_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryOut"];
+                };
+            };
+        };
+    };
+    revoke_v1_connections__connection_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_employees_v1_employees_get: {
         parameters: {
             query?: {
@@ -1540,6 +1934,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvitationAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_employee_connections_v1_employees__user_id__connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeConnectionsOut"];
                 };
             };
             /** @description Validation Error */
@@ -1715,6 +2140,26 @@ export interface operations {
             };
         };
     };
+    read_catalogue_v1_integrations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogueOut"];
+                };
+            };
+        };
+    };
     read_invitations_v1_invitations_get: {
         parameters: {
             query?: {
@@ -1850,6 +2295,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+        };
+    };
+    disconnect_v1_me_connections__connection_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_sync_v1_me_connections__connection_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncQueued"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connect_v1_me_connections__provider_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

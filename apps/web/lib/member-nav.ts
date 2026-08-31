@@ -7,12 +7,10 @@ import type { Permission } from "@/lib/permissions";
  * `/me` was the only destination a Member could reach; it stopped being honest once
  * `/ask` and the identity endpoints existed.
  *
- * `status` is what keeps this list from lying. Three of §6's six destinations have **no
- * backend**: My Integrations needs a connector API that does not exist anywhere in the
- * repository, and Knowledge Transfer needs a KT model that has never been built. Profile
- * was the fourth until Phase 3A gave it real endpoints. They are listed, because
- * showing the shape of the product is the point, and they are listed as text with the
- * slice that delivers them rather than as links onto 404s (§4.11).
+ * `status` is what keeps this list from lying. My Integrations went live when the
+ * connection lifecycle landed (migration 0012 + /v1/integrations); Knowledge Transfer
+ * still needs a KT model that does not exist yet, so it stays listed as text with the
+ * slice that delivers it rather than as a link onto a 404 (§4.11).
  *
  * `permission` gates *rendering* only. Every endpoint behind these re-checks server-side,
  * so a caller who types a hidden URL gets a 403 from the API and not a page.
@@ -77,7 +75,7 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     name: "My integrations",
     description: "Connect your own applications so their content can be indexed.",
     permission: null,
-    status: "pending",
+    status: "live",
     slice: "P3",
   },
   {

@@ -225,5 +225,33 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
             {"id": uuid.uuid4(), "org": org_id, "key": f"ingest.document:{org_id}:seed"},
         )
 
+        # Migration 0012's three tables, one row each per tenant, so
+        # test_counts_do_not_leak covers them rather than silently skipping them. The
+        # credential ciphertext is arbitrary bytes: RLS neither knows nor cares that the
+        # application encrypts before insert, and the isolation property is what is
+        # under test here.
+        connection_id = uuid.uuid4()
+        await conn.execute(
+            text(
+                "INSERT INTO connections (id, org_id, user_id, provider, status) "
+                "VALUES (:id, :org, :user, 'slack', 'connected')"
+            ),
+            {"id": connection_id, "org": org_id, "user": user_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO connection_policies (org_id, provider, allowed, updated_by) "
+                "VALUES (:org, 'github', false, :user)"
+            ),
+            {"org": org_id, "user": user_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO connection_credentials (connection_id, org_id, access_token_enc) "
+                "VALUES (:conn, :org, :blob)"
+            ),
+            {"conn": connection_id, "org": org_id, "blob": f"cipher-{label}".encode()},
+        )
+
     await conn.commit()
     return org_a, org_b
