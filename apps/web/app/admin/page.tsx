@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Building2, IdCard, ShieldCheck, UserRound } from "lucide-react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
-import { ErrorState, LoadingRegion, Skeleton } from "@/components/admin/states";
+import { ErrorState, LoadingRegion, Skeleton } from "@/components/states";
 import { ApiError, api } from "@/lib/api";
 import type { components } from "@/lib/api-schema";
 

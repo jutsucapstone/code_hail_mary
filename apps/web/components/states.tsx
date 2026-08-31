@@ -3,28 +3,20 @@ import { AlertTriangle, Lock, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * Loading, empty, error and permission-denied — the four states every data surface needs
- * and the app had none of.
+ * The state taxonomy every data surface needs: loading, empty, error, permission-denied
+ * and not-built-yet (§34).
  *
- * A note on the skeleton, because it is easy to get wrong here: the `radix-nova` preset
- * ships a `shimmer` utility that looks like the obvious choice and is not. It sets
- * `background-clip: text` with `-webkit-text-fill-color: transparent`, so it clips to
- * glyphs — on an empty placeholder box it renders literally nothing, and the loading
- * state ships invisible. This uses a plain pulse instead, which degrades correctly under
- * `prefers-reduced-motion` via `motion-reduce:animate-none`.
+ * Lives here rather than under `components/admin/` because it never was admin-specific —
+ * `components/product/evidence-search.tsx` imported it across that boundary from the day
+ * it was written. A shared vocabulary of states filed under one consumer is a shared
+ * vocabulary nobody else finds.
+ *
+ * `Skeleton` is re-exported from `components/ui/skeleton.tsx` rather than defined twice.
+ * The shadcn primitive there carries the `aria-hidden` and `motion-reduce` handling this
+ * module used to own, so there is one placeholder box in the app and not two that drift.
  */
 
-export function Skeleton({ className }: { className?: string }) {
-  return (
-    <div
-      aria-hidden="true"
-      className={cn(
-        "animate-pulse rounded-xl bg-surface/60 motion-reduce:animate-none",
-        className,
-      )}
-    />
-  );
-}
+export { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * A loading region that announces itself.

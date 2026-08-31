@@ -8,9 +8,11 @@ import { LogOut } from "lucide-react";
 import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
+import { ConsoleNav } from "@/components/console-nav";
 import { api } from "@/lib/api";
 import { SIGN_IN_PATH } from "@/lib/surfaces";
-import type { Capabilities } from "@/lib/permissions";
+import { MEMBER_SECTIONS } from "@/lib/member-nav";
+import { can, type Capabilities } from "@/lib/permissions";
 
 const CapabilitiesContext = createContext<Capabilities | null>(null);
 
@@ -107,7 +109,25 @@ export function MemberShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 py-12 [@media(max-height:820px)]:py-6">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 py-8 [@media(max-height:820px)]:py-6">
+        {capabilities ? (
+          <div className="mb-8 border-b border-hairline pb-4">
+            <ConsoleNav
+              label="Your console"
+              orientation="horizontal"
+              items={MEMBER_SECTIONS.filter(
+                (section) => section.permission === null || can(capabilities, section.permission),
+              ).map((section) => ({
+                href: section.href,
+                name: section.name,
+                description: section.description,
+                status: section.status,
+                slice: section.slice,
+              }))}
+            />
+          </div>
+        ) : null}
+
         {capabilities ? (
           <CapabilitiesContext.Provider value={capabilities}>
             {children}

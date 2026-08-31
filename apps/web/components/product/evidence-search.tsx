@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 import { AlertTriangle, FileText, Loader2, Search } from "lucide-react";
 
-import { ErrorState, LoadingRegion, Skeleton } from "@/components/admin/states";
+import { ErrorState, LoadingRegion, Skeleton } from "@/components/states";
 import { ApiError, api, type Evidence, type SearchResult } from "@/lib/api";
 
 /**

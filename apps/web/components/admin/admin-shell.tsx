@@ -1,18 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
 
 import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
+import { ConsoleNav } from "@/components/console-nav";
 import { ADMIN_SECTIONS, adminHref } from "@/lib/admin-nav";
 import { api } from "@/lib/api";
 import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { can, type Capabilities } from "@/lib/permissions";
-import { cn } from "@/lib/utils";
 
 const CapabilitiesContext = createContext<Capabilities | null>(null);
 
@@ -50,7 +50,6 @@ export function useCapabilities(): Capabilities {
  * unfinished.
  */
 export function AdminShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
   const router = useRouter();
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [failed, setFailed] = useState(false);
@@ -135,55 +134,16 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <div className="mx-auto flex w-full min-h-0 max-w-7xl flex-1 flex-col gap-8 px-6 py-8 [@media(max-height:820px)]:gap-5 [@media(max-height:820px)]:py-4 lg:flex-row lg:gap-12 lg:px-8 lg:py-12 lg:[@media(max-height:820px)]:py-6">
-        <nav aria-label="Admin sections" className="lg:w-56 lg:shrink-0">
-          <ul className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
-            {visible.map((section) => {
-              const href = adminHref(section.slug);
-              const current = pathname === href;
-
-              // A pending section has no route, so linking it produces a 404. The
-              // header comment on ADMIN_SECTIONS claims "a section cannot be linked
-              // without also being routed" — that was the intent and not the behaviour:
-              // four of the six rendered as links to pages that do not exist. It is
-              // still listed, because showing the shape of the product is the point of
-              // the `status` field, but it is listed as text with the slice that
-              // delivers it rather than as a door onto nothing (§4.11).
-              if (section.status === "pending") {
-                return (
-                  <li key={section.slug || "overview"} className="shrink-0">
-                    <span
-                      className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-muted-foreground/55"
-                      title={`${section.description} Arrives in ${section.slice}.`}
-                    >
-                      {section.name}
-                      <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/45">
-                        {section.slice}
-                      </span>
-                    </span>
-                  </li>
-                );
-              }
-
-              return (
-                <li key={section.slug || "overview"} className="shrink-0">
-                  <Link
-                    href={href}
-                    aria-current={current ? "page" : undefined}
-                    className={cn(
-                      "block rounded-lg px-3 py-2 text-sm transition-colors duration-200",
-                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
-                      current
-                        ? "border border-brand/40 bg-brand/8 text-foreground"
-                        : "border border-transparent text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {section.name}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
+        <ConsoleNav
+          label="Admin sections"
+          items={visible.map((section) => ({
+            href: adminHref(section.slug),
+            name: section.name,
+            description: section.description,
+            status: section.status,
+            slice: section.slice,
+          }))}
+        />
 
         {/* The safety valve. A section whose content genuinely exceeds the viewport
             scrolls here rather than being clipped and unreachable — but because this box

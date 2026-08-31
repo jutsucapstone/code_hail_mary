@@ -133,6 +133,12 @@ type SearchBody =
   paths["/v1/search"]["post"]["requestBody"]["content"]["application/json"];
 export type Evidence =
   paths["/v1/evidence/{chunk_id}"]["get"]["responses"][200]["content"]["application/json"];
+
+export type SourceIdentityPage =
+  paths["/v1/me/identities"]["get"]["responses"][200]["content"]["application/json"];
+export type SourceIdentity = SourceIdentityPage["items"][number];
+type LinkBody =
+  paths["/v1/employees/{user_id}/identities"]["post"]["requestBody"]["content"]["application/json"];
 export type SearchResponse =
   paths["/v1/search"]["post"]["responses"][200]["content"]["application/json"];
 export type SearchResult = SearchResponse["items"][number];
@@ -201,6 +207,44 @@ export const api = {
     call<Evidence>(`/v1/evidence/${encodeURIComponent(chunkId)}`, { method: "GET" }),
 
   me: () => call<MeResponse>("/v1/me", { method: "GET" }),
+
+  /**
+   * The caller's own linked source identities.
+   *
+   * These are **not** integrations. A source identity is the namespaced provider subject
+   * — `{source_system}:{subject}` — that `document_acl` grants are written against, so
+   * linking one is what makes documents visible to a person. There is no OAuth here and
+   * no content is fetched; that is a different capability which does not exist yet.
+   */
+  myIdentities: () => call<SourceIdentityPage>("/v1/me/identities", { method: "GET" }),
+
+  /** One employee's linked identities. Requires `integration:read`. */
+  employeeIdentities: (userId: string) =>
+    call<SourceIdentityPage>(
+      `/v1/employees/${encodeURIComponent(userId)}/identities`,
+      { method: "GET" },
+    ),
+
+  /**
+   * Link a provider subject to an employee. Requires `integration:connect`.
+   *
+   * The API refuses to let an administrator link a subject to their **own** account, and
+   * that refusal is not a permission check — an Owner holds every permission, so gating
+   * it on one would make it no refusal at all. Expect a 403 for a self-link and surface
+   * it as the deliberate rule it is.
+   */
+  linkIdentity: (userId: string, body: LinkBody) =>
+    call<SourceIdentity>(`/v1/employees/${encodeURIComponent(userId)}/identities`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Revoke a link. Requires `integration:revoke`. The row is kept and marked inactive. */
+  revokeIdentity: (userId: string, identityId: string) =>
+    call<void>(
+      `/v1/employees/${encodeURIComponent(userId)}/identities/${encodeURIComponent(identityId)}`,
+      { method: "DELETE" },
+    ),
 
   currentOrganisation: () =>
     call<OrganisationResponse>("/v1/orgs/current", { method: "GET" }),

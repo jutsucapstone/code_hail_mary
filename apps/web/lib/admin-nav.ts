@@ -45,12 +45,21 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     slice: "P1",
   },
   {
-    slug: "integrations",
-    name: "Integrations",
-    description: "Connect the tools your organisation already runs on.",
+    // "Source identities", never "Integrations", and the distinction is load-bearing.
+    //
+    // A source identity is the namespaced provider subject that `document_acl` grants
+    // are written against, so linking one **grants document access**. An OAuth
+    // integration fetches content. They are different operations with different
+    // consequences, and the endpoints behind this section are the identity ones.
+    // Labelling them "Integrations" invites somebody to wire a Disconnect button to
+    // `DELETE .../identities/{id}` and silently revoke a colleague's access to
+    // documents. Connector management does not exist yet and is not this.
+    slug: "identities",
+    name: "Source identities",
+    description: "Which provider accounts each person is known by, and what that grants.",
     permission: "integration:read",
-    status: "pending",
-    slice: "P3",
+    status: "live",
+    slice: "P1",
   },
   {
     slug: "roles",

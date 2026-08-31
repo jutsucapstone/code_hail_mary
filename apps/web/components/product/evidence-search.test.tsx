@@ -1,8 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { EvidenceSearch } from "@/components/product/evidence-search";
+import {
+  calledMethod,
+  calledUrl,
+  envelope,
+  type Json,
+  pendingFetch,
+  scriptFetch,
+  sentBody,
+} from "@/test-support/api";
 
 /**
  * The retrieval surface, against a scripted `fetch`.
@@ -14,8 +23,6 @@ import { EvidenceSearch } from "@/components/product/evidence-search";
  * No network, no API process, no provider. A frontend test that reached Vertex would
  * bill CI per assertion.
  */
-
-type Json = Record<string, unknown>;
 
 const CHUNK = "11111111-1111-4111-8111-111111111111";
 const CHUNK_2 = "22222222-2222-4222-8222-222222222222";
@@ -43,30 +50,6 @@ function page(overrides: Json = {}): Json {
     query_tokens: 12,
     ...overrides,
   };
-}
-
-function envelope(code: string, message: string): Json {
-  return { error: { code, message, details: {} }, request_id: "req-abc" };
-}
-
-/** Script `fetch`. Returns the mock so a test can read what the client sent. */
-function scriptFetch(...responses: Array<{ status: number; body: Json }>) {
-  const fetchMock = vi.fn();
-  for (const { status, body } of responses) {
-    fetchMock.mockResolvedValueOnce({
-      ok: status >= 200 && status < 300,
-      status,
-      json: async () => body,
-    });
-  }
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-/** The JSON body of the nth `fetch` call. */
-function sentBody(fetchMock: ReturnType<typeof vi.fn>, index = 0): Json {
-  const init = fetchMock.mock.calls[index][1] as RequestInit;
-  return JSON.parse(String(init.body)) as Json;
 }
 
 async function search(user: ReturnType<typeof userEvent.setup>, query = "government affairs") {
@@ -100,8 +83,8 @@ describe("a successful search", () => {
     await search(user);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/jutsu/v1/search");
-    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    expect(calledUrl(fetchMock)).toBe("/api/jutsu/v1/search");
+    expect(calledMethod(fetchMock)).toBe("POST");
   });
 });
 
@@ -302,22 +285,13 @@ describe("documented failures", () => {
 describe("loading", () => {
   it("announces itself while the search is in flight", async () => {
     const user = userEvent.setup();
-    let release: (value: unknown) => void = () => {};
-    const pending = new Promise((resolve) => {
-      release = resolve;
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockReturnValue(
-        pending.then(() => ({ ok: true, status: 200, json: async () => page() })),
-      ),
-    );
+    const { release } = pendingFetch({ status: 200, body: page() });
     render(<EvidenceSearch />);
 
     await search(user);
 
     expect(await screen.findByText("Searching the corpus")).toBeInTheDocument();
-    release(null);
+    release();
     expect(await screen.findByText("California Update 5/17/01")).toBeInTheDocument();
   });
 });
@@ -347,8 +321,8 @@ describe("evidence", () => {
     await user.click(await screen.findByRole("button", { name: /view source span/i }));
 
     expect(await screen.findByText("the span from the evidence endpoint")).toBeInTheDocument();
-    expect(fetchMock.mock.calls[1][0]).toBe(`/api/jutsu/v1/evidence/${CHUNK}`);
-    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("GET");
+    expect(calledUrl(fetchMock, 1)).toBe(`/api/jutsu/v1/evidence/${CHUNK}`);
+    expect(calledMethod(fetchMock, 1)).toBe("GET");
   });
 
   it("reports a failed evidence fetch without destroying the results", async () => {

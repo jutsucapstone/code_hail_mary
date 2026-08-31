@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
-import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/admin/states";
+import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/states";
 import { Field } from "@/components/pilot/field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
