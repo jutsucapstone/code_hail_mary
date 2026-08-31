@@ -20,12 +20,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from jutsu_core import InternalError, JutsuError, ValidationFailed
+from jutsu_db.engine import ping as postgres_ping
 
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import evidence as evidence_router
 from jutsu_api.routers import identities as identities_router
 from jutsu_api.routers import me as me_router
+from jutsu_api.routers import operations as operations_router
 from jutsu_api.routers import orgs as orgs_router
 from jutsu_api.routers import search as search_router
 from jutsu_api.security import public
@@ -158,17 +160,23 @@ def create_app() -> FastAPI:
     @app.get("/readyz", tags=["ops"])
     @public("Readiness is polled by the platform, which holds no session.")
     async def readyz(request: Request) -> dict[str, Any]:
-        """Readiness — whether dependencies are reachable.
+        """Readiness — whether dependencies are actually reachable.
 
-        Reports `degraded` while there are no dependencies to check, rather than a bare
-        `ok`: an unconditional 200 here would make the Cloud Run health gate meaningless
-        the moment Postgres and Neo4j are wired in at S1/S2.
+        Postgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session
+        and runs `SELECT 1`, so "ok" means a connection was made and answered, not that a
+        URL is set. Neo4j stays `not_configured` honestly — the gateway takes no
+        dependency on `jutsu-graph` yet, and reporting a store this process never opens
+        would be a health check describing somebody else's health.
+
+        `ready` means **no probed dependency failed**. A `not_configured` entry is
+        reported but does not block readiness: it is a statement that this deployment
+        does not use the dependency, which is not an outage.
         """
         checks: dict[str, str] = {
-            "postgres": "not_configured",
+            "postgres": "ok" if await postgres_ping() else "failed",
             "neo4j": "not_configured",
         }
-        ready = all(v == "ok" for v in checks.values())
+        ready = all(v != "failed" for v in checks.values())
         return {
             "status": "ready" if ready else "degraded",
             "checks": checks,
@@ -182,6 +190,7 @@ def create_app() -> FastAPI:
     app.include_router(identities_router.router)
     app.include_router(evidence_router.router)
     app.include_router(search_router.router)
+    app.include_router(operations_router.router)
 
     return app
 

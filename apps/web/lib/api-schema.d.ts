@@ -33,13 +33,43 @@ export interface paths {
         };
         /**
          * Readyz
-         * @description Readiness — whether dependencies are reachable.
+         * @description Readiness — whether dependencies are actually reachable.
          *
-         *     Reports `degraded` while there are no dependencies to check, rather than a bare
-         *     `ok`: an unconditional 200 here would make the Cloud Run health gate meaningless
-         *     the moment Postgres and Neo4j are wired in at S1/S2.
+         *     Postgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session
+         *     and runs `SELECT 1`, so "ok" means a connection was made and answered, not that a
+         *     URL is set. Neo4j stays `not_configured` honestly — the gateway takes no
+         *     dependency on `jutsu-graph` yet, and reporting a store this process never opens
+         *     would be a health check describing somebody else's health.
+         *
+         *     `ready` means **no probed dependency failed**. A `not_configured` entry is
+         *     reported but does not block readiness: it is a statement that this deployment
+         *     does not use the dependency, which is not an outage.
          */
         get: operations["readyz_readyz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Audit
+         * @description The organisation's immutable trail, newest first.
+         *
+         *     Read-only is not a convention here — migration 0002 revoked UPDATE and DELETE on
+         *     `audit_log` from the application role, so this endpoint could not tamper with the
+         *     trail even if it were wrong.
+         */
+        get: operations["read_audit_v1_audit_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -211,6 +241,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/employees/{user_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Assign Role
+         * @description Change a member's role, inside the escalation rules.
+         *
+         *     The service refuses self-changes, refuses acting on a peer or superior, and refuses
+         *     granting a role at or above the actor's own rank — which makes `owner` structurally
+         *     unassignable here. Every successful change writes an audit row naming the actor and
+         *     both roles.
+         */
+        patch: operations["assign_role_v1_employees__user_id__role_patch"];
+        trace?: never;
+    };
     "/v1/evidence/{chunk_id}": {
         parameters: {
             query?: never;
@@ -229,6 +284,29 @@ export interface paths {
          *     another-tenant's, and not-granted-to-you.
          */
         get: operations["read_evidence_v1_evidence__chunk_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Invitations
+         * @description What happened to every invitation this organisation sent.
+         *
+         *     Gated on the same permission that sends them: an invitation is an email address, and
+         *     who may create that exposure may see its state — nobody with less.
+         */
+        get: operations["read_invitations_v1_invitations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -261,6 +339,46 @@ export interface paths {
          *     It carries no organisation identifier: the sign-in form does not ask for one.
          */
         post: operations["accept_v1_invitations_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Jobs
+         * @description Ingestion and embedding jobs, most recently touched first.
+         *
+         *     Carries the classified `failure_kind`, never the exception text: error strings can
+         *     embed file paths and provider payloads, which §4.9 keeps out of anything renderable.
+         */
+        get: operations["read_jobs_v1_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/jobs/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Jobs Stats */
+        get: operations["read_jobs_stats_v1_jobs_stats_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -378,6 +496,37 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /**
+         * Update Current Organisation
+         * @description Rename the organisation.
+         *
+         *     The one mutable field. The domain anchors registration's one-org-per-domain rule and
+         *     the verification trust chain, so it is deliberately not editable here — and there is
+         *     no `{org_id}` variant for the same reason there is none on GET.
+         */
+        patch: operations["update_current_organisation_v1_orgs_current_patch"];
+        trace?: never;
+    };
+    "/v1/orgs/current/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Overview
+         * @description Operational counts for the admin dashboard.
+         *
+         *     Separate from `/current` so the identity card does not pay for eight aggregate
+         *     subqueries on every load, and so a future cache can hold them for different times.
+         */
+        get: operations["read_overview_v1_orgs_current_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -433,6 +582,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Roles
+         * @description The role catalogue: every role, its rank and what it may do.
+         *
+         *     Read from the DATABASE, not from `jutsu_core.rbac`, deliberately. The database is the
+         *     runtime authority — migration 0002 seeds it and then revokes writes — and this
+         *     endpoint describing anything else would be the UI documenting the authoring copy
+         *     while enforcement follows the seeded one. `test_rbac_catalogue` asserts they are
+         *     identical, so in practice they agree; the principle is about which one answers.
+         *
+         *     The catalogue is org-independent by design, which is why nothing here filters by
+         *     tenant: roles and permissions are product vocabulary, not customer data.
+         */
+        get: operations["read_roles_v1_roles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/search": {
         parameters: {
             query?: never;
@@ -464,6 +642,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Sources
+         * @description Every knowledge source, with sync state and what it has produced.
+         *
+         *     Returns configuration *state*, never configuration *content* — `config_json` holds
+         *     corpus paths and connector settings that describe infrastructure, and no UI needs
+         *     them to render a health row.
+         */
+        get: operations["read_sources_v1_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -481,6 +683,39 @@ export interface components {
             destination: string;
             /** Jutsu Id */
             jutsu_id: string;
+        };
+        /** AuditEntry */
+        AuditEntry: {
+            /** Action */
+            action: string;
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Jutsu Id */
+            actor_jutsu_id: string | null;
+            /** Actor Type */
+            actor_type: string;
+            /** Correlation Id */
+            correlation_id: string | null;
+            /** Id */
+            id: number;
+            /** Outcome */
+            outcome: string;
+            /** Resource Id */
+            resource_id: string | null;
+            /** Resource Type */
+            resource_type: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+        };
+        /** AuditPageOut */
+        AuditPageOut: {
+            /** Items */
+            items: components["schemas"]["AuditEntry"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /**
          * Capabilities
@@ -599,6 +834,40 @@ export interface components {
              */
             status: string;
         };
+        /** InvitationEntry */
+        InvitationEntry: {
+            /** Accepted At */
+            accepted_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            role: components["schemas"]["Role"];
+            /** Status */
+            status: string;
+        };
+        /** InvitationPage */
+        InvitationPage: {
+            /** Items */
+            items: components["schemas"]["InvitationEntry"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /** InvitePayload */
         InvitePayload: {
             /**
@@ -607,6 +876,50 @@ export interface components {
              */
             email: string;
             role: components["schemas"]["Role"];
+        };
+        /** JobEntry */
+        JobEntry: {
+            /** Attempts */
+            attempts: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Failure Kind */
+            failure_kind: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** State */
+            state: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** JobPageOut */
+        JobPageOut: {
+            /** Items */
+            items: components["schemas"]["JobEntry"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** JobStatsOut */
+        JobStatsOut: {
+            /** By State */
+            by_state: {
+                [key: string]: number;
+            };
+            /** Dead Letter */
+            dead_letter: number;
+            /** Failed 24H */
+            failed_24h: number;
         };
         /** LinkPayload */
         LinkPayload: {
@@ -634,6 +947,16 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** OrgRenamePayload */
+        OrgRenamePayload: {
+            /** Name */
+            name: string;
+        };
+        /** OrgRenamed */
+        OrgRenamed: {
+            /** Name */
+            name: string;
+        };
         /** OrganisationProfile */
         OrganisationProfile: {
             /**
@@ -652,6 +975,28 @@ export interface components {
             size_band: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * OverviewOut
+         * @description The dashboard's operational figures. Every field is a count over a real table.
+         */
+        OverviewOut: {
+            /** Audit Events 24H */
+            audit_events_24h: number;
+            /** Documents */
+            documents: number;
+            /** Invitations Pending */
+            invitations_pending: number;
+            /** Jobs Dead Letter */
+            jobs_dead_letter: number;
+            /** Jobs Failed 24H */
+            jobs_failed_24h: number;
+            /** Jobs Pending */
+            jobs_pending: number;
+            /** Jobs Running */
+            jobs_running: number;
+            /** Sources */
+            sources: number;
         };
         /**
          * Permission
@@ -776,6 +1121,32 @@ export interface components {
          * @enum {string}
          */
         Role: "owner" | "super_admin" | "hr_admin" | "it_admin" | "analyst" | "viewer" | "member";
+        /** RoleCatalogue */
+        RoleCatalogue: {
+            /** Roles */
+            roles: components["schemas"]["RoleDescription"][];
+        };
+        /** RoleChangePayload */
+        RoleChangePayload: {
+            role: components["schemas"]["Role"];
+        };
+        /** RoleChanged */
+        RoleChanged: {
+            previous_role: components["schemas"]["Role"];
+            role: components["schemas"]["Role"];
+            /** User Id */
+            user_id: string;
+        };
+        /** RoleDescription */
+        RoleDescription: {
+            key: components["schemas"]["Role"];
+            /** Label */
+            label: string;
+            /** Permissions */
+            permissions: components["schemas"]["Permission"][];
+            /** Rank */
+            rank: number;
+        };
         /**
          * SearchRequest
          * @description What the caller may ask. Every field here is a *relevance* control.
@@ -860,6 +1231,22 @@ export interface components {
             /** Returned */
             returned: number;
         };
+        /** SourceEntry */
+        SourceEntry: {
+            /** Document Count */
+            document_count: number;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Sync At */
+            last_sync_at: string | null;
+            /** Status */
+            status: string;
+            /** System */
+            system: string;
+        };
         /** SourceIdentityPage */
         SourceIdentityPage: {
             /** Items */
@@ -891,6 +1278,11 @@ export interface components {
             source_system: components["schemas"]["SourceSystem"];
             /** Subject */
             subject: string;
+        };
+        /** SourcePageOut */
+        SourcePageOut: {
+            /** Items */
+            items: components["schemas"]["SourceEntry"][];
         };
         /**
          * SourceSystem
@@ -972,6 +1364,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    read_audit_v1_audit_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                action?: string | null;
+                outcome?: string | null;
+                resource_type?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1222,6 +1649,41 @@ export interface operations {
             };
         };
     };
+    assign_role_v1_employees__user_id__role_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoleChangePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleChanged"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_evidence_v1_evidence__chunk_id__get: {
         parameters: {
             query?: never;
@@ -1240,6 +1702,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EvidenceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_invitations_v1_invitations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationPage"];
                 };
             };
             /** @description Validation Error */
@@ -1282,6 +1776,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_jobs_v1_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                state?: string | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_jobs_stats_v1_jobs_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobStatsOut"];
                 };
             };
         };
@@ -1399,6 +1947,59 @@ export interface operations {
             };
         };
     };
+    update_current_organisation_v1_orgs_current_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgRenamePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRenamed"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_overview_v1_orgs_current_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OverviewOut"];
+                };
+            };
+        };
+    };
     register_v1_orgs_register_post: {
         parameters: {
             query?: never;
@@ -1465,6 +2066,26 @@ export interface operations {
             };
         };
     };
+    read_roles_v1_roles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCatalogue"];
+                };
+            };
+        };
+    };
     search_v1_search_post: {
         parameters: {
             query?: never;
@@ -1494,6 +2115,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_sources_v1_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcePageOut"];
                 };
             };
         };

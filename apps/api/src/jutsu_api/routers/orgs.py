@@ -10,6 +10,7 @@ endpoint — without it, anyone could probe domains to learn which companies use
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -24,6 +25,7 @@ from jutsu_api.config import OTP_DIGITS, Settings, get_settings
 from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
 from jutsu_api.email import EmailSender, send_best_effort
 from jutsu_api.emails import organisation_welcome
+from jutsu_api.operations import org_overview, rename_organisation
 from jutsu_api.registration import (
     RegistrationRequest,
     complete_registration,
@@ -301,3 +303,55 @@ async def read_current_organisation(
             admins=admins,
         ),
     )
+
+
+class OrgRenamePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class OrgRenamed(BaseModel):
+    name: str
+
+
+class OverviewOut(BaseModel):
+    """The dashboard's operational figures. Every field is a count over a real table."""
+
+    documents: int
+    sources: int
+    jobs_pending: int
+    jobs_running: int
+    jobs_failed_24h: int
+    jobs_dead_letter: int
+    invitations_pending: int
+    audit_events_24h: int
+
+
+@router.patch("/current")
+@requires(Permission.ORG_UPDATE)
+async def update_current_organisation(
+    payload: OrgRenamePayload, principal: CurrentPrincipal, session: Db
+) -> OrgRenamed:
+    """Rename the organisation.
+
+    The one mutable field. The domain anchors registration's one-org-per-domain rule and
+    the verification trust chain, so it is deliberately not editable here — and there is
+    no `{org_id}` variant for the same reason there is none on GET.
+    """
+    name = await rename_organisation(
+        session, org_id=principal.org_id, actor_user_id=principal.user_id, name=payload.name
+    )
+    return OrgRenamed(name=name)
+
+
+@router.get("/current/overview")
+@requires(Permission.ORG_READ)
+async def read_overview(principal: CurrentPrincipal, session: Db) -> OverviewOut:
+    """Operational counts for the admin dashboard.
+
+    Separate from `/current` so the identity card does not pay for eight aggregate
+    subqueries on every load, and so a future cache can hold them for different times.
+    """
+    overview = await org_overview(session)
+    return OverviewOut(**asdict(overview))

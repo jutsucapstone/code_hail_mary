@@ -24,11 +24,22 @@ class TestHealth:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
 
-    def test_readyz_is_degraded_until_dependencies_exist(self, client: TestClient) -> None:
-        """An unconditional 200 would make the Cloud Run gate meaningless at S1."""
+    def test_readyz_probes_postgres_for_real(self, client: TestClient) -> None:
+        """`ok` must mean a connection answered, `failed` that one did not.
+
+        The check used to be a hardcoded literal that reported `degraded`
+        unconditionally, which made the Cloud Run gate a decoration. Now the answer is
+        whatever `jutsu_db.engine.ping()` actually observed — so this test accepts
+        either verdict but refuses the one value that can no longer occur: a claim that
+        Postgres is not configured at all.
+        """
         body = client.get("/readyz").json()
-        assert body["status"] == "degraded"
-        assert body["checks"]["postgres"] == "not_configured"
+        assert body["checks"]["postgres"] in ("ok", "failed")
+        assert body["checks"]["neo4j"] == "not_configured"
+        # Readiness follows the probe: a reachable database is ready even while Neo4j
+        # is honestly not configured; an unreachable one is degraded.
+        expected = "ready" if body["checks"]["postgres"] == "ok" else "degraded"
+        assert body["status"] == expected
 
 
 class TestRequestId:

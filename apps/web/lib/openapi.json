@@ -42,6 +42,121 @@
         "title": "AcceptResult",
         "type": "object"
       },
+      "AuditEntry": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_jutsu_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Jutsu Id"
+          },
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "resource_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Id"
+          },
+          "resource_type": {
+            "title": "Resource Type",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "actor_id",
+          "actor_jutsu_id",
+          "actor_type",
+          "action",
+          "resource_type",
+          "resource_id",
+          "outcome",
+          "ts",
+          "correlation_id"
+        ],
+        "title": "AuditEntry",
+        "type": "object"
+      },
+      "AuditPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "AuditPageOut",
+        "type": "object"
+      },
       "Capabilities": {
         "description": "The caller's own identity and permission set.\n\n`org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they\ndescribe, and they are what the UI uses for its own routing \u2014 but they are never\naccepted back as an authorisation input, which is why no endpoint takes an org id\nfrom the client.",
         "properties": {
@@ -292,6 +407,100 @@
         "title": "InvitationAccepted",
         "type": "object"
       },
+      "InvitationEntry": {
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "status",
+          "created_at",
+          "expires_at",
+          "accepted_at",
+          "revoked_at"
+        ],
+        "title": "InvitationEntry",
+        "type": "object"
+      },
+      "InvitationPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvitationEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "InvitationPage",
+        "type": "object"
+      },
       "InvitePayload": {
         "additionalProperties": false,
         "properties": {
@@ -309,6 +518,113 @@
           "role"
         ],
         "title": "InvitePayload",
+        "type": "object"
+      },
+      "JobEntry": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Kind"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "attempts",
+          "failure_kind",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobEntry",
+        "type": "object"
+      },
+      "JobPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "JobPageOut",
+        "type": "object"
+      },
+      "JobStatsOut": {
+        "properties": {
+          "by_state": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By State",
+            "type": "object"
+          },
+          "dead_letter": {
+            "title": "Dead Letter",
+            "type": "integer"
+          },
+          "failed_24h": {
+            "title": "Failed 24H",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_state",
+          "dead_letter",
+          "failed_24h"
+        ],
+        "title": "JobStatsOut",
         "type": "object"
       },
       "LinkPayload": {
@@ -363,6 +679,35 @@
           "admins"
         ],
         "title": "MemberCounts",
+        "type": "object"
+      },
+      "OrgRenamePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "OrgRenamePayload",
+        "type": "object"
+      },
+      "OrgRenamed": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "OrgRenamed",
         "type": "object"
       },
       "OrganisationProfile": {
@@ -420,6 +765,55 @@
           "members"
         ],
         "title": "OrganisationProfile",
+        "type": "object"
+      },
+      "OverviewOut": {
+        "description": "The dashboard's operational figures. Every field is a count over a real table.",
+        "properties": {
+          "audit_events_24h": {
+            "title": "Audit Events 24H",
+            "type": "integer"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "invitations_pending": {
+            "title": "Invitations Pending",
+            "type": "integer"
+          },
+          "jobs_dead_letter": {
+            "title": "Jobs Dead Letter",
+            "type": "integer"
+          },
+          "jobs_failed_24h": {
+            "title": "Jobs Failed 24H",
+            "type": "integer"
+          },
+          "jobs_pending": {
+            "title": "Jobs Pending",
+            "type": "integer"
+          },
+          "jobs_running": {
+            "title": "Jobs Running",
+            "type": "integer"
+          },
+          "sources": {
+            "title": "Sources",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documents",
+          "sources",
+          "jobs_pending",
+          "jobs_running",
+          "jobs_failed_24h",
+          "jobs_dead_letter",
+          "invitations_pending",
+          "audit_events_24h"
+        ],
+        "title": "OverviewOut",
         "type": "object"
       },
       "Permission": {
@@ -784,6 +1178,86 @@
         "title": "Role",
         "type": "string"
       },
+      "RoleCatalogue": {
+        "properties": {
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/RoleDescription"
+            },
+            "title": "Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "roles"
+        ],
+        "title": "RoleCatalogue",
+        "type": "object"
+      },
+      "RoleChangePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "RoleChangePayload",
+        "type": "object"
+      },
+      "RoleChanged": {
+        "properties": {
+          "previous_role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "role",
+          "previous_role"
+        ],
+        "title": "RoleChanged",
+        "type": "object"
+      },
+      "RoleDescription": {
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "rank",
+          "permissions"
+        ],
+        "title": "RoleDescription",
+        "type": "object"
+      },
       "SearchRequest": {
         "description": "What the caller may ask. Every field here is a *relevance* control.\n\nThere is deliberately no filter over documents, sources, people or dates. Not because\nfiltering is unwanted \u2014 \u00a712 will want it \u2014 but because each one has to be pushed\ninto the same SQL that carries `ACL_PREDICATE`, and a filter applied after the ACL\nis a filter that can be made to reveal counts. They arrive with the query that\nsupports them, not before.",
         "properties": {
@@ -943,6 +1417,48 @@
         "title": "SearchStatsView",
         "type": "object"
       },
+      "SourceEntry": {
+        "properties": {
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "system",
+          "status",
+          "last_sync_at",
+          "document_count"
+        ],
+        "title": "SourceEntry",
+        "type": "object"
+      },
       "SourceIdentityPage": {
         "properties": {
           "items": {
@@ -1009,6 +1525,22 @@
           "linked_by"
         ],
         "title": "SourceIdentityView",
+        "type": "object"
+      },
+      "SourcePageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SourceEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SourcePageOut",
         "type": "object"
       },
       "SourceSystem": {
@@ -1136,7 +1668,7 @@
     },
     "/readyz": {
       "get": {
-        "description": "Readiness \u2014 whether dependencies are reachable.\n\nReports `degraded` while there are no dependencies to check, rather than a bare\n`ok`: an unconditional 200 here would make the Cloud Run health gate meaningless\nthe moment Postgres and Neo4j are wired in at S1/S2.",
+        "description": "Readiness \u2014 whether dependencies are actually reachable.\n\nPostgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session\nand runs `SELECT 1`, so \"ok\" means a connection was made and answered, not that a\nURL is set. Neo4j stays `not_configured` honestly \u2014 the gateway takes no\ndependency on `jutsu-graph` yet, and reporting a store this process never opens\nwould be a health check describing somebody else's health.\n\n`ready` means **no probed dependency failed**. A `not_configured` entry is\nreported but does not block readiness: it is a statement that this deployment\ndoes not use the dependency, which is not an outage.",
         "operationId": "readyz_readyz_get",
         "responses": {
           "200": {
@@ -1155,6 +1687,120 @@
         "summary": "Readyz",
         "tags": [
           "ops"
+        ]
+      }
+    },
+    "/v1/audit": {
+      "get": {
+        "description": "The organisation's immutable trail, newest first.\n\nRead-only is not a convention here \u2014 migration 0002 revoked UPDATE and DELETE on\n`audit_log` from the application role, so this endpoint could not tamper with the\ntrail even if it were wrong.",
+        "operationId": "read_audit_v1_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outcome"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Audit",
+        "tags": [
+          "operations"
         ]
       }
     },
@@ -1519,6 +2165,60 @@
         ]
       }
     },
+    "/v1/employees/{user_id}/role": {
+      "patch": {
+        "description": "Change a member's role, inside the escalation rules.\n\nThe service refuses self-changes, refuses acting on a peer or superior, and refuses\ngranting a role at or above the actor's own rank \u2014 which makes `owner` structurally\nunassignable here. Every successful change writes an audit row naming the actor and\nboth roles.",
+        "operationId": "assign_role_v1_employees__user_id__role_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleChangePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleChanged"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign Role",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
     "/v1/evidence/{chunk_id}": {
       "get": {
         "description": "The source span behind one citation, if this caller may read it.\n\nA chunk the caller is not granted is **404, not 403**. A 403 would confirm that the\nchunk exists, which turns this endpoint into an oracle: walk ids, read the status\ncodes, and recover the shape of a tenant's document population without ever being\nauthorized to read one. `NotFound` is the single answer for never-existed,\nanother-tenant's, and not-granted-to-you.",
@@ -1563,6 +2263,69 @@
         ]
       }
     },
+    "/v1/invitations": {
+      "get": {
+        "description": "What happened to every invitation this organisation sent.\n\nGated on the same permission that sends them: an invitation is an email address, and\nwho may create that exposure may see its state \u2014 nobody with less.",
+        "operationId": "read_invitations_v1_invitations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Invitations",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
     "/v1/invitations/accept": {
       "post": {
         "description": "Join an organisation, and sign in.\n\nNo second code is sent. The token reached the invited address and nowhere else, so\nholding it already proves the same thing an emailed code would \u2014 sending another\nwould be ceremony, not security.\n\nA welcome does go out, and it is not ceremony. `jutsu_id` below is shown on exactly\none screen, and the console asks for it by name at every subsequent sign-in \u2014 so a\nclosed tab currently costs somebody their identifier and an email to their\nadministrator. The message carries that, their role and the address to sign in with.\nIt carries no organisation identifier: the sign-in form does not ask for one.",
@@ -1602,6 +2365,124 @@
         "summary": "Accept",
         "tags": [
           "employees"
+        ]
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "description": "Ingestion and embedding jobs, most recently touched first.\n\nCarries the classified `failure_kind`, never the exception text: error strings can\nembed file paths and provider payloads, which \u00a74.9 keeps out of anything renderable.",
+        "operationId": "read_jobs_v1_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Jobs",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/jobs/stats": {
+      "get": {
+        "operationId": "read_jobs_stats_v1_jobs_stats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Jobs Stats",
+        "tags": [
+          "operations"
         ]
       }
     },
@@ -1731,6 +2612,68 @@
         "tags": [
           "orgs"
         ]
+      },
+      "patch": {
+        "description": "Rename the organisation.\n\nThe one mutable field. The domain anchors registration's one-org-per-domain rule and\nthe verification trust chain, so it is deliberately not editable here \u2014 and there is\nno `{org_id}` variant for the same reason there is none on GET.",
+        "operationId": "update_current_organisation_v1_orgs_current_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgRenamePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgRenamed"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Current Organisation",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/v1/orgs/current/overview": {
+      "get": {
+        "description": "Operational counts for the admin dashboard.\n\nSeparate from `/current` so the identity card does not pay for eight aggregate\nsubqueries on every load, and so a future cache can hold them for different times.",
+        "operationId": "read_overview_v1_orgs_current_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Overview",
+        "tags": [
+          "orgs"
+        ]
       }
     },
     "/v1/orgs/register": {
@@ -1817,6 +2760,28 @@
         ]
       }
     },
+    "/v1/roles": {
+      "get": {
+        "description": "The role catalogue: every role, its rank and what it may do.\n\nRead from the DATABASE, not from `jutsu_core.rbac`, deliberately. The database is the\nruntime authority \u2014 migration 0002 seeds it and then revokes writes \u2014 and this\nendpoint describing anything else would be the UI documenting the authoring copy\nwhile enforcement follows the seeded one. `test_rbac_catalogue` asserts they are\nidentical, so in practice they agree; the principle is about which one answers.\n\nThe catalogue is org-independent by design, which is why nothing here filters by\ntenant: roles and permissions are product vocabulary, not customer data.",
+        "operationId": "read_roles_v1_roles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleCatalogue"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Roles",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/v1/search": {
       "post": {
         "description": "Top-`k` chunks this caller is authorized to read, nearest first.\n\nThe order of these three steps is the cost control, and it is not arbitrary.\n\nThe cursor is validated first, so a malformed pagination token is a free 422 rather\nthan one that has already paid the provider. The budget is spent second \u2014 **before**\nthe embedding call, so a caller over their limit costs nothing at all. The paid call\nhappens last, once the request is known to be well formed and permitted.\n\nThe spend commits on its own session, so a failure after this point still consumes\nthe quota. That is the policy: an attempt is what costs money, and counting only\nsuccesses would leave a caller whose requests all fail with no limit at all.",
@@ -1856,6 +2821,28 @@
         "summary": "Search",
         "tags": [
           "search"
+        ]
+      }
+    },
+    "/v1/sources": {
+      "get": {
+        "description": "Every knowledge source, with sync state and what it has produced.\n\nReturns configuration *state*, never configuration *content* \u2014 `config_json` holds\ncorpus paths and connector settings that describe infrastructure, and no UI needs\nthem to render a health row.",
+        "operationId": "read_sources_v1_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourcePageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Sources",
+        "tags": [
+          "operations"
         ]
       }
     }

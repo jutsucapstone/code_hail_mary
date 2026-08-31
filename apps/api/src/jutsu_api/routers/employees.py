@@ -1,17 +1,23 @@
-"""People in an organisation: listing them, inviting them, and joining.
+"""People in an organisation: listing them, inviting them, joining, and role changes.
 
-Three routes with three different guards, and the differences are the design:
+Five routes with different guards, and the differences are the design:
 
-  GET  /v1/employees              requires member:read
-  POST /v1/employees/invitations  requires member:invite
-  POST /v1/invitations/accept     public — the invitee has no session yet; the
-                                  invitation token is what proves who they are
+  GET   /v1/employees                  requires member:read
+  POST  /v1/employees/invitations      requires member:invite
+  GET   /v1/invitations                requires member:invite — who may send them may
+                                       see what happened to them
+  PATCH /v1/employees/{id}/role        requires member:assign_role, plus the rank rules
+                                       the service enforces
+  POST  /v1/invitations/accept         public — the invitee has no session yet; the
+                                       invitation token is what proves who they are
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from jutsu_core.rbac import Permission, Role, role_label
@@ -23,6 +29,7 @@ from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
 from jutsu_api.email import EmailSender, send_best_effort
 from jutsu_api.emails import employee_welcome
 from jutsu_api.invitations import accept_invitation, invite_employee, list_employees
+from jutsu_api.operations import change_member_role, list_invitations
 from jutsu_api.routers.auth import set_session_cookies
 from jutsu_api.security import GuardedAPIRoute, destination_for, public, requires
 
@@ -121,6 +128,81 @@ async def create_invitation(
         sender=sender,
     )
     return InvitationAccepted()
+
+
+class InvitationEntry(BaseModel):
+    id: UUID
+    email: str
+    role: Role
+    #: Derived server-side: pending | accepted | revoked | expired.
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    accepted_at: datetime | None
+    revoked_at: datetime | None
+
+
+class InvitationPage(BaseModel):
+    items: list[InvitationEntry]
+    next_cursor: str | None
+
+
+class RoleChangePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    role: Role
+
+
+class RoleChanged(BaseModel):
+    user_id: str
+    role: Role
+    previous_role: Role
+
+
+@router.get("/invitations")
+@requires(Permission.MEMBER_INVITE)
+async def read_invitations(
+    principal: CurrentPrincipal,
+    session: Db,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    cursor: Annotated[str | None, Query(max_length=128)] = None,
+) -> InvitationPage:
+    """What happened to every invitation this organisation sent.
+
+    Gated on the same permission that sends them: an invitation is an email address, and
+    who may create that exposure may see its state — nobody with less.
+    """
+    page = await list_invitations(session, limit=limit, cursor=cursor)
+    return InvitationPage(
+        items=[InvitationEntry(**asdict(row)) for row in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.patch("/employees/{user_id}/role")
+@requires(Permission.MEMBER_ASSIGN_ROLE)
+async def assign_role(
+    user_id: UUID,
+    payload: RoleChangePayload,
+    principal: CurrentPrincipal,
+    session: Db,
+) -> RoleChanged:
+    """Change a member's role, inside the escalation rules.
+
+    The service refuses self-changes, refuses acting on a peer or superior, and refuses
+    granting a role at or above the actor's own rank — which makes `owner` structurally
+    unassignable here. Every successful change writes an audit row naming the actor and
+    both roles.
+    """
+    previous = await change_member_role(
+        session,
+        actor_user_id=principal.user_id,
+        actor_role=principal.role,
+        target_user_id=user_id,
+        new_role=payload.role,
+        org_id=principal.org_id,
+    )
+    return RoleChanged(user_id=str(user_id), role=payload.role, previous_role=previous)
 
 
 @router.post("/invitations/accept")
