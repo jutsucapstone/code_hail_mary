@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AnnouncementBar } from "@/components/site/announcement-bar";
 import { SiteHeader } from "@/components/site/site-header";
+import { cn } from "@/lib/utils";
 
 /**
  * The fixed top chrome: announcement bar stacked above the header.
@@ -20,6 +21,18 @@ import { SiteHeader } from "@/components/site/site-header";
  */
 export function SiteChrome() {
   const ref = useRef<HTMLDivElement | null>(null);
+  const [condensed, setCondensed] = useState(false);
+
+  // Past the hero's first breath, the announcement yields its row to content.
+  // The grid-rows trick animates an unknown height; the ResizeObserver below
+  // sees the collapse and republishes --chrome-h, so anchors stay correct in
+  // both states without a second magic number.
+  useEffect(() => {
+    const onScroll = () => setCondensed(window.scrollY > 96);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -63,7 +76,16 @@ export function SiteChrome() {
 
   return (
     <div ref={ref} className="fixed inset-x-0 top-0 z-50">
-      <AnnouncementBar />
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-300 ease-out",
+          condensed ? "grid-rows-[0fr]" : "grid-rows-[1fr]",
+        )}
+      >
+        <div className="overflow-hidden">
+          <AnnouncementBar />
+        </div>
+      </div>
       <SiteHeader />
     </div>
   );

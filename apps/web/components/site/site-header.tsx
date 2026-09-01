@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { motion, useReducedMotion } from "framer-motion";
 import { LogIn, Menu, X } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
@@ -13,9 +14,55 @@ import { consoleCta, contact, nav, siteConfig } from "@/lib/content";
 import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { cn } from "@/lib/utils";
 
+/**
+ * Which section owns the viewport right now, for the nav's active underline.
+ *
+ * One observer over the sections the nav actually links to, watching a band just
+ * above the vertical middle: a heading crossing eye level is what a reader means
+ * by "I am in this section now". Ties resolve to the entry nearest the top, and
+ * scrolling back above the first section clears the underline entirely — the nav
+ * should not claim you are reading "Problem" while the hero fills the screen.
+ */
+function useActiveSection(ids: readonly string[]) {
+  const [active, setActive] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sections = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    if (sections.length === 0) return;
+
+    const visible = new Map<string, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) visible.set(entry.target.id, entry.boundingClientRect.top);
+          else visible.delete(entry.target.id);
+        }
+        if (visible.size === 0) {
+          setActive(null);
+          return;
+        }
+        const [topmost] = [...visible.entries()].sort((a, b) => a[1] - b[1]);
+        setActive(topmost[0]);
+      },
+      // The band: from just under the chrome down to 45% of the viewport.
+      { rootMargin: "-15% 0px -55% 0px" },
+    );
+    for (const section of sections) observer.observe(section);
+    return () => observer.disconnect();
+  }, [ids]);
+
+  return active;
+}
+
+const NAV_SECTION_IDS = nav.map((item) => item.href.replace("#", ""));
+
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const activeSection = useActiveSection(NAV_SECTION_IDS);
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -45,13 +92,18 @@ export function SiteHeader() {
   return (
     <header
       className={cn(
-        "relative transition-[background-color,border-color,backdrop-filter] duration-300",
+        "relative transition-[background-color,border-color,backdrop-filter,box-shadow] duration-300",
         scrolled || menuOpen
-          ? "border-b border-hairline bg-background/80 backdrop-blur-xl"
+          ? "border-b border-hairline bg-background/85 shadow-lg shadow-foreground/[0.04] backdrop-blur-xl"
           : "border-b border-transparent bg-transparent",
       )}
     >
-      <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-6 px-6 lg:h-18 lg:px-8">
+      <div
+        className={cn(
+          "mx-auto flex w-full max-w-7xl items-center justify-between gap-6 px-6 transition-[height] duration-300 lg:px-8",
+          scrolled ? "h-14 lg:h-15" : "h-16 lg:h-18",
+        )}
+      >
         <a
           href="#hero"
           className="group flex items-center gap-2.5 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand"
@@ -66,22 +118,49 @@ export function SiteHeader() {
 
         <nav aria-label="Primary" className="hidden lg:block">
           <ul className="flex items-center gap-1">
-            {nav.map((item) => (
-              <li key={item.href}>
-                <a
-                  href={item.href}
-                  className="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                >
-                  {item.label}
-                </a>
-              </li>
-            ))}
+            {nav.map((item) => {
+              const isActive = activeSection === item.href.replace("#", "");
+              return (
+                <li key={item.href} className="relative">
+                  <a
+                    href={item.href}
+                    aria-current={isActive ? "true" : undefined}
+                    className={cn(
+                      "rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                      isActive
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {item.label}
+                  </a>
+                  {/* One underline slides between links (a shared layoutId) rather
+                      than five fading in and out — the sliding is what tells the
+                      eye these are positions on one track, not separate toggles. */}
+                  {isActive ? (
+                    <motion.span
+                      layoutId="site-nav-underline"
+                      transition={
+                        shouldReduceMotion
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 500, damping: 40 }
+                      }
+                      className="absolute inset-x-3 -bottom-0.5 h-[2px] rounded-full bg-brand"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         </nav>
 
         <div className="flex items-center gap-2">
           <FeedbackToggle className="hidden sm:inline-flex" />
           <ThemeToggle className="hidden sm:inline-flex" />
+          {/* A hairline seam between the page's controls and the account doors:
+              two different kinds of act, and the seam says so without a label. */}
+          <span aria-hidden="true" className="mx-1 hidden h-5 w-px bg-hairline-strong sm:block" />
           {/* The way back in, for people who already have an account.
               Outlined rather than filled: the marketing page's job is still to convert a
               visitor, so this must not compete with "Request a pilot" — but a returning
