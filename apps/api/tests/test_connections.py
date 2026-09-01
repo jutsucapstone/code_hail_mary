@@ -502,3 +502,94 @@ class TestGovernance:
                 ),
                 {"org": org_id, "user": me["user_id"], "provider": provider_id},
             )
+
+
+# --------------------------------------------------------------------------------------
+# Sync now — the durable row and the doorbell
+# --------------------------------------------------------------------------------------
+
+
+class TestSyncNow:
+    @pytest.fixture
+    def rung(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        """Record doorbell rings instead of publishing to Redis inside a unit test."""
+        calls: list[object] = []
+
+        async def _record(org_id: object) -> bool:
+            calls.append(org_id)
+            return True
+
+        monkeypatch.setattr("jutsu_api.routers.connections.ring_doorbell", _record)
+        return calls
+
+    async def test_sync_returns_the_job_that_will_actually_run(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        rung: list[object],
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+
+        first = await client.post(f"/v1/me/connections/{connection_id}/sync", headers=csrf(client))
+        assert first.status_code == 202, first.text
+        job_id = first.json()["job_id"]
+
+        row = (
+            await inspector.execute(
+                text("SELECT id::text, state FROM jobs WHERE kind = 'connector.sync'")
+            )
+        ).one()
+        assert row.id == job_id, "the reported id names the row that will run"
+        assert row.state == "pending"
+
+        # A second click while it is queued reports the SAME job, not a phantom id.
+        second = await client.post(f"/v1/me/connections/{connection_id}/sync", headers=csrf(client))
+        assert second.json()["job_id"] == job_id
+        assert len(rung) == 2, "every request rings the doorbell"
+
+    async def test_a_finished_sync_is_reopened_not_shadowed_forever(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        rung: list[object],
+        inspector: AsyncSession,
+    ) -> None:
+        """A failed sync must not hold the idempotency key against every future click.
+
+        The walk refuses to reopen failures because an automatic loop retries them for
+        ever; here each attempt is one human click, so reopening is the honest choice —
+        the alternative is a Sync button that silently does nothing for the rest of time.
+        """
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+
+        first = await client.post(f"/v1/me/connections/{connection_id}/sync", headers=csrf(client))
+        job_id = first.json()["job_id"]
+        await inspector.execute(
+            text(
+                "UPDATE jobs SET state = 'failed', attempts = 3, "
+                "failure_kind = 'source_unavailable' WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+        await inspector.commit()
+
+        again = await client.post(f"/v1/me/connections/{connection_id}/sync", headers=csrf(client))
+        assert again.status_code == 202
+        assert again.json()["job_id"] == job_id
+
+        row = (
+            await inspector.execute(
+                text("SELECT state, attempts, failure_kind FROM jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+        ).one()
+        assert row.state == "pending"
+        assert row.attempts == 0
+        assert row.failure_kind is None

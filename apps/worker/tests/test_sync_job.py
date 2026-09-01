@@ -161,3 +161,42 @@ class TestSyncJob:
 
         outcome = await process_connector_sync(org_id)
         assert outcome is None
+
+
+class TestDrainOrg:
+    """The per-org drain — the worker half of the doorbell (ADR 0012)."""
+
+    async def test_one_drain_resolves_the_backlog_and_then_reports_idle(self) -> None:
+        from jutsu_worker.runner import drain_org
+
+        org_id = uuid.uuid4()
+        _connection_id, job_id = await seed_connection_and_job(org_id)
+
+        counts = await drain_org(org_id)
+        assert counts["connector.sync"] == 1, "the queued sync was claimed and resolved"
+
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+            ).one()
+            assert job.state in ("failed", "dead_letter")
+
+        # A second drain finds nothing claimable and stops instead of spinning.
+        again = await drain_org(org_id)
+        assert sum(again.values()) == 0
+
+    async def test_a_drain_for_one_org_never_claims_anothers_jobs(self) -> None:
+        from jutsu_worker.runner import drain_org
+
+        org_a = uuid.uuid4()
+        org_b = uuid.uuid4()
+        _conn_a, job_a = await seed_connection_and_job(org_a)
+
+        counts = await drain_org(org_b)
+        assert sum(counts.values()) == 0, "org B holds no jobs, and A's are invisible to it"
+
+        async with org_session(org_a) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_a})
+            ).one()
+            assert job.state == "pending", "another org's drain must not have touched it"

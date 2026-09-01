@@ -29,6 +29,7 @@ from sqlalchemy import text
 
 from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.runner import (
+    drain_org,
     process_connector_sync,
     process_document,
     process_embedding,
@@ -121,6 +122,22 @@ async def extract_document_job(
     return result if isinstance(result, int) else None
 
 
+async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
+    """Dispatch entry point for the per-org drain — the doorbell the API rings.
+
+    The org id is a hint about where to look, never an authorization: every query the
+    drain runs is scoped by row-level security to exactly that organisation. One message
+    drains the org's whole backlog, so a doorbell lost to a Redis restart is recovered
+    by the next one for the same org (ADR 0012: Postgres is the queue, Redis is only
+    the doorbell).
+    """
+    counts = await drain_org(uuid.UUID(org_id))
+    ran = sum(counts.values())
+    if ran:
+        logger.info("%s", {"event": "org_drained", "org_id": org_id, "jobs": ran})
+    return counts
+
+
 async def reap_expired_registrations(ctx: dict[str, Any]) -> int:
     """Delete staged registrations, challenges and rate-limit rows that have aged out.
 
@@ -156,6 +173,7 @@ class WorkerSettings:
         embed_document,
         sync_connection,
         extract_document_job,
+        drain_org_jobs,
     ]
 
     #: `run_at_startup` so a deploy clears whatever accumulated while nothing was

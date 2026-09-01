@@ -241,3 +241,99 @@ async def process_extraction(
         state = await _record_failure(job, error)
         logger.info("extraction_job_failed job=%s state=%s", job.id, state.value)
         return JOB_FAILED
+
+
+async def drain_org(
+    org_id: uuid.UUID,
+    *,
+    embedder_factory: object | None = None,
+    extraction_transport: ExtractionTransport | None = None,
+    max_jobs: int = 500,
+) -> dict[str, int]:
+    """Run every claimable job for one organisation until its queue is idle.
+
+    This is the multi-tenant dispatcher's per-org half. The API cannot enumerate
+    organisations (RLS holds it to one) and the worker must not (a cross-tenant sweep
+    is the service-role bypass ADR 0012 refuses), so the org id always arrives from a
+    caller that already held it — the doorbell message the API publishes when it
+    enqueues a job. One doorbell drains the whole backlog for that org, which is what
+    makes a lost doorbell recoverable: any later doorbell for the same org picks up
+    everything the lost one would have.
+
+    Jobs are attempted in dependency order so one pass tends to carry a document from
+    walk to extraction. `max_jobs` bounds a pathological queue; the counts returned are
+    observability, not authority — the jobs table is.
+
+    Embedding jobs are attempted only when the embedding provider is configured;
+    unconfigured, they stay `pending` where the Jobs page can see them, which is the
+    honest outcome. Extraction jobs are gated at enqueue time already.
+    """
+    from jutsu_retrieval.client import VertexTransport
+    from jutsu_retrieval.config import MissingEmbeddingSettings, get_embedding_settings
+
+    counts = {
+        "ingest.source": 0,
+        "ingest.document": 0,
+        "embed.document": 0,
+        "connector.sync": 0,
+        "extract.document": 0,
+    }
+    ran = 0
+
+    embedder: Embedder | None = None
+    transport: VertexTransport | None = None
+    if embedder_factory is not None:
+        embedder = embedder_factory()  # type: ignore[operator]
+    else:
+        try:
+            settings = get_embedding_settings()
+        except MissingEmbeddingSettings:
+            settings = None
+        if settings is not None:
+            transport = VertexTransport(settings)
+            embedder = Embedder(transport, settings)
+
+    try:
+        while ran < max_jobs:
+            progressed = False
+
+            if await process_connector_sync(org_id) is not None:
+                counts["connector.sync"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            # A source walk enqueues document jobs; documents enqueue embeds; embeds
+            # enqueue extraction. Trying in this order lets one drain finish a chain.
+            sources_claimed = await process_source(org_id, uuid.uuid4())
+            if sources_claimed:
+                counts["ingest.source"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            if await process_document(org_id) is not None:
+                counts["ingest.document"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            if embedder is not None and await process_embedding(org_id, embedder) is not None:
+                counts["embed.document"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            if await process_extraction(org_id, transport=extraction_transport) is not None:
+                counts["extract.document"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            if not progressed:
+                break
+    finally:
+        if transport is not None:
+            await transport.aclose()
+
+    return counts

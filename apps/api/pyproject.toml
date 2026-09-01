@@ -13,6 +13,10 @@ dependencies = [
     "httpx>=0.28.1",
     "cryptography>=50.0.1",
     "anthropic>=1.2.0",
+    # The doorbell half of ADR 0012: the API publishes a per-org drain message after it
+    # enqueues a durable job row. Postgres remains the queue; losing the message loses
+    # nothing but latency.
+    "arq>=0.26",
 ]
 
 [dependency-groups]

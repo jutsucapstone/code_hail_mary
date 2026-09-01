@@ -748,10 +748,17 @@ async def sync_now(
 ) -> UUID:
     """Queue a sync for the caller's own connected integration.
 
-    Enqueues a real row in the same durable queue ingestion uses. The worker grows a
-    handler for `connector.sync` when the first provider fetcher lands; until then the
-    job waits honestly in `pending` where the Jobs page can see it — it is never
-    reported as synced.
+    Enqueues a real row in the same durable queue ingestion uses; the worker's
+    `connector.sync` handler claims it from there. The idempotency key is the
+    connection's identity (org-qualified, like every worker-side key), so a queue
+    can hold at most one sync per connection — and a *finished* one, including a
+    failed one, is reopened rather than shadowing the key for ever. Reopening a
+    failure is safe precisely here because each attempt is one human click: the
+    infinite-retry loop that makes the walk refuse to reopen failures cannot happen
+    when a person is the loop.
+
+    Returns the id of the row that will actually run — never a fresh UUID that
+    names nothing.
     """
     row = (
         await session.execute(
@@ -767,20 +774,50 @@ async def sync_now(
     if not provider_configured(row.provider):
         raise ServiceUnavailable("Syncing is not available until this provider is configured.")
 
-    job_id = uuid4()
-    await session.execute(
-        text(
-            "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, payload_json) "
-            "VALUES (:id, :org, 'connector.sync', 'pending', :key, cast(:payload AS jsonb)) "
-            "ON CONFLICT (idempotency_key) DO NOTHING"
-        ),
-        {
-            "id": job_id,
-            "org": str(org_id),
-            "key": f"connector.sync:{connection_id}",
-            "payload": f'{{"connection_id": "{connection_id}"}}',
-        },
-    )
+    key = f"connector.sync:{org_id}:{connection_id}"
+    inserted = (
+        await session.execute(
+            text(
+                "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, payload_json) "
+                "VALUES (:id, :org, 'connector.sync', 'pending', :key, cast(:payload AS jsonb)) "
+                "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id"
+            ),
+            {
+                "id": uuid4(),
+                "org": str(org_id),
+                "key": key,
+                "payload": f'{{"connection_id": "{connection_id}"}}',
+            },
+        )
+    ).first()
+    if inserted is not None:
+        job_id = UUID(str(inserted.id))
+    else:
+        reopened = (
+            await session.execute(
+                text(
+                    "UPDATE jobs SET state = 'pending', attempts = 0, locked_until = NULL, "
+                    "next_attempt_at = NULL, error = NULL, failure_kind = NULL, "
+                    "updated_at = now() "
+                    "WHERE idempotency_key = :key "
+                    "AND state IN ('completed', 'failed', 'dead_letter') "
+                    "RETURNING id"
+                ),
+                {"key": key},
+            )
+        ).first()
+        if reopened is not None:
+            job_id = UUID(str(reopened.id))
+        else:
+            # Already queued or running: that in-flight job IS this sync.
+            existing = (
+                await session.execute(
+                    text("SELECT id FROM jobs WHERE idempotency_key = :key"), {"key": key}
+                )
+            ).first()
+            if existing is None:  # pragma: no cover - insert/update/select race
+                raise ServiceUnavailable("The sync queue is briefly contended. Try again.")
+            job_id = UUID(str(existing.id))
     await _audit(
         session,
         org_id=org_id,

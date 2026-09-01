@@ -139,6 +139,13 @@ class FailureKind(StrEnum):
     #: The run's token ceiling was reached. Not an error in the source — a budget
     #: decision — so it is held rather than failed.
     BUDGET_EXHAUSTED = "budget_exhausted"
+    #: An upstream provider (extraction model, connector API) said "not now" — a 429,
+    #: a 5xx, an unreachable host. The same call may well succeed next time.
+    PROVIDER_TRANSIENT = "provider_transient"
+    #: An upstream provider rejected the request itself — bad credentials, a revoked
+    #: grant, a nonexistent model. Rejected identically every time; the configuration
+    #: is what has to change, not the retry count.
+    PROVIDER_PERMANENT = "provider_permanent"
     #: A bug here rather than out there.
     INTERNAL = "internal"
 

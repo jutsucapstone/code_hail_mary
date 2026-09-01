@@ -40,6 +40,7 @@ from jutsu_api.connectors import (
     sync_now,
 )
 from jutsu_api.deps import CurrentPrincipal, Db, SettingsDep
+from jutsu_api.queue import ring_doorbell
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1", tags=["connections"], route_class=GuardedAPIRoute)
@@ -212,6 +213,9 @@ async def request_sync(connection_id: UUID, principal: CurrentPrincipal, session
         user_id=principal.user_id,
         connection_id=connection_id,
     )
+    # Wake the worker. Best-effort by contract: the job row above is durable, and the
+    # message is deferred past this request's commit so the drain never races it.
+    await ring_doorbell(principal.org_id)
     return SyncQueued(job_id=job_id)
 
 

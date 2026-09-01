@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import anthropic
 from jutsu_connectors import PathEscape, UnparsableMessage
 from jutsu_core import SourceSystem
 from jutsu_retrieval.embeddings import Embedder
@@ -479,6 +480,18 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
         return FailureKind.EMBEDDING_TRANSIENT, True
     if isinstance(error, EmbeddingBudgetExceeded):
         return FailureKind.BUDGET_EXHAUSTED, True
+    # Anthropic SDK errors from the extraction transport. Order matters: RateLimitError
+    # and InternalServerError are both APIStatusError subclasses, so the transient checks
+    # come first and the remaining 4xx statuses are permanent — a bad key or a nonexistent
+    # model is rejected identically every time, and retrying it five times burns real
+    # attempts to be told so five times.
+    if isinstance(
+        error,
+        anthropic.RateLimitError | anthropic.InternalServerError | anthropic.APIConnectionError,
+    ):
+        return FailureKind.PROVIDER_TRANSIENT, True
+    if isinstance(error, anthropic.APIStatusError):
+        return FailureKind.PROVIDER_PERMANENT, False
     if isinstance(error, FileNotFoundError | OSError):
         return FailureKind.SOURCE_UNAVAILABLE, True
     return FailureKind.INTERNAL, True
