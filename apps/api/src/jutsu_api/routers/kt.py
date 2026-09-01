@@ -16,9 +16,11 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
+from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from pydantic import BaseModel, EmailStr, Field
 
+from jutsu_api.answers import answers_configured
 from jutsu_api.auth_service import scoped_acl_principals
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.kt import (
@@ -28,11 +30,13 @@ from jutsu_api.kt import (
     create_package,
     get_package,
     kt_documents,
+    kt_handover_summary,
     kt_insight_summary,
     kt_insights,
     list_packages,
     revoke_package,
 )
+from jutsu_api.routers.search import AnswerTransportDep
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1", tags=["kt"], route_class=GuardedAPIRoute)
@@ -256,6 +260,7 @@ class KtInsightOut(BaseModel):
     confidence: float
     document_id: UUID
     document_title: str
+    source_system: str
     chunk_id: UUID
     occurred_at: datetime
 
@@ -314,3 +319,64 @@ async def read_kt_insight_summary(
         groups=groups,
     )
     return KtInsightSummaryOut(by_type=summary.by_type)
+
+
+class HandoverCitationOut(BaseModel):
+    marker: int
+    document_id: UUID
+    document_title: str
+    source_system: str
+
+
+class HandoverSummaryOut(BaseModel):
+    #: None when the claims could not ground a summary — the UI renders the refusal,
+    #: never an empty string pretending to be one.
+    summary: str | None
+    insufficient_evidence: bool
+    citations: list[HandoverCitationOut]
+    attempts: int
+
+
+@router.get("/kt/{kt_code}/handover-summary")
+@requires(Permission.KT_OPEN)
+async def read_kt_handover_summary(
+    kt_code: str,
+    principal: CurrentPrincipal,
+    session: Db,
+    transport: AnswerTransportDep,
+) -> HandoverSummaryOut:
+    """§29's executive summary: composed on demand from the recipient's own claim
+    visibility, grounded and citation-gated exactly like /v1/ask, never persisted.
+
+    Refuses before any spend when no answer model is configured — the same honest 503
+    the ask surface gives, so the button in the KT console can say why.
+    """
+    if not answers_configured():
+        raise ServiceUnavailable(
+            "Handover summaries are not configured for this deployment yet. The "
+            "knowledge tabs still work; a summary needs an answer model."
+        )
+    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    outcome = await kt_handover_summary(
+        session,
+        transport,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        principals=principals,
+        groups=groups,
+    )
+    return HandoverSummaryOut(
+        summary=outcome.answer,
+        insufficient_evidence=outcome.insufficient_evidence,
+        citations=[
+            HandoverCitationOut(
+                marker=c.marker,
+                document_id=UUID(str(c.document_id)),
+                document_title=c.document_title,
+                source_system=c.source_system,
+            )
+            for c in outcome.citations
+        ],
+        attempts=outcome.attempts,
+    )

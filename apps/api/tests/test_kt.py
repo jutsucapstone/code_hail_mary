@@ -685,3 +685,153 @@ class TestKtInsights:
         )
         assert closed.status_code == 403
         assert "revoked" in closed.json()["error"]["message"].lower()
+
+
+class ScriptedAnswers:
+    """An answer transport that returns what the test scripted, recording prompts."""
+
+    def __init__(self) -> None:
+        self.replies: list[str] = []
+        self.prompts: list[str] = []
+
+    async def complete(self, *, system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.replies.pop(0)
+
+
+@pytest.fixture
+async def handover(
+    db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+) -> AsyncIterator[tuple[AsyncClient, ScriptedAnswers]]:
+    """The standard client plus a scripted answer transport behind the ask seam."""
+    from jutsu_api.routers.search import get_answer_transport
+
+    app = create_app()
+
+    async def _db() -> AsyncIterator[AsyncSession]:
+        yield db_session
+        await db_session.commit()
+
+    scripted = ScriptedAnswers()
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_email_sender] = lambda: mailbox
+    app.dependency_overrides[get_answer_transport] = lambda: scripted
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="https://testserver") as http:
+        yield http, scripted
+
+
+class TestKtHandoverSummary:
+    """§29's executive summary: grounded on the recipient's own claim visibility."""
+
+    async def test_grounds_only_on_visible_claims_and_cites_them(
+        self,
+        handover: tuple[AsyncClient, ScriptedAnswers],
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        client, scripted = handover
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions", "documents"])
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await TestKtInsights().seed_claims(client, db_session, org_id)
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        scripted.replies = ["The team standardised on PostgreSQL [1]."]
+        response = await client.get(f"/v1/kt/{package['kt_code']}/handover-summary")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["insufficient_evidence"] is False
+        assert "PostgreSQL" in body["summary"]
+        assert [c["document_title"] for c in body["citations"]] == ["Visible decision doc"]
+        # Non-negotiable 6 holds for the composer too: the hidden claim never even
+        # reaches the model's prompt.
+        assert "MongoDB" not in scripted.prompts[0]
+
+    async def test_an_unciteable_summary_is_refused_honestly(
+        self,
+        handover: tuple[AsyncClient, ScriptedAnswers],
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        client, scripted = handover
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions", "documents"])
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await TestKtInsights().seed_claims(client, db_session, org_id)
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        scripted.replies = ["A fluent uncited paragraph.", "Still no citations."]
+        response = await client.get(f"/v1/kt/{package['kt_code']}/handover-summary")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary"] is None
+        assert body["insufficient_evidence"] is True
+        assert body["attempts"] == 2
+
+    async def test_no_visible_claims_refuses_without_spending(
+        self,
+        handover: tuple[AsyncClient, ScriptedAnswers],
+        mailbox: RecordingEmailSender,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        client, scripted = handover
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions"])
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        response = await client.get(f"/v1/kt/{package['kt_code']}/handover-summary")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["insufficient_evidence"] is True
+        assert body["attempts"] == 0
+        assert scripted.prompts == [], "no evidence means no model call, no spend"
+
+    async def test_without_a_model_the_refusal_names_the_configuration(
+        self,
+        handover: tuple[AsyncClient, ScriptedAnswers],
+        mailbox: RecordingEmailSender,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        client, _scripted = handover
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions"])
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        response = await client.get(f"/v1/kt/{package['kt_code']}/handover-summary")
+        assert response.status_code == 503
+        assert "not configured" in response.json()["error"]["message"]

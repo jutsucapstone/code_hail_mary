@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo, useState } from "react";
+
 import { useQuery } from "@tanstack/react-query";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
@@ -45,6 +47,22 @@ export default function SourcesPage() {
     queryFn: api.sources,
     enabled: mayRead,
   });
+  const [systemFilter, setSystemFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const items = sources.data?.items ?? [];
+  const systems = useMemo(
+    () => Array.from(new Set(items.map((s) => s.system))).sort(),
+    [items],
+  );
+  const statuses = useMemo(
+    () => Array.from(new Set(items.map((s) => s.status))).sort(),
+    [items],
+  );
+  const visible = items.filter(
+    (s) =>
+      (systemFilter === "all" || s.system === systemFilter) &&
+      (statusFilter === "all" || s.status === statusFilter),
+  );
 
   if (!mayRead) {
     return <PermissionDenied what="permission to see knowledge sources" />;
@@ -72,7 +90,7 @@ export default function SourcesPage() {
             ))}
           </div>
         </LoadingRegion>
-      ) : sources.data.items.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState title="No knowledge sources yet">
           <p>
             Nothing has been connected. Sources appear here when a connector is configured
@@ -80,6 +98,39 @@ export default function SourcesPage() {
           </p>
         </EmptyState>
       ) : (
+        <>
+        <div className="flex flex-wrap gap-3">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            System
+            <select
+              value={systemFilter}
+              onChange={(event) => setSystemFilter(event.target.value)}
+              className="h-9 rounded-lg border border-hairline-strong bg-surface/40 px-2.5 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            >
+              <option value="all">All</option>
+              {systems.map((system) => (
+                <option key={system} value={system}>
+                  {system}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            Status
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className="h-9 rounded-lg border border-hairline-strong bg-surface/40 px-2.5 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            >
+              <option value="all">All</option>
+              {statuses.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <TableShell
           caption="Knowledge sources with system, sync status, last synchronised time and document count."
           headings={[
@@ -93,7 +144,7 @@ export default function SourcesPage() {
           ]}
           minWidth="min-w-[48rem]"
         >
-          {sources.data.items.map((source) => (
+          {visible.map((source) => (
             <tr key={source.id} className="border-b border-hairline last:border-b-0">
               <td className="px-5 py-3.5 font-mono text-xs text-foreground">{source.system}</td>
               <td className="px-5 py-3.5">
@@ -119,6 +170,7 @@ export default function SourcesPage() {
             </tr>
           ))}
         </TableShell>
+        </>
       )}
     </div>
   );

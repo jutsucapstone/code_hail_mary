@@ -266,6 +266,21 @@ function CreatedPanel({ pkg, onDone }: { pkg: KtAdmin; onDone: () => void }) {
         <span className="text-sm text-muted-foreground">KT ID</span>
         <span className="font-mono text-xl text-foreground">{pkg.kt_code}</span>
       </div>
+      <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">Employee</dt>
+          <dd className="text-foreground">{pkg.subject_name ?? pkg.subject_email}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">Knowledge scope</dt>
+          <dd className="text-foreground">
+            {pkg.scope.map((category) => SCOPE_LABELS[category] ?? category).join(", ")}
+          </dd>
+        </div>
+      </dl>
+      {/* What the recipient will find inside is measured at THEIR first open, under
+          THEIR access — a pre-claim count here would be somebody else's visibility
+          served to the caller, which is exactly what the ACL rules forbid. */}
       <p className="max-w-prose text-sm text-muted-foreground">
         Share this ID with the recipient
         {pkg.recipient_email ? ` (${pkg.recipient_email})` : ""}. They enter it under

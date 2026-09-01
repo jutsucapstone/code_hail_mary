@@ -34,6 +34,8 @@ from jutsu_retrieval.search import ACL_PREDICATE
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_api.answers import AnswerOutcome, AnswerTransport, synthesise_answer
+
 __all__ = [
     "SUPPORTED_SCOPES",
     "KtAdminView",
@@ -637,6 +639,7 @@ class KtInsight:
     confidence: float
     document_id: UUID
     document_title: str
+    source_system: str
     chunk_id: UUID
     occurred_at: datetime
 
@@ -718,10 +721,12 @@ async def kt_insights(
             text(
                 "SELECT cl.id, cl.claim_type, cl.confidence, cl.payload_json, "
                 "cl.chunk_id, "
-                "d.id AS document_id, d.title AS document_title, d.created_at AS occurred_at "
+                "d.id AS document_id, d.title AS document_title, "
+                "CAST(s.system AS text) AS source_system, d.created_at AS occurred_at "
                 "FROM extraction_claims cl "
                 "JOIN chunks ch ON ch.id = cl.chunk_id "
                 "JOIN documents d ON d.id = ch.document_id "
+                "JOIN sources s ON s.id = d.source_id "
                 + _LATEST_RUN_JOIN
                 + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)} "
                 "ORDER BY COALESCE(NULLIF(cl.payload_json->>'date', ''), "
@@ -743,6 +748,7 @@ async def kt_insights(
             confidence=r.confidence,
             document_id=r.document_id,
             document_title=r.document_title,
+            source_system=r.source_system,
             chunk_id=r.chunk_id,
             occurred_at=r.occurred_at,
         )
@@ -799,3 +805,75 @@ async def kt_insight_summary(
         )
     ).all()
     return KtInsightSummary(by_type={r.claim_type: r.n for r in rows})
+
+
+@dataclass(frozen=True, slots=True)
+class HandoverEvidence:
+    """A claim shaped for the answer synthesiser's `Groundable` protocol.
+
+    No char offsets, deliberately: the claim's offsets index the chunk's MASKED text
+    and the retrieval `Evidence` contract promises original-body offsets — reusing the
+    field would plant exactly the mis-highlight trap CLAUDE.md warns about. A handover
+    citation points at a document, not a span, and says so by carrying no span.
+    """
+
+    chunk_id: UUID
+    document_id: UUID
+    document_title: str
+    source_system: str
+    text: str
+
+
+_HANDOVER_QUESTION = (
+    "Compose a concise executive handover summary for the person taking over: main "
+    "responsibilities, active projects, key contacts, important decisions, and open "
+    "work. Group related points; write for a first day on the job."
+)
+
+
+async def kt_handover_summary(
+    session: AsyncSession,
+    transport: AnswerTransport,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    principals: frozenset[str],
+    groups: frozenset[str],
+) -> AnswerOutcome:
+    """§29's executive summary, composed from evidence-anchored claims and gated.
+
+    The same grounding discipline as /v1/ask: the model sees only claims the recipient
+    may already read (kt_insights runs all three gates), every sentence must cite, the
+    citations are validated against exactly that claim list, and an unciteable summary
+    is an honest `insufficient_evidence` — never a fluent guess (non-negotiable 3).
+    Composed on demand and never persisted: a stored summary would outlive the ACL
+    state it was grounded in.
+    """
+    insights = await kt_insights(
+        session,
+        org_id=org_id,
+        user_id=user_id,
+        kt_code=kt_code,
+        principals=principals,
+        groups=groups,
+        claim_type=None,
+        limit=40,
+    )
+    evidence = [
+        HandoverEvidence(
+            chunk_id=i.chunk_id,
+            document_id=i.document_id,
+            document_title=i.document_title,
+            source_system=i.source_system,
+            text=(
+                f"{i.claim_type}"
+                + (f" — {i.name}" if i.name else "")
+                + (f": {i.summary}" if i.summary else "")
+                + f'\nEvidence: "{i.quote}"'
+                + (f"\nDate: {i.date}" if i.date else "")
+            ),
+        )
+        for i in insights
+    ]
+    return await synthesise_answer(transport, question=_HANDOVER_QUESTION, evidence=evidence)

@@ -29,21 +29,44 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 import anthropic
 from jutsu_core.errors import ServiceUnavailable
-from jutsu_retrieval.search import Evidence
 
 __all__ = [
     "AnswerOutcome",
     "AnswerTransport",
     "AnthropicTransport",
     "Citation",
+    "Groundable",
     "answers_configured",
     "synthesise_answer",
 ]
+
+
+class Groundable(Protocol):
+    """What the synthesiser actually reads off a piece of evidence.
+
+    Structural on purpose: retrieval's `Evidence` (a chunk) and a KT insight claim
+    both ground an answer, and forcing the claim into the chunk's shape would mean
+    inventing char offsets the claim does not have — a fabricated span is worse than
+    no span. The gate needs identity and provenance; the prompt needs title and text.
+    """
+
+    @property
+    def chunk_id(self) -> object: ...
+    @property
+    def document_id(self) -> object: ...
+    @property
+    def document_title(self) -> str: ...
+    @property
+    def source_system(self) -> str: ...
+    @property
+    def text(self) -> str: ...
+
 
 _DEFAULT_MODEL = "claude-opus-5"
 
@@ -141,7 +164,7 @@ class AnthropicTransport:
         return "".join(block.text for block in response.content if block.type == "text")
 
 
-def _compose_prompt(question: str, evidence: list[Evidence]) -> str:
+def _compose_prompt(question: str, evidence: Sequence[Groundable]) -> str:
     passages = "\n\n".join(
         f"[{index}] {item.document_title} ({item.source_system})\n{item.text}"
         for index, item in enumerate(evidence, start=1)
@@ -149,7 +172,7 @@ def _compose_prompt(question: str, evidence: list[Evidence]) -> str:
     return f"Evidence passages:\n\n{passages}\n\nQuestion: {question}"
 
 
-def _grounded(text: str, evidence: list[Evidence]) -> tuple[str, list[Citation]] | None:
+def _grounded(text: str, evidence: Sequence[Groundable]) -> tuple[str, list[Citation]] | None:
     """The hallucination gate. Returns None unless every citation checks out.
 
     Three refusals: an explicit INSUFFICIENT_EVIDENCE, a marker naming a passage that
@@ -186,7 +209,7 @@ def _grounded(text: str, evidence: list[Evidence]) -> tuple[str, list[Citation]]
 
 
 async def synthesise_answer(
-    transport: AnswerTransport, *, question: str, evidence: list[Evidence]
+    transport: AnswerTransport, *, question: str, evidence: Sequence[Groundable]
 ) -> AnswerOutcome:
     """A grounded answer, or an honest refusal. Never a fluent guess.
 

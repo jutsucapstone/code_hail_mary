@@ -211,7 +211,9 @@ export type Departments =
 export type KtInsights =
   paths["/v1/kt/{kt_code}/insights"]["get"]["responses"][200]["content"]["application/json"];
 export type KtInsight = KtInsights["items"][number];
-export type KtInsightSummary =
+export type KtHandoverSummary =
+  paths["/v1/kt/{kt_code}/handover-summary"]["get"]["responses"][200]["content"]["application/json"];
+type KtInsightSummary =
   paths["/v1/kt/{kt_code}/insights-summary"]["get"]["responses"][200]["content"]["application/json"];
 
 export const api = {
@@ -576,6 +578,17 @@ export const api = {
   ktInsightSummary: (ktCode: string) =>
     call<KtInsightSummary>(
       `/v1/kt/${encodeURIComponent(ktCode)}/insights-summary`,
+      { method: "GET" },
+    ),
+
+  /**
+   * §29's executive summary, composed on demand from claims the recipient may read,
+   * citation-gated server-side exactly like /v1/ask. Never cached beyond the query —
+   * a stored summary would outlive the ACL state it was grounded in.
+   */
+  ktHandoverSummary: (ktCode: string) =>
+    call<KtHandoverSummary>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/handover-summary`,
       { method: "GET" },
     ),
 

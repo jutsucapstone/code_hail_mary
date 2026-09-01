@@ -648,6 +648,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/handover-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Handover Summary
+         * @description §29's executive summary: composed on demand from the recipient's own claim
+         *     visibility, grounded and citation-gated exactly like /v1/ask, never persisted.
+         *
+         *     Refuses before any spend when no answer model is configured — the same honest 503
+         *     the ask surface gives, so the button in the KT console can say why.
+         */
+        get: operations["read_kt_handover_summary_v1_kt__kt_code__handover_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{kt_code}/insights": {
         parameters: {
             query?: never;
@@ -1392,6 +1416,31 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HandoverCitationOut */
+        HandoverCitationOut: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Marker */
+            marker: number;
+            /** Source System */
+            source_system: string;
+        };
+        /** HandoverSummaryOut */
+        HandoverSummaryOut: {
+            /** Attempts */
+            attempts: number;
+            /** Citations */
+            citations: components["schemas"]["HandoverCitationOut"][];
+            /** Insufficient Evidence */
+            insufficient_evidence: boolean;
+            /** Summary */
+            summary: string | null;
+        };
         /** InvitationAccepted */
         InvitationAccepted: {
             /**
@@ -1625,6 +1674,8 @@ export interface components {
             occurred_at: string;
             /** Quote */
             quote: string;
+            /** Source System */
+            source_system: string;
             /** Summary */
             summary: string | null;
         };
@@ -3030,6 +3081,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KtDocumentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_kt_handover_summary_v1_kt__kt_code__handover_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoverSummaryOut"];
                 };
             };
             /** @description Validation Error */

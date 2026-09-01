@@ -735,6 +735,73 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HandoverCitationOut": {
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "marker": {
+            "title": "Marker",
+            "type": "integer"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "marker",
+          "document_id",
+          "document_title",
+          "source_system"
+        ],
+        "title": "HandoverCitationOut",
+        "type": "object"
+      },
+      "HandoverSummaryOut": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/HandoverCitationOut"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "insufficient_evidence": {
+            "title": "Insufficient Evidence",
+            "type": "boolean"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "summary",
+          "insufficient_evidence",
+          "citations",
+          "attempts"
+        ],
+        "title": "HandoverSummaryOut",
+        "type": "object"
+      },
       "InvitationAccepted": {
         "properties": {
           "status": {
@@ -1346,6 +1413,10 @@
             "title": "Quote",
             "type": "string"
           },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
           "summary": {
             "anyOf": [
               {
@@ -1368,6 +1439,7 @@
           "confidence",
           "document_id",
           "document_title",
+          "source_system",
           "chunk_id",
           "occurred_at"
         ],
@@ -4095,6 +4167,49 @@
           }
         },
         "summary": "Read Kt Documents",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/handover-summary": {
+      "get": {
+        "description": "\u00a729's executive summary: composed on demand from the recipient's own claim\nvisibility, grounded and citation-gated exactly like /v1/ask, never persisted.\n\nRefuses before any spend when no answer model is configured \u2014 the same honest 503\nthe ask surface gives, so the button in the KT console can say why.",
+        "operationId": "read_kt_handover_summary_v1_kt__kt_code__handover_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoverSummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Handover Summary",
         "tags": [
           "kt"
         ]
