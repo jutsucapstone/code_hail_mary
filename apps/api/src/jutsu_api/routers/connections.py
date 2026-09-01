@@ -62,6 +62,8 @@ class ConnectionOut(BaseModel):
     connected_at: datetime | None
     last_sync_at: datetime | None
     last_error_kind: str | None
+    scopes: list[str]
+    document_count: int
 
 
 class CatalogueEntryOut(BaseModel):

@@ -172,7 +172,10 @@ export type OrgOverview =
 export type RoleCatalogue =
   paths["/v1/roles"]["get"]["responses"][200]["content"]["application/json"];
 
-export type IntegrationCatalogue =
+export type EmployeeConnections =
+  paths["/v1/employees/{user_id}/connections"]["get"]["responses"][200]["content"]["application/json"];
+export type EmployeeConnection = EmployeeConnections["items"][number];
+type IntegrationCatalogue =
   paths["/v1/integrations"]["get"]["responses"][200]["content"]["application/json"];
 export type IntegrationEntry = IntegrationCatalogue["items"][number];
 export type ConnectionSummary =
@@ -444,6 +447,19 @@ export const api = {
    * never fakes a Connect for a provider the backend cannot serve.
    */
   integrations: () => call<IntegrationCatalogue>("/v1/integrations", { method: "GET" }),
+
+  /**
+   * One employee's connections, counts and states only. Requires `integration:read`.
+   * Governance reads operational metadata; content and credentials stay out of reach.
+   */
+  employeeConnections: (userId: string) =>
+    call<EmployeeConnections>(`/v1/employees/${encodeURIComponent(userId)}/connections`, {
+      method: "GET",
+    }),
+
+  /** Administrative revocation, rank-checked server-side. Requires `integration:revoke`. */
+  revokeConnection: (connectionId: string) =>
+    call<void>(`/v1/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE" }),
 
   /**
    * Begin the OAuth flow for the CALLING employee. The response carries the provider's

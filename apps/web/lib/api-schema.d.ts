@@ -1285,6 +1285,8 @@ export interface components {
             account_label: string | null;
             /** Connected At */
             connected_at: string | null;
+            /** Document Count */
+            document_count: number;
             /**
              * Id
              * Format: uuid
@@ -1296,6 +1298,8 @@ export interface components {
             last_sync_at: string | null;
             /** Provider */
             provider: string;
+            /** Scopes */
+            scopes: string[];
             /** Status */
             status: string;
         };

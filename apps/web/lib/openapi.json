@@ -449,6 +449,10 @@
             ],
             "title": "Connected At"
           },
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -481,6 +485,13 @@
             "title": "Provider",
             "type": "string"
           },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -493,7 +504,9 @@
           "account_label",
           "connected_at",
           "last_sync_at",
-          "last_error_kind"
+          "last_error_kind",
+          "scopes",
+          "document_count"
         ],
         "title": "ConnectionOut",
         "type": "object"

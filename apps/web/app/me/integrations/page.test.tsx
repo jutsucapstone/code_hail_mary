@@ -64,6 +64,8 @@ function connectedEntry(status = "connected"): Json {
       connected_at: "2026-09-01T10:00:00Z",
       last_sync_at: null,
       last_error_kind: null,
+      scopes: ["channels:history", "channels:read", "users:read"],
+      document_count: 0,
     },
   });
 }

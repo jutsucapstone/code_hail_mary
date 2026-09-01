@@ -99,7 +99,44 @@ function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
           <dd className="text-muted-foreground">
             {connection.last_sync_at ? <When iso={connection.last_sync_at} /> : "Not yet"}
           </dd>
+          <dt className="text-muted-foreground">Documents indexed</dt>
+          <dd className="tabular-nums text-foreground">{connection.document_count}</dd>
         </dl>
+      ) : null}
+
+      {connection?.last_error_kind ? (
+        <p className="text-xs text-graph">
+          {connection.last_error_kind === "reauth_required"
+            ? "The provider no longer honours this authorisation. Reconnect to continue syncing."
+            : connection.last_error_kind === "sync_unavailable"
+              ? "Syncing is not available for this provider on this deployment yet."
+              : `Last sync problem: ${connection.last_error_kind.replaceAll("_", " ")}.`}
+        </p>
+      ) : null}
+
+      {connection ? (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+            Manage
+          </summary>
+          {/* What the grant actually says — the scopes the provider showed at consent,
+              verbatim. Read-only by registry construction; showing them is how an owner
+              audits their own connection (§2). */}
+          <dl className="mt-2 flex flex-col gap-1.5 border-l border-hairline pl-3">
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">Connected</dt>
+              <dd className="text-foreground">
+                {connection.connected_at ? <When iso={connection.connected_at} /> : "—"}
+              </dd>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">Authorised scopes (read-only)</dt>
+              <dd className="font-mono text-[0.625rem] leading-relaxed text-muted-foreground">
+                {connection.scopes.length > 0 ? connection.scopes.join(" · ") : "—"}
+              </dd>
+            </div>
+          </dl>
+        </details>
       ) : null}
 
       <div className="mt-auto flex flex-wrap gap-2">

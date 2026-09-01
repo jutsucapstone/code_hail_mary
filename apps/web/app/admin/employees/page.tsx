@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Fragment } from "react";
+
 import { useCapabilities } from "@/components/admin/admin-shell";
+import { EmployeeConnections } from "@/components/admin/employee-connections";
 import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/states";
 import { Field } from "@/components/pilot/field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
@@ -79,6 +82,8 @@ export default function EmployeesPage() {
   const mayRead = can(capabilities, "member:read");
   const mayInvite = can(capabilities, "member:invite");
   const mayAssign = can(capabilities, "member:assign_role");
+  const mayReadConnections = can(capabilities, "integration:read");
+  const [openConnections, setOpenConnections] = useState<string | null>(null);
   const [changingRole, setChangingRole] = useState<string | null>(null);
 
   const load = useCallback(
@@ -311,7 +316,14 @@ export default function EmployeesPage() {
                     once the rows start scrolling under them. The background is opaque so
                     rows do not show through. */}
                 <tr className="text-left">
-                  {["Person", "JUTSU ID", "Role", "Status", ...(mayAssign ? ["Change role"] : [])].map((heading) => (
+                  {[
+                    "Person",
+                    "JUTSU ID",
+                    "Role",
+                    "Status",
+                    ...(mayReadConnections ? ["Integrations"] : []),
+                    ...(mayAssign ? ["Change role"] : []),
+                  ].map((heading) => (
                     <th
                       key={heading}
                       scope="col"
@@ -324,7 +336,8 @@ export default function EmployeesPage() {
               </thead>
               <tbody>
                 {page.items.map((person) => (
-                  <tr key={person.id} className="border-b border-hairline last:border-b-0">
+                  <Fragment key={person.id}>
+                  <tr className="border-b border-hairline last:border-b-0">
                     <th scope="row" className="px-5 py-4 text-left font-normal">
                       <span className="block text-foreground">
                         {person.display_name ?? "Not yet set"}
@@ -342,6 +355,22 @@ export default function EmployeesPage() {
                     <td className="px-5 py-4">
                       <StatusPill status={person.status} />
                     </td>
+                    {mayReadConnections ? (
+                      <td className="px-5 py-4">
+                        <button
+                          type="button"
+                          aria-expanded={openConnections === person.id}
+                          onClick={() =>
+                            setOpenConnections((current) =>
+                              current === person.id ? null : person.id,
+                            )
+                          }
+                          className="rounded-lg border border-hairline-strong px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-brand/40 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                        >
+                          {openConnections === person.id ? "Hide" : "View"}
+                        </button>
+                      </td>
+                    ) : null}
                     {mayAssign ? (
                       <td className="px-5 py-4">
                         {person.id === capabilities.user_id ? (
@@ -382,6 +411,20 @@ export default function EmployeesPage() {
                       </td>
                     ) : null}
                   </tr>
+                  {mayReadConnections && openConnections === person.id ? (
+                    <tr className="border-b border-hairline last:border-b-0">
+                      <td
+                        colSpan={4 + (mayReadConnections ? 1 : 0) + (mayAssign ? 1 : 0)}
+                        className="bg-surface/30 px-5 py-4"
+                      >
+                        <EmployeeConnections
+                          userId={person.id}
+                          mayRevoke={can(capabilities, "integration:revoke")}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

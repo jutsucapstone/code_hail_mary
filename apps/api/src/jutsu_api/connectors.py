@@ -279,6 +279,12 @@ class ConnectionView:
     connected_at: datetime | None
     last_sync_at: datetime | None
     last_error_kind: str | None
+    #: The scopes this grant was made with — shown so the owner can see exactly what
+    #: they authorised. Read-only by registry construction; never a token.
+    scopes: list[str]
+    #: Current documents ingested through this connection's source, measured, never
+    #: estimated (§2's "indexed item counts where available").
+    document_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +304,7 @@ class CatalogueEntry:
 
 
 def _view(row: object) -> ConnectionView:
+    scopes = getattr(row, "scopes", None)
     return ConnectionView(
         id=row.id,  # type: ignore[attr-defined]
         provider=row.provider,  # type: ignore[attr-defined]
@@ -306,11 +313,24 @@ def _view(row: object) -> ConnectionView:
         connected_at=row.connected_at,  # type: ignore[attr-defined]
         last_sync_at=row.last_sync_at,  # type: ignore[attr-defined]
         last_error_kind=row.last_error_kind,  # type: ignore[attr-defined]
+        scopes=list(scopes) if isinstance(scopes, list) else [],
+        document_count=int(getattr(row, "document_count", 0) or 0),
     )
 
 
 _CONNECTION_COLUMNS = (
     "id, provider, status, account_label, connected_at, last_sync_at, last_error_kind"
+)
+
+#: The catalogue's richer projection: the grant's scopes and a measured count of the
+#: current documents its source has produced. The count subquery drives from sources
+#: (one row per connection) and stays out of every mutation path's RETURNING.
+_CONNECTION_COLUMNS_WITH_COUNT = (
+    "c.id, c.provider, c.status, c.account_label, c.connected_at, c.last_sync_at, "
+    "c.last_error_kind, c.scopes, "
+    "COALESCE((SELECT count(*) FROM documents d JOIN sources s ON s.id = d.source_id "
+    "WHERE s.config_json->>'connection_id' = c.id::text "
+    "AND d.superseded_by IS NULL), 0) AS document_count"
 )
 
 
@@ -328,8 +348,8 @@ async def list_catalogue(session: AsyncSession, *, user_id: UUID) -> list[Catalo
     own = (
         await session.execute(
             text(
-                f"SELECT {_CONNECTION_COLUMNS} FROM connections "  # noqa: S608
-                "WHERE user_id = :user AND status != 'disconnected'"
+                f"SELECT {_CONNECTION_COLUMNS_WITH_COUNT} FROM connections c "  # noqa: S608
+                "WHERE c.user_id = :user AND c.status != 'disconnected'"
             ),
             {"user": user_id},
         )
@@ -889,8 +909,8 @@ async def employee_connections(session: AsyncSession, *, user_id: UUID) -> list[
     rows = (
         await session.execute(
             text(
-                f"SELECT {_CONNECTION_COLUMNS} FROM connections "  # noqa: S608
-                "WHERE user_id = :user AND status != 'disconnected' ORDER BY provider"
+                f"SELECT {_CONNECTION_COLUMNS_WITH_COUNT} FROM connections c "  # noqa: S608
+                "WHERE c.user_id = :user AND c.status != 'disconnected' ORDER BY c.provider"
             ),
             {"user": user_id},
         )
