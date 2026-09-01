@@ -257,8 +257,8 @@ jobs:
             --platform managed \
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
-            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>,JUTSU_APP_URL=https://jutsu.co.in" \
-            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>,JUTSU_APP_URL=https://jutsu.co.in,GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }},VERTEX_LOCATION=asia-south1" \
+            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest,REDIS_URL=jutsu-redis-url:latest,ANTHROPIC_API_KEY=jutsu-anthropic-api-key:latest,JUTSU_CONNECTION_KEY=jutsu-connection-key:latest" \
             --min-instances 0 \
             --max-instances 10 \
             --allow-unauthenticated \

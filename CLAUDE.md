@@ -298,6 +298,46 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **`revoke_all_for_user` has no production caller.** The offboarding route does not exist
   yet. When it lands it must call that primitive rather than looping — the audit rows are
   written inside it for exactly that reason.
+- **The OAuth callback auto-links its proven subject (ADR 0014), and that is the
+  verification precedent, not a hole in the self-link refusal.** The refusal exists
+  because an admin *asserts*; the callback's subject came from the provider's identity
+  endpoint under a token minted seconds earlier. Fail-closed on conflict like the email
+  path. Disconnecting a connection deliberately does NOT revoke the identity — a pipe is
+  not a person; identity revocation stays the explicit admin act.
+- **Provider connectors grant `owner_acl` and nothing wider — floor AND ceiling.**
+  Providers report sharing as email addresses, and emails are not subjects; a wider grant
+  minted from them would be a guess wearing an ACL. `owner_acl` in
+  `jutsu_connectors/providers/base.py` is the only grant-minting path, on purpose.
+
+### Live-connection traps (`jutsu_core.providers`, `jutsu_worker.credentials`, `fetchers`)
+
+- **Refreshed tokens commit IMMEDIATELY, never with the sync's transaction.** Atlassian
+  rotates refresh tokens: the moment the provider answers, the old one is burned at
+  their end. Tie the write to the sync and a transient failure rolls back to a token
+  the provider will never honour again — a permanent reauth loop built out of tidiness.
+  `ConnectionTokenSource` owns this; `access_token_for` leaves it to the caller.
+- **Slack scopes ride `user_scope`, never `scope`.** Slack's `scope` parameter
+  provisions a *bot*; the employee's own visibility is a user token read out of
+  `authed_user` on the exchange. And Slack answers HTTP 200 with `ok:false` — every
+  Slack response goes through an unwrap that refuses it.
+- **GitHub's `repo:status` (and `repo`) write.** §4.8 admits no write scope, so GitHub
+  is bounded to what `read:user`/`read:org` reach: public repositories. Private-repo
+  read-only is a GitHub App installation — a different flow, not a bigger scope. A
+  registry-wide test pins every provider against a known-write-scope list.
+- **`sources.system` is the ACL namespace, not the provider id.** All four Google
+  products land as `gmail`, the three Microsoft ones as `m365` — the enum is the
+  constraint and the subject is shared. The precise provider lives in
+  `config_json.provider`, which is what `CONNECTOR_CLASSES` keys off.
+- **The doorbell answers the ADR 0012 sweeper gap without a bypass.** The API cannot
+  enumerate orgs and neither may the worker (`orgs` is RLS-forced; a BYPASSRLS helper
+  is the service-role bypass the rules forbid). Instead the API publishes
+  `drain_org_jobs` for the org its session already holds, deferred 2s past commit,
+  best-effort by contract; one doorbell drains that org's whole backlog, so a lost
+  message costs latency, never work. An org nobody ever rings for still keeps its
+  orphaned jobs — that residue of ADR 0012 stands.
+- **The anthropic SDK type-hints against `httpx2`** (its vendored fork). Constructing
+  its exceptions in tests with plain `httpx` objects fails mypy only — import
+  `httpx2 as httpx` in that test module.
 
 
 ### Ingestion traps (`apps/worker`)
@@ -305,8 +345,10 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **A `SECURITY DEFINER` function over a FORCE-RLS table returns zero rows, with no error.**
   Verified, not assumed - and it is why there is no cross-tenant job sweeper. Recovery is
   org-scoped and runs at the start of each source run, so **an organisation whose source is
-  never processed again keeps its orphaned jobs** (ADR 0012). The multi-tenant scheduler is
-  the slice that closes this, and it is deliberately not built yet.
+  never processed again keeps its orphaned jobs** (ADR 0012). The doorbell narrows this:
+  the API publishes an org-scoped `drain_org_jobs` message whenever it enqueues work, and
+  one message drains that org's whole backlog — but an org nobody rings for still keeps
+  its orphans, and that residue is deliberate (no cross-tenant enumeration, no bypass).
 - **The claim must commit before the work starts.** Claim and work in one transaction and a
   failure rolls back the `attempts + 1` as well, so the job looks untouched and retries for
   ever. Bounded attempts are only bounded if the counting survives the failure.
