@@ -41,6 +41,7 @@ class SourceSystem(StrEnum):
     JIRA = "jira"
     CONFLUENCE = "confluence"
     GITHUB = "github"
+    ZOOM = "zoom"
 
 
 class AclEntry(BaseModel):

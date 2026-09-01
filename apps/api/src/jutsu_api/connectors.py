@@ -35,13 +35,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
@@ -196,15 +197,19 @@ class HttpOAuthTransport:
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": client.client_id,
-            "client_secret": client.client_secret,
         }
+        post_kwargs: dict[str, Any] = {"headers": {"Accept": "application/json"}}
+        if provider.token_auth == "basic":  # noqa: S105 - an auth placement tag
+            # Zoom authenticates the client with HTTP Basic and rejects body
+            # credentials; RFC 6749 §2.3.1 forbids sending both at once.
+            post_kwargs["auth"] = (client.client_id, client.client_secret)
+        else:
+            data["client_id"] = client.client_id
+            data["client_secret"] = client.client_secret
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
         async with self._http(20.0) as http:
-            response = await http.post(
-                provider.token_url, data=data, headers={"Accept": "application/json"}
-            )
+            response = await http.post(provider.token_url, data=data, **post_kwargs)
         if response.status_code != 200:
             # The body can carry the code and client id back; classify, never forward.
             raise ServiceUnavailable("The provider refused the token exchange.")
@@ -278,6 +283,12 @@ class HttpOAuthTransport:
                     await http.post(
                         provider.revoke_url,
                         headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                elif provider.revoke_style == "basic_post_token":
+                    await http.post(
+                        provider.revoke_url,
+                        data={"token": access_token},
+                        auth=(client.client_id, client.client_secret),
                     )
                 elif provider.revoke_style == "github_grant":
                     await http.request(
@@ -528,7 +539,7 @@ async def start_connection(
                     "state": state,
                     "verifier": code_verifier,
                     "expires": expires_at,
-                    "scopes": '["' + '", "'.join(provider.scopes) + '"]',
+                    "scopes": json.dumps(list(provider.scopes)),
                 },
             )
         except IntegrityError as error:
@@ -551,7 +562,9 @@ async def start_connection(
         # Slack's `scope` provisions a bot; the employee's own visibility asks via
         # user_scope, and the exchange reads authed_user accordingly.
         params.append(("user_scope", " ".join(provider.scopes)))
-    else:
+    elif provider.scopes:
+        # An empty tuple means the provider fixes scopes at app registration (Zoom);
+        # a bare `scope=` there would be noise at best and a 4xx at worst.
         params.append(("scope", " ".join(provider.scopes)))
     # Provider-declared knobs (Google's access_type=offline, Atlassian's audience),
     # sent only where declared instead of sprayed across all eleven providers.

@@ -53,13 +53,19 @@ class Provider:
     #: authed_user block (the employee's own token, not a bot's) and asks for scopes
     #: via user_scope.
     token_style: str = "standard"  # noqa: S105 - a parsing style tag, not a secret
+    #: How the token endpoint authenticates the *client*: "body" posts client_id and
+    #: client_secret as form fields (everyone else); "basic" sends an HTTP Basic
+    #: Authorization header and keeps them out of the body (Zoom requires this, and
+    #: RFC 6749 forbids using both at once).
+    token_auth: str = "body"  # noqa: S105 - an auth placement tag, not a secret
     #: Which source_identities namespace this provider's proven subject belongs to
     #: (ADR 0014). Four Google products share one subject (the OIDC sub), three
     #: Microsoft products share the Graph object id; the namespaces mirror that.
     acl_namespace: str = ""
     #: Where an access token can be revoked upstream at disconnect, and how:
     #: "post_token" (Google), "bearer_post" (Slack auth.revoke), "github_grant"
-    #: (DELETE the whole grant with basic auth). None: the provider offers no
+    #: (DELETE the whole grant with basic auth), "basic_post_token" (Zoom: the token
+    #: as a form field under the client's Basic header). None: the provider offers no
     #: revocation endpoint and local deletion is the whole story.
     revoke_url: str | None = None
     revoke_style: str | None = None
@@ -209,6 +215,25 @@ PROVIDERS: dict[str, Provider] = {
             "Pages and spaces you can already read.",
             "read:confluence-content.all",
             "read:confluence-user",
+        ),
+        Provider(
+            id="zoom",
+            name="Zoom",
+            group="communication",
+            description="Cloud recordings and transcripts of meetings you hosted.",
+            authorize_url="https://zoom.us/oauth/authorize",
+            token_url="https://zoom.us/oauth/token",  # noqa: S106 - endpoint, not a secret
+            userinfo_url="https://api.zoom.us/v2/users/me",
+            # Zoom binds scopes at app registration (the Marketplace app's Scopes tab)
+            # and its authorize URL carries no scope parameter, so the tuple is empty
+            # and the URL builder omits it. §4.8 is enforced by what the app registers:
+            # user:read:user plus the cloud_recording read scopes (or classic
+            # user:read + recording:read) and nothing that writes.
+            scopes=(),
+            acl_namespace="zoom",
+            token_auth="basic",  # noqa: S106 - an auth placement tag, not a secret
+            revoke_url="https://zoom.us/oauth/revoke",
+            revoke_style="basic_post_token",
         ),
         Provider(
             id="github",

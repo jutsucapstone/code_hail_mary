@@ -70,6 +70,23 @@ misleading, requesting fewer breaks the flow.
 - **Scopes** are requested at runtime (`read:user`, `read:org`) — nothing to configure in the console beyond the callback.
 - Reach is public repositories only: the classic `repo` scope also writes and is refused (§4.8). Private-repo content read-only requires a **GitHub App** installation — a different flow, deliberately not faked with a write-capable scope.
 
+## Zoom (zoom)
+
+- **Console**: https://marketplace.zoom.us/develop/create → General App (user-managed)
+- **OAuth Redirect URL** and the **OAuth allow list**: the callback URI above.
+- **Scopes are configured on the app, not requested at runtime** — Zoom's authorize
+  URL takes no scope parameter, so the registry declares an empty tuple and the app's
+  Scopes tab is where §4.8 is enforced. Add read-only scopes only:
+  `user:read:user`, `cloud_recording:read:list_user_recordings`,
+  `cloud_recording:read:recording` (granular; on a classic app: `user:read`,
+  `recording:read`).
+- **Token endpoint uses HTTP Basic** client authentication (`token_auth="basic"` in
+  the registry); the code sends the client id and secret as a Basic header, never as
+  body fields.
+- Content synced: cloud recordings, bodied by their transcripts where Zoom generated
+  one. Recordings require a plan with cloud recording; the transcript needs audio
+  transcription enabled in the account's recording settings.
+
 ---
 
 ## Verifying a provider once its credentials are set
@@ -91,8 +108,21 @@ misleading, requesting fewer breaks the flow.
 Every secret lives in Secret Manager, and there are two ways one gets mounted.
 `deploy.yml` carries the deployment-wide set (`jutsu-anthropic-api-key`,
 `jutsu-connection-key`, database URL, pepper, SMTP) and re-asserts it on every push.
-The per-provider pairs are **not** in the pipeline — an operator mounts each one once,
-and the pipeline preserves it:
+The per-provider pairs are pipeline-owned too — `deploy.yml` mounts every
+`JUTSU_OAUTH_*` pair from these Secret Manager names (one Google client serves the
+four Google provider ids; one Atlassian client serves jira and confluence):
+
+| Secret Manager name | Mounted as |
+| --- | --- |
+| `jutsu-oauth-google-client-id` / `-secret` | `JUTSU_OAUTH_GOOGLE_DRIVE_*`, `_GMAIL_*`, `_GOOGLE_CALENDAR_*`, `_GOOGLE_MEET_*` |
+| `jutsu-slack-client-id` / `-secret` | `JUTSU_OAUTH_SLACK_*` |
+| `jutsu-oauth-github-client-id` / `-secret` | `JUTSU_OAUTH_GITHUB_*` |
+| `jutsu-atlassian-oauth-client-id` / `-secret` | `JUTSU_OAUTH_JIRA_*`, `_CONFLUENCE_*` |
+| `jutsu-zoom-oauth-client-id` / `-secret` | `JUTSU_OAUTH_ZOOM_*` |
+
+A provider not yet registered simply has no secret versions; its catalogue card says
+"not configured" and nothing else breaks. An operator can also mount a pair by hand
+ahead of a deploy — merge semantics preserve it:
 
 ```bash
 printf '%s' 'the-client-id'     | gcloud secrets create jutsu-oauth-github-client-id --data-file=-

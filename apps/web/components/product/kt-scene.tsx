@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useReducedMotion } from "framer-motion";
 
 /**
@@ -21,6 +21,14 @@ import { useReducedMotion } from "framer-motion";
  * render; it renders only at `lg` and up (on a phone the column does not exist); and
  * `prefers-reduced-motion` skips it entirely, since the scene's whole point is ambient
  * motion.
+ *
+ * A fourth gate exists because of what the runtime does with a zero-size host: it
+ * boots WebGPU anyway and then fails to allocate a 0×0 swapchain texture on every
+ * frame, for ever — hundreds of `GPUValidationError`s a minute that Next's dev overlay
+ * dutifully counts as issues. Window width alone cannot rule that out (the panel can
+ * be `display: none` or mid-layout while the window is wide), so the viewer element
+ * itself mounts only while the panel's *measured* box is non-zero, and unmounts the
+ * moment it collapses.
  */
 
 const VIEWER_SRC = "https://unpkg.com/@splinetool/viewer@2.0.21/build/spline-viewer.js";
@@ -47,6 +55,10 @@ export function KtScene({ className }: { className?: string }) {
   const wide = useSyncExternalStore(subscribeWide, getWideSnapshot, getWideServerSnapshot);
   const shouldReduceMotion = useReducedMotion();
   const active = wide && !shouldReduceMotion;
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  // Without ResizeObserver there is no way to measure and so no way to protect —
+  // start visible there (the plain mount) rather than silently never rendering.
+  const [hasSize, setHasSize] = useState(() => typeof ResizeObserver !== "function");
 
   useEffect(() => {
     if (!active) return;
@@ -60,10 +72,23 @@ export function KtScene({ className }: { className?: string }) {
     // custom element stays registered for the life of the page either way.
   }, [active]);
 
+  useEffect(() => {
+    if (!active) return;
+    const host = hostRef.current;
+    if (host === null) return;
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect;
+      setHasSize(box !== undefined && box.width >= 1 && box.height >= 1);
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [active]);
+
   if (!active) return null;
 
   return (
-    <div aria-hidden="true" className={className}>
+    <div aria-hidden="true" className={className} ref={hostRef}>
       {/* The custom element upgrades in place once the module registers it; until
           then it is an inert block and the panel's own surface shows. The scene keeps
           its own dark rendering deliberately: its glass is lit against the backdrop
@@ -71,11 +96,13 @@ export function KtScene({ className }: { className?: string }) {
           backdrop mesh) collapses the material into an unlit blob — verified live.
           The watermark is off in the scene file itself, via the same
           publish.settings.web.logo flag the Spline editor writes on export. */}
-      <spline-viewer
-        url="/spline/kt-orb.splinecode"
-        loading-anim-type="none"
-        style={{ width: "100%", height: "100%", display: "block" }}
-      />
+      {hasSize ? (
+        <spline-viewer
+          url="/spline/kt-orb.splinecode"
+          loading-anim-type="none"
+          style={{ width: "100%", height: "100%", display: "block" }}
+        />
+      ) : null}
     </div>
   );
 }

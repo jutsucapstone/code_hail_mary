@@ -181,6 +181,42 @@ class TestAccessToken:
         assert fernet_key.decrypt(bytes(row.refresh_token_enc)).decode() == "rotated-refresh"
         assert row.token_expires_at is not None
 
+    async def test_a_zoom_refresh_authenticates_with_basic_never_the_body(
+        self, fernet_key: Fernet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`token_auth="basic"` (Zoom): the client goes in an HTTP Basic header and
+        stays out of the form body — the twin of the API exchange's pin, because both
+        callers of a token URL must honour the same registry declaration."""
+        monkeypatch.setenv("JUTSU_OAUTH_ZOOM_CLIENT_ID", "zoom-client")
+        monkeypatch.setenv("JUTSU_OAUTH_ZOOM_CLIENT_SECRET", "zoom-secret")
+        org_id = uuid.uuid4()
+        connection_id = await seed_connection(
+            org_id,
+            fernet_key,
+            provider="zoom",
+            expires_at=datetime.now(tz=UTC) - timedelta(minutes=1),
+        )
+
+        captured: dict[str, str] = {}
+
+        def refresh(request: httpx.Request) -> httpx.Response:
+            captured["authorization"] = request.headers.get("Authorization", "")
+            captured["body"] = request.content.decode()
+            return httpx.Response(200, json={"access_token": "zoomed", "expires_in": 3600})
+
+        async with (
+            org_session(org_id) as session,
+            httpx.AsyncClient(transport=httpx.MockTransport(refresh)) as http,
+        ):
+            token = await access_token_for(session, connection_id=connection_id, http=http)
+        assert token == "zoomed"
+        import base64
+
+        expected = base64.b64encode(b"zoom-client:zoom-secret").decode("ascii")
+        assert captured["authorization"] == f"Basic {expected}"
+        assert "client_secret" not in captured["body"]
+        assert "client_id" not in captured["body"]
+
     async def test_a_rejected_refresh_is_reauth_and_the_owner_sees_reconnect(
         self, fernet_key: Fernet, monkeypatch: pytest.MonkeyPatch
     ) -> None:

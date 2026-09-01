@@ -27,6 +27,7 @@ from jutsu_connectors.providers.microsoft import (
     TeamsConnector,
 )
 from jutsu_connectors.providers.slack import SlackConnector
+from jutsu_connectors.providers.zoom import ZoomConnector
 
 __all__ = [
     "CONNECTOR_CLASSES",
@@ -46,6 +47,7 @@ __all__ = [
     "SlackConnector",
     "TeamsConnector",
     "TokenSource",
+    "ZoomConnector",
 ]
 
 #: One connector class per provider id, for the worker's registry. Providers sharing a
@@ -62,4 +64,5 @@ CONNECTOR_CLASSES: "dict[str, type]" = {
     "github": GitHubConnector,
     "jira": JiraConnector,
     "confluence": ConfluenceConnector,
+    "zoom": ZoomConnector,
 }

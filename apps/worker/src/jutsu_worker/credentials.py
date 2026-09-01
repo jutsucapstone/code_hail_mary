@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -173,15 +174,19 @@ async def access_token_for(
     data = {
         "grant_type": "refresh_token",
         "refresh_token": stored.refresh_token,
-        "client_id": client.client_id,
-        "client_secret": client.client_secret,
     }
+    post_kwargs: dict[str, Any] = {"headers": {"Accept": "application/json"}}
+    if provider.token_auth == "basic":  # noqa: S105 - an auth placement tag
+        # Zoom authenticates the client with HTTP Basic and rejects body credentials
+        # (the same declaration the API's exchange honours).
+        post_kwargs["auth"] = (client.client_id, client.client_secret)
+    else:
+        data["client_id"] = client.client_id
+        data["client_secret"] = client.client_secret
     owns_client = http is None
     http = http or httpx.AsyncClient(timeout=20.0)
     try:
-        response = await http.post(
-            provider.token_url, data=data, headers={"Accept": "application/json"}
-        )
+        response = await http.post(provider.token_url, data=data, **post_kwargs)
     except httpx.HTTPError as error:
         raise TransientRefreshError("The provider was unreachable for a token refresh.") from error
     finally:

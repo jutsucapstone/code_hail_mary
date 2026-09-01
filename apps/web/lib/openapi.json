@@ -2672,7 +2672,8 @@
           "slack",
           "jira",
           "confluence",
-          "github"
+          "github",
+          "zoom"
         ],
         "title": "SourceSystem",
         "type": "string"

@@ -2164,7 +2164,7 @@ export interface components {
          * @description Every system JUTSU can read from. Read-only, always (§4.8).
          * @enum {string}
          */
-        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github";
+        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom";
         /** SubjectProfileOut */
         SubjectProfileOut: {
             /** Department */

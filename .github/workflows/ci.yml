@@ -39,7 +39,7 @@ jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     # A real Postgres, not a stand-in. pgvector, RLS and FORCE ROW LEVEL SECURITY have
     # no in-memory equivalent, so without this the packages/db suite would skip and CI

@@ -17,6 +17,7 @@ the seam's contract is exactly two provider calls.
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -96,10 +97,23 @@ class FakeOAuth:
 
 @pytest.fixture
 def oauth_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A configured deployment: slack credentials plus an encryption key."""
+    """A configured deployment: slack and zoom credentials plus an encryption key."""
     monkeypatch.setenv("JUTSU_OAUTH_SLACK_CLIENT_ID", "slack-client-id")
     monkeypatch.setenv("JUTSU_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret")
+    monkeypatch.setenv("JUTSU_OAUTH_ZOOM_CLIENT_ID", "zoom-client-id")
+    monkeypatch.setenv("JUTSU_OAUTH_ZOOM_CLIENT_SECRET", "zoom-client-secret")
     monkeypatch.setenv("JUTSU_CONNECTION_KEY", Fernet.generate_key().decode("ascii"))
+
+
+@pytest.fixture
+def no_oauth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An UNconfigured deployment, constructed rather than assumed: the root conftest
+    loads `.env`, so a developer machine with real provider credentials would
+    otherwise flip every `configured: false` assertion."""
+    for key in list(os.environ):
+        if key.startswith("JUTSU_OAUTH_"):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv("JUTSU_CONNECTION_KEY", raising=False)
 
 
 @pytest.fixture
@@ -218,7 +232,7 @@ async def complete(client: AsyncClient, state: str) -> object:
 
 class TestCatalogue:
     async def test_unconfigured_providers_say_so(
-        self, client: AsyncClient, mailbox: RecordingEmailSender
+        self, client: AsyncClient, mailbox: RecordingEmailSender, no_oauth_env: None
     ) -> None:
         """No credentials in the environment → configured: false, for every provider."""
         await register_owner(client, mailbox)
@@ -229,7 +243,7 @@ class TestCatalogue:
         assert all(item["connection"] is None for item in body["items"])
 
     async def test_connecting_an_unconfigured_provider_is_a_503_not_a_fake_success(
-        self, client: AsyncClient, mailbox: RecordingEmailSender
+        self, client: AsyncClient, mailbox: RecordingEmailSender, no_oauth_env: None
     ) -> None:
         await register_owner(client, mailbox)
 
@@ -923,6 +937,28 @@ class TestOAuthHardening:
         assert "scope" not in query, "a `scope` here would provision a bot"
         assert "access_type" not in query, "a Google-only knob must not reach Slack"
 
+    async def test_zoom_authorize_url_carries_no_scope_parameter(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+    ) -> None:
+        """Zoom fixes scopes at app registration; an empty registry tuple must mean
+        NO scope parameter, not `scope=` — and the stored row must say `[]`, not
+        a one-element list holding an empty string."""
+        from urllib.parse import parse_qs, urlparse
+
+        await register_owner(client, mailbox)
+        started = await client.post("/v1/me/connections/zoom", headers=csrf(client))
+        assert started.status_code == 201
+        query = parse_qs(urlparse(started.json()["authorize_url"]).query)
+        assert "scope" not in query
+        assert "user_scope" not in query
+        catalogue = (await client.get("/v1/integrations")).json()["items"]
+        zoom = next(entry for entry in catalogue if entry["id"] == "zoom")
+        assert zoom["connection"] is not None
+        assert zoom["connection"]["scopes"] == []
+
     async def test_an_expired_state_is_a_404_like_any_forged_one(
         self,
         client: AsyncClient,
@@ -1039,6 +1075,48 @@ class TestHttpOAuthTransport:
         assert grant.access_token == "xoxp-user-token", "the employee's token, not a bot's"
         assert grant.refresh_token == "xoxe-refresh"
         assert grant.expires_in == 3600
+
+    async def test_zoom_exchange_authenticates_with_basic_never_the_body(self) -> None:
+        """Zoom's token endpoint takes the client as an HTTP Basic header and rejects
+        body credentials; RFC 6749 §2.3.1 forbids sending both. The declaration is
+        `token_auth="basic"` on the registry entry — this pins that both callers of a
+        token URL honour it (the worker's refresh has its own twin)."""
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["authorization"] = request.headers.get("Authorization", "")
+            captured["body"] = request.content.decode("utf-8")
+            return httpx.Response(
+                200,
+                json={"access_token": "at", "refresh_token": "rt", "expires_in": 3599},
+            )
+
+        grant = await _http_transport(handler).exchange_code(
+            PROVIDERS["zoom"], CLIENT, code="c", redirect_uri="https://app/cb"
+        )
+        assert grant.access_token == "at"
+        import base64
+
+        expected = base64.b64encode(b"cid:cs").decode("ascii")
+        assert captured["authorization"] == f"Basic {expected}"
+        assert "client_secret" not in captured["body"]
+        assert "client_id" not in captured["body"]
+
+    async def test_zoom_revocation_posts_the_token_under_the_basic_header(self) -> None:
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["authorization"] = request.headers.get("Authorization", "")
+            captured["body"] = request.content.decode("utf-8")
+            return httpx.Response(200, json={"status": "success"})
+
+        await _http_transport(handler).revoke_upstream(
+            PROVIDERS["zoom"], CLIENT, access_token="dead-token"
+        )
+        assert captured["url"] == "https://zoom.us/oauth/revoke"
+        assert captured["authorization"].startswith("Basic ")
+        assert "token=dead-token" in captured["body"]
 
     async def test_a_failed_exchange_forwards_nothing_from_the_body(self) -> None:
         """The body can carry the code and client id back; classify, never forward."""
