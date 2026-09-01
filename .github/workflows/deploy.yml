@@ -247,6 +247,11 @@ jobs:
           # inside double quotes: that keeps `<` and `>` as text rather than shell
           # redirection. There is no comma in it, which is what the flag splits on.
           #
+          # REDIS_URL is deliberately NOT mounted: production has no Redis by the
+          # runbook's own cost stance (the reaper is a Cloud Run job for exactly that
+          # reason) and no arq worker service yet. The doorbell degrades honestly -
+          # sync jobs enqueue durable rows that wait, visible on the Jobs page - and
+          # the mount lands together with the worker slice that would hear it.
           # This comment sits above the command rather than among its continuation
           # lines. A `#` after a trailing backslash ends the continuation, so the rest
           # of the flags become their own command — still valid shell, so `bash -n`
@@ -258,7 +263,7 @@ jobs:
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
             --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>,JUTSU_APP_URL=https://jutsu.co.in,GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }},VERTEX_LOCATION=asia-south1" \
-            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest,REDIS_URL=jutsu-redis-url:latest,ANTHROPIC_API_KEY=jutsu-anthropic-api-key:latest,JUTSU_CONNECTION_KEY=jutsu-connection-key:latest" \
+            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest,ANTHROPIC_API_KEY=jutsu-anthropic-api-key:latest,JUTSU_CONNECTION_KEY=jutsu-connection-key:latest" \
             --min-instances 0 \
             --max-instances 10 \
             --allow-unauthenticated \
