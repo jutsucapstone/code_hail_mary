@@ -17,11 +17,13 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from datetime import timedelta
 from typing import Any, ClassVar
 
 from arq import cron
 from arq.connections import RedisSettings
 from jutsu_db import unscoped_session
+from jutsu_db.engine import org_session
 from jutsu_retrieval.client import VertexTransport
 from jutsu_retrieval.config import get_embedding_settings
 from jutsu_retrieval.embeddings import Embedder
@@ -135,6 +137,23 @@ async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
     ran = sum(counts.values())
     if ran:
         logger.info("%s", {"event": "org_drained", "org_id": org_id, "jobs": ran})
+
+    # A job in retry_scheduled with a future next_attempt_at was not claimable by this
+    # drain — and nothing else will ever ring for it: the doorbell fires on *enqueue*,
+    # and a retry is not an enqueue. Ring again after the shortest backoff has passed,
+    # with a deterministic job id so a burst of drains collapses into one follow-up.
+    async with org_session(uuid.UUID(org_id)) as session:
+        retries_waiting = (
+            await session.execute(text("SELECT count(*) FROM jobs WHERE state = 'retry_scheduled'"))
+        ).scalar_one()
+    redis = ctx.get("redis")
+    if retries_waiting and redis is not None:
+        await redis.enqueue_job(
+            "drain_org_jobs",
+            org_id,
+            _defer_by=timedelta(seconds=60),
+            _job_id=f"drain-retry:{org_id}",
+        )
     return counts
 
 

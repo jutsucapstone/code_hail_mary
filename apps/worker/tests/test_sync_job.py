@@ -269,3 +269,56 @@ class TestDrainOrg:
                 await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_a})
             ).one()
             assert job.state == "pending", "another org's drain must not have touched it"
+
+
+class TestDrainFollowUp:
+    """A retry with a future next_attempt_at has no doorbell of its own — the drain
+    dispatch re-rings for it, deferred, with a deterministic job id."""
+
+    async def test_waiting_retries_re_ring_the_doorbell(self) -> None:
+        from jutsu_worker.main import drain_org_jobs
+
+        org_id = uuid.uuid4()
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("INSERT INTO orgs (id, name) VALUES (:id, 'retry-org')"), {"id": org_id}
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, "
+                    "payload_json, next_attempt_at) VALUES (:id, :org, 'embed.document', "
+                    "'retry_scheduled', :key, cast(:p AS jsonb), now() + interval '5 minutes')"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "org": str(org_id),
+                    "key": f"embed.document:{org_id}:{uuid.uuid4()}",
+                    "p": '{"document_id": "irrelevant"}',
+                },
+            )
+
+        class RecordingRedis:
+            def __init__(self) -> None:
+                self.enqueued: list[tuple[str, str]] = []
+
+            async def enqueue_job(self, name: str, *args: str, **kwargs: object) -> None:
+                self.enqueued.append((name, str(kwargs.get("_job_id"))))
+
+        redis = RecordingRedis()
+        await drain_org_jobs({"redis": redis}, str(org_id))
+        assert redis.enqueued == [("drain_org_jobs", f"drain-retry:{org_id}")]
+
+    async def test_an_idle_org_rings_nothing(self) -> None:
+        from jutsu_worker.main import drain_org_jobs
+
+        org_id = uuid.uuid4()
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("INSERT INTO orgs (id, name) VALUES (:id, 'quiet-org')"), {"id": org_id}
+            )
+
+        class RefusingRedis:
+            async def enqueue_job(self, *args: object, **kwargs: object) -> None:
+                raise AssertionError("no follow-up was warranted")
+
+        await drain_org_jobs({"redis": RefusingRedis()}, str(org_id))
