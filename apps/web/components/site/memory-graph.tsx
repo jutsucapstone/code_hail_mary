@@ -12,7 +12,9 @@ import { useReducedMotion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
 
-type NodeKind = "person" | "project" | "decision" | "skill";
+type NodeKind = "person" | "project" | "decision" | "skill" | "source";
+
+type SourceGlyph = "mail" | "chat" | "code" | "calendar" | "doc";
 
 interface GraphNode {
   id: string;
@@ -26,6 +28,14 @@ interface GraphNode {
   /** Centre in the narrow frame. Absent means the node is not shown there. */
   mx?: number;
   my?: number;
+  /**
+   * A person's own hue. Each person's sub-web — their avatar and every edge they
+   * anchor — carries it, which is how ownership reads at a glance: three people,
+   * three visibly distinct webs over one shared graph.
+   */
+  accent?: string;
+  /** Which mark a source tile carries. */
+  glyph?: SourceGlyph;
 }
 
 /**
@@ -46,9 +56,9 @@ const DESKTOP_VB = { w: 600, h: 450 };
 const MOBILE_VB = { w: 330, h: 480 };
 
 const NODES: GraphNode[] = [
-  { id: "p3", label: "Meera", kind: "person", note: "Joined 4 months ago; ramped on Atlas.", x: 78, y: 74, mx: 58, my: 56 },
-  { id: "p1", label: "Priya", kind: "person", note: "Sole owner on 3 critical projects — bus factor 1.", x: 56, y: 214, mx: 50, my: 218 },
-  { id: "p2", label: "Arjun", kind: "person", note: "Kubernetes cost work across Falcon and Atlas.", x: 84, y: 356, mx: 58, my: 400 },
+  { id: "p3", label: "Meera", kind: "person", accent: "var(--graph-violet)", note: "Joined 4 months ago; ramped on Atlas.", x: 78, y: 74, mx: 58, my: 56 },
+  { id: "p1", label: "Priya", kind: "person", accent: "var(--brand)", note: "Sole owner on 3 critical projects — bus factor 1.", x: 56, y: 214, mx: 50, my: 218 },
+  { id: "p2", label: "Arjun", kind: "person", accent: "var(--graph-amber)", note: "Kubernetes cost work across Falcon and Atlas.", x: 84, y: 356, mx: 58, my: 400 },
   { id: "pr1", label: "Falcon", kind: "project", note: "14 decisions, 3 owners, 22 linked meetings.", x: 236, y: 196, mx: 206, my: 130 },
   { id: "pr2", label: "Atlas", kind: "project", note: "Depends on the Falcon storage decision.", x: 432, y: 74, mx: 232, my: 302 },
   { id: "d1", label: "Postgres over Mongo", kind: "decision", note: "Decided 12 Mar — owner Priya, cited to 2 meetings.", x: 420, y: 300, mx: 186, my: 452 },
@@ -56,6 +66,13 @@ const NODES: GraphNode[] = [
   { id: "s1", label: "Kubernetes", kind: "skill", note: "2 contributors ranked by real contributions.", x: 170, y: 290, mx: 186, my: 216 },
   { id: "s3", label: "pgvector", kind: "skill", note: "Introduced by the Postgres decision.", x: 276, y: 384 },
   { id: "s2", label: "GraphRAG", kind: "skill", note: "Emerged from the retrieval decisions on Atlas.", x: 486, y: 392 },
+  // Source tiles at the rim: where memory arrives from. Every connector in the
+  // product is read-only, and the note says so — the illustration keeps the claim.
+  { id: "src1", label: "Mail", kind: "source", glyph: "mail", note: "Read-only connector — threads become cited memory.", x: 30, y: 128, mx: 36, my: 130 },
+  { id: "src2", label: "Chat", kind: "source", glyph: "chat", note: "Channel history, under each member's own access.", x: 196, y: 32, mx: 150, my: 34 },
+  { id: "src3", label: "Code", kind: "source", glyph: "code", note: "Issues and reviews, linked to the people who wrote them.", x: 34, y: 428 },
+  { id: "src4", label: "Calendar", kind: "source", glyph: "calendar", note: "Meetings anchor decisions to the moment they happened.", x: 330, y: 128 },
+  { id: "src5", label: "Docs", kind: "source", glyph: "doc", note: "Pages and files, each fact pointing at its span.", x: 546, y: 40, mx: 298, my: 250 },
 ];
 
 /**
@@ -81,6 +98,13 @@ const EDGES: Array<{ a: string; b: string; bow: number; soft?: boolean }> = [
   { a: "d2", b: "s2", bow: -0.12, soft: true },
   { a: "s3", b: "pr1", bow: 0.1, soft: true },
   { a: "s2", b: "d1", bow: 0.11, soft: true },
+  // Ingestion edges: a source feeds the graph through a person's own grant, so
+  // each tile hangs off the person (or project) whose access it flows through.
+  { a: "src1", b: "p1", bow: 0.1, soft: true },
+  { a: "src2", b: "p3", bow: -0.09, soft: true },
+  { a: "src3", b: "p2", bow: 0.09, soft: true },
+  { a: "src4", b: "pr1", bow: -0.08, soft: true },
+  { a: "src5", b: "pr2", bow: 0.1, soft: true },
 ];
 
 /** Edges that carry a travelling packet — the live query path. */
@@ -90,6 +114,9 @@ const FLOWS = [
   { edge: 9, offset: 0.66 },
   { edge: 8, offset: 0.15 },
   { edge: 11, offset: 0.5 },
+  // Ingestion streaming in from two of the rim tiles.
+  { edge: 14, offset: 0.42 },
+  { edge: 18, offset: 0.8 },
 ];
 
 const KIND_COLOR: Record<NodeKind, string> = {
@@ -97,21 +124,29 @@ const KIND_COLOR: Record<NodeKind, string> = {
   project: "var(--foreground)",
   decision: "var(--graph)",
   skill: "var(--graph-muted)",
+  source: "var(--muted-foreground)",
 };
+
+/** A person's own accent wins over the kind colour everywhere one is set. */
+const colorOf = (node: GraphNode) => node.accent ?? KIND_COLOR[node.kind];
 
 const KIND_LABEL: Record<NodeKind, string> = {
   person: "Person",
   project: "Project",
   decision: "Decision",
   skill: "Skill",
+  source: "Source",
 };
 
 /** Capsule height per kind. Size is one of the three non-colour signals. */
-const PILL_H: Record<Exclude<NodeKind, "person">, number> = {
+const PILL_H: Record<"project" | "decision" | "skill", number> = {
   project: 32,
   decision: 28,
   skill: 25,
 };
+
+/** Half-extent of a source tile — a rounded app square, label in the readout only. */
+const TILE_HALF = 15;
 
 const AVATAR_R = 19;
 
@@ -128,9 +163,22 @@ const MONO_ADVANCE = 0.605;
 
 const fontSizeFor = (kind: NodeKind) => (kind === "project" ? 12 : kind === "decision" ? 11 : 10);
 
+/**
+ * The colour an edge carries. A person's edges wear that person's accent — the
+ * reference reading of "whose web is this" — a source edge stays neutral (it is
+ * plumbing, not ownership), and an edge between entities keeps the brand→graph
+ * gradient the rest of the site uses for connection.
+ */
+function edgeStroke(a: GraphNode, b: GraphNode): string {
+  if (a.kind === "source" || b.kind === "source") return "var(--muted-foreground)";
+  const person = a.accent ?? b.accent;
+  return person ?? "url(#jutsu-graph-edge)";
+}
+
 /** Half-width and half-height of a node's painted box, for layout and hit areas. */
 function extentOf(node: GraphNode) {
   if (node.kind === "person") return { hw: AVATAR_R, hh: AVATAR_R };
+  if (node.kind === "source") return { hw: TILE_HALF, hh: TILE_HALF };
   const h = PILL_H[node.kind];
   const text = node.label.length * fontSizeFor(node.kind) * MONO_ADVANCE;
   // leading glyph square + gap + text + symmetric padding
@@ -393,6 +441,10 @@ export function MemoryGraph({ className, hint }: { className?: string; hint?: st
             <stop offset="55%" stopColor="var(--graph)" stopOpacity="0.05" />
             <stop offset="100%" stopColor="var(--brand)" stopOpacity="0" />
           </radialGradient>
+          {/* The survey-paper lattice under everything: structure without noise. */}
+          <pattern id="jutsu-graph-lattice" width="26" height="26" patternUnits="userSpaceOnUse">
+            <circle cx="1" cy="1" r="1" fill="var(--foreground)" opacity="0.07" />
+          </pattern>
           <linearGradient id="jutsu-graph-edge" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stopColor="var(--brand)" stopOpacity="0.62" />
             <stop offset="100%" stopColor="var(--graph)" stopOpacity="0.62" />
@@ -413,27 +465,44 @@ export function MemoryGraph({ className, hint }: { className?: string; hint?: st
           </filter>
         </defs>
 
+        <rect
+          x="0"
+          y="0"
+          width={frame.vb.w}
+          height={frame.vb.h}
+          fill="url(#jutsu-graph-lattice)"
+          opacity="0.5"
+        />
         <rect x="0" y="0" width={frame.vb.w} height={frame.vb.h} fill="url(#jutsu-graph-halo)" />
 
         {/* Bloom pass: a blurred copy under the crisp edges, for depth. */}
-        <g fill="none" stroke="var(--brand)" filter="url(#jutsu-graph-bloom)">
-          {frame.edges.map((e, i) => (
-            <path
-              key={`glow-${e.a}-${e.b}`}
-              ref={(el) => {
-                glowRefs.current[i] = el;
-              }}
-              d={staticPath(e)}
-              strokeWidth={isEdgeActive(e.a, e.b) ? 3 : 0}
-              strokeOpacity={isEdgeActive(e.a, e.b) ? 0.5 : 0}
-              className="transition-[stroke-opacity,stroke-width] duration-300"
-            />
-          ))}
+        <g fill="none" filter="url(#jutsu-graph-bloom)">
+          {frame.edges.map((e, i) => {
+            const accent = byId(e.a).accent ?? byId(e.b).accent ?? "var(--brand)";
+            return (
+              <path
+                key={`glow-${e.a}-${e.b}`}
+                ref={(el) => {
+                  glowRefs.current[i] = el;
+                }}
+                d={staticPath(e)}
+                stroke={accent}
+                strokeWidth={isEdgeActive(e.a, e.b) ? 3 : 0}
+                strokeOpacity={isEdgeActive(e.a, e.b) ? 0.5 : 0}
+                className="transition-[stroke-opacity,stroke-width] duration-300"
+              />
+            );
+          })}
         </g>
 
         <g fill="none">
           {frame.edges.map((e, i) => {
             const lit = isEdgeActive(e.a, e.b);
+            const a = byId(e.a);
+            const b = byId(e.b);
+            const rest = edgeStroke(a, b);
+            const litStroke = a.accent ?? b.accent ?? "var(--brand)";
+            const isSource = a.kind === "source" || b.kind === "source";
             return (
               <path
                 key={`${e.a}-${e.b}`}
@@ -441,9 +510,9 @@ export function MemoryGraph({ className, hint }: { className?: string; hint?: st
                   edgeRefs.current[i] = el;
                 }}
                 d={staticPath(e)}
-                stroke={lit ? "var(--brand)" : "url(#jutsu-graph-edge)"}
+                stroke={lit ? litStroke : rest}
                 strokeWidth={lit ? 2.4 : 1.4}
-                strokeOpacity={activeId ? (lit ? 1 : 0.07) : 0.4}
+                strokeOpacity={activeId ? (lit ? 1 : 0.07) : isSource ? 0.28 : 0.45}
                 strokeDasharray={e.soft ? "5 6" : undefined}
                 strokeLinecap="round"
                 className="transition-[stroke-opacity,stroke-width] duration-300"
@@ -512,7 +581,7 @@ export function MemoryGraph({ className, hint }: { className?: string; hint?: st
                   height={hh * 2 + 10}
                   rx={hh + 5}
                   fill="none"
-                  stroke={KIND_COLOR[node.kind]}
+                  stroke={colorOf(node)}
                   strokeWidth="1"
                   strokeDasharray="3 5"
                   opacity={isActive ? 0.65 : 0}
@@ -535,7 +604,7 @@ export function MemoryGraph({ className, hint }: { className?: string; hint?: st
           <>
             <span
               className="font-mono text-[0.6875rem] uppercase tracking-[0.14em]"
-              style={{ color: KIND_COLOR[active.kind] }}
+              style={{ color: colorOf(active) }}
             >
               {KIND_LABEL[active.kind]}
             </span>
@@ -570,28 +639,38 @@ function NodeChip({
   y: number;
   active: boolean;
 }) {
-  const color = KIND_COLOR[node.kind];
+  const color = colorOf(node);
 
   if (node.kind === "person") {
+    // A filled disc in the person's own hue — the anchor weight of the reference
+    // treatments — with the monogram knocked out in the page background. Deliberately
+    // still not a photograph: stock faces posing as customers claim something false,
+    // and real ones did not agree to a landing page.
     return (
       <g className="transition-all duration-300" filter="url(#jutsu-graph-lift)">
+        {/* Halo ring in the page ground lifts the disc off edges passing under it. */}
+        <circle cx={x} cy={y} r={AVATAR_R + 3} fill="var(--background)" opacity="0.9" />
         <circle
           cx={x}
           cy={y}
           r={AVATAR_R}
-          fill="var(--surface-raised)"
-          stroke={color}
-          strokeWidth={active ? 2.4 : 1.6}
+          fill={color}
+          stroke="var(--background)"
+          strokeWidth="1.5"
         />
-        {/* Inner keyline, so the monogram reads as an avatar rather than a button. */}
         <circle
           cx={x}
           cy={y}
-          r={AVATAR_R - 4}
+          r={AVATAR_R}
           fill="none"
           stroke={color}
-          strokeWidth="0.75"
-          opacity="0.3"
+          strokeWidth={active ? 2.2 : 1}
+          opacity={active ? 0.55 : 0.35}
+          style={{
+            transformOrigin: `${x}px ${y}px`,
+            transform: active ? "scale(1.22)" : "scale(1.12)",
+          }}
+          className="transition-all duration-300"
         />
         <text
           x={x}
@@ -599,13 +678,41 @@ function NodeChip({
           textAnchor="middle"
           dominantBaseline="central"
           fontSize="13"
-          fontWeight="600"
-          letterSpacing="0.04em"
-          fill={color}
+          fontWeight="650"
+          letterSpacing="0.05em"
+          fill="var(--background)"
           className="pointer-events-none select-none font-mono"
         >
           {initialsOf(node.label)}
         </text>
+      </g>
+    );
+  }
+
+  if (node.kind === "source") {
+    // An app tile at the rim: rounded square, glyph only. The label lives in the
+    // readout and the accessible name — at 30px a caption would just be noise.
+    const r = TILE_HALF;
+    return (
+      <g className="transition-all duration-300" filter="url(#jutsu-graph-lift)">
+        <rect
+          x={x - r}
+          y={y - r}
+          width={r * 2}
+          height={r * 2}
+          rx={9}
+          fill="var(--surface-raised)"
+          stroke={active ? "var(--foreground)" : "var(--hairline-strong)"}
+          strokeWidth={active ? 1.6 : 1}
+          className="transition-all duration-300"
+        />
+        <SourceGlyphMark
+          glyph={node.glyph ?? "doc"}
+          cx={x}
+          cy={y}
+          size={13}
+          color={active ? "var(--foreground)" : "var(--muted-foreground)"}
+        />
       </g>
     );
   }
@@ -714,6 +821,80 @@ function KindGlyph({
     <g {...common} className="pointer-events-none">
       <path d={`M${cx} ${cy - s} L${cx} ${cy + s}`} />
       <path d={`M${cx - s} ${cy} L${cx + s} ${cy}`} />
+    </g>
+  );
+}
+
+/** The five source marks, stroked to match the kind glyphs' weight. */
+function SourceGlyphMark({
+  glyph,
+  cx,
+  cy,
+  size,
+  color,
+}: {
+  glyph: SourceGlyph;
+  cx: number;
+  cy: number;
+  size: number;
+  color: string;
+}) {
+  const s = size / 2;
+  const common = {
+    stroke: color,
+    strokeWidth: 1.5,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    fill: "none",
+    className: "pointer-events-none transition-colors duration-300",
+  };
+
+  if (glyph === "mail") {
+    return (
+      <g {...common}>
+        <rect x={cx - s} y={cy - s * 0.72} width={s * 2} height={s * 1.44} rx={1.5} />
+        <path d={`M${cx - s} ${cy - s * 0.5} L${cx} ${cy + s * 0.16} L${cx + s} ${cy - s * 0.5}`} />
+      </g>
+    );
+  }
+
+  if (glyph === "chat") {
+    return (
+      <g {...common}>
+        <path
+          d={`M${cx - s} ${cy - s * 0.7} h${s * 2} a1.5 1.5 0 0 1 1.5 1.5 v${s * 0.9} a1.5 1.5 0 0 1 -1.5 1.5 h${-s * 1.1} l${-s * 0.55} ${s * 0.62} v-${s * 0.62} h${-s * 0.35} a1.5 1.5 0 0 1 -1.5 -1.5 v-${s * 0.9} a1.5 1.5 0 0 1 1.5 -1.5 Z`}
+        />
+      </g>
+    );
+  }
+
+  if (glyph === "code") {
+    return (
+      <g {...common}>
+        <path d={`M${cx - s * 0.35} ${cy - s} L${cx - s} ${cy} L${cx - s * 0.35} ${cy + s}`} />
+        <path d={`M${cx + s * 0.35} ${cy - s} L${cx + s} ${cy} L${cx + s * 0.35} ${cy + s}`} />
+      </g>
+    );
+  }
+
+  if (glyph === "calendar") {
+    return (
+      <g {...common}>
+        <rect x={cx - s} y={cy - s * 0.78} width={s * 2} height={s * 1.68} rx={1.5} />
+        <path d={`M${cx - s} ${cy - s * 0.28} H${cx + s}`} />
+        <path d={`M${cx - s * 0.45} ${cy - s * 1.05} V${cy - s * 0.55}`} />
+        <path d={`M${cx + s * 0.45} ${cy - s * 1.05} V${cy - s * 0.55}`} />
+      </g>
+    );
+  }
+
+  // doc — a page with a folded corner
+  return (
+    <g {...common}>
+      <path
+        d={`M${cx - s * 0.7} ${cy - s} H${cx + s * 0.2} L${cx + s * 0.7} ${cy - s * 0.5} V${cy + s} H${cx - s * 0.7} Z`}
+      />
+      <path d={`M${cx + s * 0.2} ${cy - s} V${cy - s * 0.5} H${cx + s * 0.7}`} />
     </g>
   );
 }

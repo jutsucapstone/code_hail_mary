@@ -49,7 +49,7 @@ export default function SourcesPage() {
   });
   const [systemFilter, setSystemFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const items = sources.data?.items ?? [];
+  const items = useMemo(() => sources.data?.items ?? [], [sources.data]);
   const systems = useMemo(
     () => Array.from(new Set(items.map((s) => s.system))).sort(),
     [items],

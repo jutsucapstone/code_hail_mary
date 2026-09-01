@@ -75,6 +75,8 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-graph: var(--graph);
   --color-graph-muted: var(--graph-muted);
+  --color-graph-amber: var(--graph-amber);
+  --color-graph-violet: var(--graph-violet);
   --color-surface: var(--surface);
   --color-surface-raised: var(--surface-raised);
   --color-hairline: var(--hairline);
@@ -134,6 +136,12 @@
   --brand-foreground: oklch(0.99 0.01 135);
   --graph: oklch(0.46 0.088 200);
   --graph-muted: oklch(0.57 0.07 198);
+  /* Person accents for the memory-graph hero: each person's sub-web carries
+     their own hue, the way ownership reads in the product. Same flip rule as
+     --brand/--graph: darker here, lighter in .dark, re-check contrast in BOTH
+     themes after touching either. */
+  --graph-amber: oklch(0.58 0.125 70);
+  --graph-violet: oklch(0.5 0.115 300);
   --hairline: oklch(0.175 0.012 265 / 10%);
   --hairline-strong: oklch(0.175 0.012 265 / 18%);
   /* The brand green is perceptually far stronger than a warm hue at the same
@@ -187,6 +195,8 @@
   --brand-foreground: oklch(0.17 0.035 135);
   --graph: oklch(0.74 0.1 197);
   --graph-muted: oklch(0.55 0.068 198);
+  --graph-amber: oklch(0.78 0.125 78);
+  --graph-violet: oklch(0.73 0.105 300);
   --hairline: oklch(1 0 0 / 8%);
   --hairline-strong: oklch(1 0 0 / 16%);
   --glow-alpha: 4.5%;

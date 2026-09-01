@@ -14,6 +14,7 @@ const LEGEND = [
   { label: "Projects", color: "var(--foreground)" },
   { label: "Decisions", color: "var(--graph)" },
   { label: "Skills", color: "var(--graph-muted)" },
+  { label: "Sources", color: "var(--muted-foreground)" },
 ] as const;
 
 export function Hero() {
