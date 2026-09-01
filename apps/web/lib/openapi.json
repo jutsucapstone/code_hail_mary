@@ -498,6 +498,45 @@
         "title": "ConnectionOut",
         "type": "object"
       },
+      "DepartmentRow": {
+        "properties": {
+          "members": {
+            "title": "Members",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "members"
+        ],
+        "title": "DepartmentRow",
+        "type": "object"
+      },
+      "DepartmentsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DepartmentRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unassigned": {
+            "title": "Unassigned",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "unassigned"
+        ],
+        "title": "DepartmentsOut",
+        "type": "object"
+      },
       "Employee": {
         "properties": {
           "created_at": {
@@ -912,6 +951,24 @@
           "failed_24h"
         ],
         "title": "JobStatsOut",
+        "type": "object"
+      },
+      "KnowledgeSourceCount": {
+        "properties": {
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_system",
+          "documents"
+        ],
+        "title": "KnowledgeSourceCount",
         "type": "object"
       },
       "KtAdminOut": {
@@ -1340,6 +1397,41 @@
           "admins"
         ],
         "title": "MemberCounts",
+        "type": "object"
+      },
+      "MyKnowledge": {
+        "description": "What the caller's linked identities make readable, summarised.\n\nCounts and titles only, never content \u2014 the page this feeds explains what a\nperson's authorized context contains, and reading any of it goes through\nretrieval with the same ACL that produced these numbers.",
+        "properties": {
+          "by_source": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceCount"
+            },
+            "title": "By Source",
+            "type": "array"
+          },
+          "linked_identities": {
+            "title": "Linked Identities",
+            "type": "integer"
+          },
+          "recent": {
+            "items": {
+              "$ref": "#/components/schemas/RecentDocument"
+            },
+            "title": "Recent",
+            "type": "array"
+          },
+          "total_documents": {
+            "title": "Total Documents",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_documents",
+          "by_source",
+          "recent",
+          "linked_identities"
+        ],
+        "title": "MyKnowledge",
         "type": "object"
       },
       "OrgRenamePayload": {
@@ -1774,6 +1866,35 @@
           "by_status"
         ],
         "title": "ProviderSummaryOut",
+        "type": "object"
+      },
+      "RecentDocument": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "source_system",
+          "created_at"
+        ],
+        "title": "RecentDocument",
         "type": "object"
       },
       "RegisterPayload": {
@@ -2899,6 +3020,28 @@
         "summary": "Revoke",
         "tags": [
           "connections"
+        ]
+      }
+    },
+    "/v1/departments": {
+      "get": {
+        "description": "Departments as people have declared them, with member counts.\n\nAn aggregation over `employee_profiles.department` \u2014 self-service free text, not a\nmanaged entity. The response says so via its shape: names arrive as typed, and the\nunassigned count is first-class. Making departments a real table (create, rename,\nassign, RLS) is its own migration when the organisation model needs it.",
+        "operationId": "read_departments_v1_departments_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepartmentsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Departments",
+        "tags": [
+          "employees"
         ]
       }
     },
@@ -4083,6 +4226,28 @@
         "summary": "Read My Identities",
         "tags": [
           "identities"
+        ]
+      }
+    },
+    "/v1/me/knowledge": {
+      "get": {
+        "description": "The caller's authorized knowledge context, counted honestly.\n\nThe ACL filter is retrieval's own predicate, inside the SQL, against principals\nresolved fresh for this request \u2014 the same three-arm rule as search, so these\ncounts cannot disagree with what a query would return. Zero is a truthful and\ncommon answer: no linked identity means no principals means nothing readable,\nwhich is the \u00a72 invariant, and the page says so in those words.",
+        "operationId": "read_my_knowledge_v1_me_knowledge_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyKnowledge"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read My Knowledge",
+        "tags": [
+          "me"
         ]
       }
     },

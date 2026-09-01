@@ -12,6 +12,7 @@ trail's immutability. A mocked session would prove none of it.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -553,3 +554,120 @@ class TestRoleCatalogue:
         await invite_and_accept(client, mailbox, email="member@example.com")
 
         assert (await client.get("/v1/roles")).status_code == 403
+
+
+class TestDepartments:
+    async def test_departments_aggregate_what_people_declared(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        saved = await client.patch(
+            "/v1/me/profile", json={"department": "Platform"}, headers=csrf(client)
+        )
+        assert saved.status_code == 200
+
+        body = (await client.get("/v1/departments")).json()
+        assert body["items"] == [{"name": "Platform", "members": 1}]
+        assert body["unassigned"] == 0
+
+    async def test_people_without_a_department_are_counted_not_hidden(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        body = (await client.get("/v1/departments")).json()
+        assert body["items"] == []
+        assert body["unassigned"] == 1
+
+
+class TestMyKnowledge:
+    async def test_no_linked_identity_means_zero_and_the_shape_says_so(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        me = (await client.get("/v1/me")).json()
+
+        # A document granted to somebody else entirely.
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        source_id = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO sources (id, org_id, system, config_json) "
+                "VALUES (:id, :org, 'local', '{}'::jsonb)"
+            ),
+            {"id": source_id, "org": org_id},
+        )
+        doc = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+                "content_hash, acl_hash, body_original, body_masked, created_at) "
+                "VALUES (:id, :org, :src, 'x', 'Private doc', 'h', 'a', 'b', 'b', now())"
+            ),
+            {"id": doc, "org": org_id, "src": source_id},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO document_acl (document_id, principal_type, principal_id, "
+                "org_id, permission) VALUES (:doc, 'user', 'local:someone-else', :org, 'read')"
+            ),
+            {"doc": doc, "org": org_id},
+        )
+        # Deactivate the caller's auto-linked identity: zero principals, fail closed.
+        await db_session.execute(
+            text("UPDATE source_identities SET is_active = false WHERE user_id = :uid"),
+            {"uid": me["user_id"]},
+        )
+        await db_session.commit()
+
+        body = (await client.get("/v1/me/knowledge")).json()
+        assert body["total_documents"] == 0
+        assert body["by_source"] == []
+        assert body["recent"] == []
+        assert body["linked_identities"] == 0
+
+    async def test_a_granted_document_is_counted_and_listed(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        source_id = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO sources (id, org_id, system, config_json) "
+                "VALUES (:id, :org, 'local', '{}'::jsonb)"
+            ),
+            {"id": source_id, "org": org_id},
+        )
+        doc = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+                "content_hash, acl_hash, body_original, body_masked, created_at) "
+                "VALUES (:id, :org, :src, 'x', 'My design doc', 'h', 'a', 'b', 'b', now())"
+            ),
+            {"id": doc, "org": org_id, "src": source_id},
+        )
+        # Registration auto-linked local:ada@example.com — grant to that principal.
+        await db_session.execute(
+            text(
+                "INSERT INTO document_acl (document_id, principal_type, principal_id, "
+                "org_id, permission) "
+                "VALUES (:doc, 'user', 'local:ada@example.com', :org, 'read')"
+            ),
+            {"doc": doc, "org": org_id},
+        )
+        await db_session.commit()
+
+        body = (await client.get("/v1/me/knowledge")).json()
+        assert body["total_documents"] == 1
+        assert body["by_source"] == [{"source_system": "local", "documents": 1}]
+        assert body["recent"][0]["title"] == "My design doc"
+        assert body["linked_identities"] == 1

@@ -200,6 +200,11 @@ export type AskResponse =
   paths["/v1/ask"]["post"]["responses"][200]["content"]["application/json"];
 export type AskCitation = AskResponse["citations"][number];
 
+export type MyKnowledge =
+  paths["/v1/me/knowledge"]["get"]["responses"][200]["content"]["application/json"];
+export type Departments =
+  paths["/v1/departments"]["get"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -522,6 +527,13 @@ export const api = {
    */
   ask: (body: { question: string; k?: number }) =>
     call<AskResponse>("/v1/ask", { method: "POST", body: JSON.stringify(body) }),
+
+
+  /** The caller's authorized knowledge context: real ACL-filtered counts, never content. */
+  myKnowledge: () => call<MyKnowledge>("/v1/me/knowledge", { method: "GET" }),
+
+  /** Departments as people declared them on their own profiles, with member counts. */
+  departments: () => call<Departments>("/v1/departments", { method: "GET" }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

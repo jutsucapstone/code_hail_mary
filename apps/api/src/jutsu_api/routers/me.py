@@ -16,9 +16,11 @@ from datetime import date, datetime
 
 from fastapi import APIRouter
 from jutsu_core.rbac import Permission, Role
+from jutsu_retrieval.search import ACL_PREDICATE
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from jutsu_api.auth_service import scoped_acl_principals
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.profiles import EmployeeProfile, ProfileUpdate, read_profile, upsert_profile
 from jutsu_api.security import GuardedAPIRoute, requires
@@ -171,3 +173,95 @@ async def update_my_profile(
         ),
     )
     return _view(profile)
+
+
+class KnowledgeSourceCount(BaseModel):
+    source_system: str
+    documents: int
+
+
+class RecentDocument(BaseModel):
+    id: str
+    title: str
+    source_system: str
+    created_at: datetime
+
+
+class MyKnowledge(BaseModel):
+    """What the caller's linked identities make readable, summarised.
+
+    Counts and titles only, never content — the page this feeds explains what a
+    person's authorized context contains, and reading any of it goes through
+    retrieval with the same ACL that produced these numbers.
+    """
+
+    total_documents: int
+    by_source: list[KnowledgeSourceCount]
+    recent: list[RecentDocument]
+    linked_identities: int
+
+
+@router.get("/knowledge")
+@requires(Permission.RETRIEVAL_QUERY)
+async def read_my_knowledge(principal: CurrentPrincipal, session: Db) -> MyKnowledge:
+    """The caller's authorized knowledge context, counted honestly.
+
+    The ACL filter is retrieval's own predicate, inside the SQL, against principals
+    resolved fresh for this request — the same three-arm rule as search, so these
+    counts cannot disagree with what a query would return. Zero is a truthful and
+    common answer: no linked identity means no principals means nothing readable,
+    which is the §2 invariant, and the page says so in those words.
+    """
+    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    params = {"principals": list(principals), "groups": list(groups)}
+
+    by_source = (
+        await session.execute(
+            text(
+                "SELECT s.system AS source_system, count(*) AS documents "  # noqa: S608
+                "FROM documents d JOIN sources s ON s.id = d.source_id "
+                f"WHERE d.superseded_by IS NULL AND {ACL_PREDICATE} "
+                "GROUP BY s.system ORDER BY documents DESC"
+            ),
+            params,
+        )
+    ).all()
+
+    recent = (
+        await session.execute(
+            text(
+                "SELECT d.id, d.title, d.created_at, s.system AS source_system "  # noqa: S608
+                "FROM documents d JOIN sources s ON s.id = d.source_id "
+                f"WHERE d.superseded_by IS NULL AND {ACL_PREDICATE} "
+                "ORDER BY d.created_at DESC, d.id DESC LIMIT 10"
+            ),
+            params,
+        )
+    ).all()
+
+    identities = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM source_identities WHERE user_id = :user AND is_active = true"
+            ),
+            {"user": principal.user_id},
+        )
+    ).scalar_one()
+
+    return MyKnowledge(
+        total_documents=sum(row.documents for row in by_source),
+        by_source=[
+            KnowledgeSourceCount(source_system=row.source_system, documents=row.documents)
+            for row in by_source
+        ],
+        recent=[
+            RecentDocument(
+                id=str(row.id),
+                title=row.title,
+                source_system=row.source_system,
+                created_at=row.created_at,
+            )
+            for row in recent
+        ],
+        linked_identities=identities,
+    )

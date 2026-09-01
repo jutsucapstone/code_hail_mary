@@ -249,6 +249,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/departments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Departments
+         * @description Departments as people have declared them, with member counts.
+         *
+         *     An aggregation over `employee_profiles.department` — self-service free text, not a
+         *     managed entity. The response says so via its shape: names arrive as typed, and the
+         *     unassigned count is first-class. Making departments a real table (create, rename,
+         *     assign, RLS) is its own migration when the organisation model needs it.
+         */
+        get: operations["read_departments_v1_departments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/employees": {
         parameters: {
             query?: never;
@@ -788,6 +813,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/knowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read My Knowledge
+         * @description The caller's authorized knowledge context, counted honestly.
+         *
+         *     The ACL filter is retrieval's own predicate, inside the SQL, against principals
+         *     resolved fresh for this request — the same three-arm rule as search, so these
+         *     counts cannot disagree with what a query would return. Zero is a truthful and
+         *     common answer: no linked identity means no principals means nothing readable,
+         *     which is the §2 invariant, and the page says so in those words.
+         */
+        get: operations["read_my_knowledge_v1_me_knowledge_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me/profile": {
         parameters: {
             query?: never;
@@ -1207,6 +1258,20 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** DepartmentRow */
+        DepartmentRow: {
+            /** Members */
+            members: number;
+            /** Name */
+            name: string;
+        };
+        /** DepartmentsOut */
+        DepartmentsOut: {
+            /** Items */
+            items: components["schemas"]["DepartmentRow"][];
+            /** Unassigned */
+            unassigned: number;
+        };
         /** Employee */
         Employee: {
             /**
@@ -1377,6 +1442,13 @@ export interface components {
             /** Failed 24H */
             failed_24h: number;
         };
+        /** KnowledgeSourceCount */
+        KnowledgeSourceCount: {
+            /** Documents */
+            documents: number;
+            /** Source System */
+            source_system: string;
+        };
         /** KtAdminOut */
         KtAdminOut: {
             /** Claimed At */
@@ -1527,6 +1599,24 @@ export interface components {
             /** Total */
             total: number;
         };
+        /**
+         * MyKnowledge
+         * @description What the caller's linked identities make readable, summarised.
+         *
+         *     Counts and titles only, never content — the page this feeds explains what a
+         *     person's authorized context contains, and reading any of it goes through
+         *     retrieval with the same ACL that produced these numbers.
+         */
+        MyKnowledge: {
+            /** By Source */
+            by_source: components["schemas"]["KnowledgeSourceCount"][];
+            /** Linked Identities */
+            linked_identities: number;
+            /** Recent */
+            recent: components["schemas"]["RecentDocument"][];
+            /** Total Documents */
+            total_documents: number;
+        };
         /** OrgRenamePayload */
         OrgRenamePayload: {
             /** Name */
@@ -1674,6 +1764,20 @@ export interface components {
             provider: string;
             /** Total */
             total: number;
+        };
+        /** RecentDocument */
+        RecentDocument: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Source System */
+            source_system: string;
+            /** Title */
+            title: string;
         };
         /** RegisterPayload */
         RegisterPayload: {
@@ -2259,6 +2363,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_departments_v1_departments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentsOut"];
                 };
             };
         };
@@ -3033,6 +3157,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourceIdentityPage"];
+                };
+            };
+        };
+    };
+    read_my_knowledge_v1_me_knowledge_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyKnowledge"];
                 };
             };
         };

@@ -261,3 +261,56 @@ async def accept(
     # Chosen by the server. A destination from the request would be an open redirect with
     # a freshly minted session attached.
     return AcceptResult(jutsu_id=accepted.jutsu_id, destination=destination_for(accepted.role))
+
+
+class DepartmentRow(BaseModel):
+    #: The department string exactly as people typed it into their own profiles. Not an
+    #: entity: "Platform" and "platform" are two rows here, and that is the honest
+    #: rendering of self-service free text until departments become a managed table.
+    name: str
+    members: int
+
+
+class DepartmentsOut(BaseModel):
+    items: list[DepartmentRow]
+    #: People whose profile has no department yet — shown so the totals add up rather
+    #: than quietly excluding them.
+    unassigned: int
+
+
+@router.get("/departments")
+@requires(Permission.MEMBER_READ)
+async def read_departments(principal: CurrentPrincipal, session: Db) -> DepartmentsOut:
+    """Departments as people have declared them, with member counts.
+
+    An aggregation over `employee_profiles.department` — self-service free text, not a
+    managed entity. The response says so via its shape: names arrive as typed, and the
+    unassigned count is first-class. Making departments a real table (create, rename,
+    assign, RLS) is its own migration when the organisation model needs it.
+    """
+    from sqlalchemy import text as _sql
+
+    rows = (
+        await session.execute(
+            _sql(
+                "SELECT ep.department AS name, count(*) AS members "
+                "FROM employee_profiles ep "
+                "WHERE ep.department IS NOT NULL AND ep.department != '' "
+                "GROUP BY ep.department ORDER BY members DESC, name"
+            )
+        )
+    ).all()
+    unassigned = (
+        await session.execute(
+            _sql(
+                "SELECT count(*) FROM users u LEFT JOIN employee_profiles ep "
+                "ON ep.user_id = u.id "
+                "WHERE u.status != 'deactivated' "
+                "AND (ep.department IS NULL OR ep.department = '')"
+            )
+        )
+    ).scalar_one()
+    return DepartmentsOut(
+        items=[DepartmentRow(name=row.name, members=row.members) for row in rows],
+        unassigned=unassigned,
+    )

@@ -48,6 +48,14 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     slice: "P1",
   },
   {
+    href: "/me/knowledge",
+    name: "My knowledge",
+    description: "What your authorized context contains, counted honestly.",
+    permission: "retrieval:query",
+    status: "live",
+    slice: "P3",
+  },
+  {
     // Read-only here. `GET /v1/me/identities` exists; nothing writes a member's own
     // links, and nothing should — linking a subject to yourself is precisely the
     // escalation the API refuses for administrators.

@@ -87,15 +87,14 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     group: "People",
   },
   {
-    // Department is a nullable free-text `varchar(128)` on `employee_profiles` that each
-    // person types themselves. It is not an entity: nothing lists departments, nothing
-    // validates one, and two spellings are two departments. This section needs that to
-    // become a real table first.
+    // An aggregation over the free-text department field on people's own profiles,
+    // labelled as exactly that in the UI. Becoming a managed entity (create, rename,
+    // assign, RLS) is its own migration when the organisation model needs it.
     slug: "departments",
     name: "Departments",
     description: "Group people by team, and see knowledge by department.",
     permission: "member:read",
-    status: "pending",
+    status: "live",
     slice: "P2",
     group: "People",
   },
