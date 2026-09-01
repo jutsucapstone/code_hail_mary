@@ -145,7 +145,7 @@ export function SiteHeader() {
                           ? { duration: 0 }
                           : { type: "spring", stiffness: 500, damping: 40 }
                       }
-                      className="absolute inset-x-3 -bottom-0.5 h-[2px] rounded-full bg-brand"
+                      className="absolute inset-x-3 bottom-1 h-[2px] rounded-full bg-brand"
                       aria-hidden="true"
                     />
                   ) : null}
