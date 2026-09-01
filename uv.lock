@@ -677,6 +677,7 @@ source = { editable = "apps/worker" }
 dependencies = [
     { name = "anthropic" },
     { name = "arq" },
+    { name = "cryptography" },
     { name = "jutsu-connectors" },
     { name = "jutsu-core" },
     { name = "jutsu-db" },
@@ -688,6 +689,7 @@ dependencies = [
 requires-dist = [
     { name = "anthropic", specifier = ">=1.2.0" },
     { name = "arq", specifier = ">=0.26" },
+    { name = "cryptography", specifier = ">=50.0.1" },
     { name = "jutsu-connectors", editable = "packages/connectors" },
     { name = "jutsu-core", editable = "packages/core" },
     { name = "jutsu-db", editable = "packages/db" },

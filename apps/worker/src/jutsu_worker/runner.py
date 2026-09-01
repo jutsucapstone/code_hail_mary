@@ -36,6 +36,7 @@ from typing import Final, final
 from jutsu_db.engine import org_session
 from jutsu_retrieval.embeddings import Embedder
 
+from jutsu_worker.credentials import ReauthRequired, mark_reauth_required
 from jutsu_worker.extraction import (
     AnthropicExtractionTransport,
     ExtractionTransport,
@@ -205,7 +206,14 @@ async def process_connector_sync(
         connection_id = job.payload.get("connection_id")
         if connection_id:
             async with org_session(org_id) as session:
-                await mark_sync_unavailable(session, connection_id=uuid.UUID(str(connection_id)))
+                if isinstance(error, ReauthRequired):
+                    # The grant is dead at the provider; the owner's UI flips to
+                    # Reconnect instead of a Sync button that can only fail.
+                    await mark_reauth_required(session, connection_id=uuid.UUID(str(connection_id)))
+                else:
+                    await mark_sync_unavailable(
+                        session, connection_id=uuid.UUID(str(connection_id))
+                    )
         logger.info("sync_job_failed job=%s state=%s", job.id, state.value)
         return JOB_FAILED
 

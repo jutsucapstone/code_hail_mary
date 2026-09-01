@@ -194,10 +194,13 @@ async def oauth_callback(
 
 @router.delete("/me/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 @requires(Permission.INTEGRATION_SELF_MANAGE)
-async def disconnect(connection_id: UUID, principal: CurrentPrincipal, session: Db) -> None:
+async def disconnect(
+    connection_id: UUID, principal: CurrentPrincipal, session: Db, transport: TransportDep
+) -> None:
     """Disconnect the caller's OWN connection; anyone else's row is a 404 here."""
     await disconnect_own(
         session,
+        transport,
         org_id=principal.org_id,
         user_id=principal.user_id,
         connection_id=connection_id,
@@ -241,10 +244,13 @@ async def read_employee_connections(
 
 @router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 @requires(Permission.INTEGRATION_REVOKE)
-async def revoke(connection_id: UUID, principal: CurrentPrincipal, session: Db) -> None:
+async def revoke(
+    connection_id: UUID, principal: CurrentPrincipal, session: Db, transport: TransportDep
+) -> None:
     """Administrative revocation: rank-checked in the service, audited per connection."""
     await revoke_connection(
         session,
+        transport,
         org_id=principal.org_id,
         actor_id=principal.user_id,
         actor_role=principal.role,

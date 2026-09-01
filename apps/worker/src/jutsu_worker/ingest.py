@@ -50,6 +50,11 @@ from jutsu_retrieval.persistence import embed_pending_chunks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_worker.credentials import (
+    CredentialsUnavailable,
+    ReauthRequired,
+    TransientRefreshError,
+)
 from jutsu_worker.extraction import extraction_configured, extraction_job_key
 from jutsu_worker.jobs import (
     FailureKind,
@@ -480,6 +485,10 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
         return FailureKind.EMBEDDING_TRANSIENT, True
     if isinstance(error, EmbeddingBudgetExceeded):
         return FailureKind.BUDGET_EXHAUSTED, True
+    if isinstance(error, ReauthRequired | CredentialsUnavailable):
+        return FailureKind.PROVIDER_PERMANENT, False
+    if isinstance(error, TransientRefreshError):
+        return FailureKind.PROVIDER_TRANSIENT, True
     # Anthropic SDK errors from the extraction transport. Order matters: RateLimitError
     # and InternalServerError are both APIStatusError subclasses, so the transient checks
     # come first and the remaining 4xx statuses are permanent — a bad key or a nonexistent

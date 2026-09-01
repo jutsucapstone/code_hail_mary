@@ -57,20 +57,34 @@ REFRESH_TOKEN = "tok-refresh-SENTINEL-do-not-serve"
 
 
 class FakeOAuth:
-    """The two provider calls, recorded. Raising versions live in the tests that need
+    """The provider calls, recorded. Raising versions live in the tests that need
     them."""
 
     def __init__(self) -> None:
         self.exchanges: list[str] = []
+        self.verifiers: list[str | None] = []
+        self.revoked: list[str] = []
 
     async def exchange_code(
-        self, provider: Provider, client: OAuthClient, *, code: str, redirect_uri: str
+        self,
+        provider: Provider,
+        client: OAuthClient,
+        *,
+        code: str,
+        redirect_uri: str,
+        code_verifier: str | None = None,
     ) -> TokenGrant:
         self.exchanges.append(code)
+        self.verifiers.append(code_verifier)
         return TokenGrant(access_token=ACCESS_TOKEN, refresh_token=REFRESH_TOKEN, expires_in=3600)
 
     async def fetch_identity(self, provider: Provider, access_token: str) -> AccountIdentity:
         return AccountIdentity(subject="U0AB12CD", label="ada@slack.example")
+
+    async def revoke_upstream(
+        self, provider: Provider, client: OAuthClient, *, access_token: str
+    ) -> None:
+        self.revoked.append(access_token)
 
 
 @pytest.fixture
@@ -593,3 +607,122 @@ class TestSyncNow:
         assert row.state == "pending"
         assert row.attempts == 0
         assert row.failure_kind is None
+
+
+# --------------------------------------------------------------------------------------
+# OAuth hardening — PKCE, state expiry, upstream revocation, read-only registry
+# --------------------------------------------------------------------------------------
+
+
+class TestOAuthHardening:
+    async def test_pkce_verifier_matches_the_challenge_the_browser_carried(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        fake_oauth: FakeOAuth,
+    ) -> None:
+        """The provider saw S256(verifier); the exchange must present that verifier."""
+        import base64
+        import hashlib
+        from urllib.parse import parse_qs, urlparse
+
+        await register_owner(client, mailbox)
+        started = await client.post("/v1/me/connections/slack", headers=csrf(client))
+        query = parse_qs(urlparse(started.json()["authorize_url"]).query)
+        assert query["code_challenge_method"] == ["S256"]
+        challenge = query["code_challenge"][0]
+        state = query["state"][0]
+
+        await complete(client, state)
+        verifier = fake_oauth.verifiers[-1]
+        assert verifier is not None
+        derived = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        assert derived == challenge
+
+    async def test_slack_asks_for_user_scopes_never_a_bot(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+    ) -> None:
+        from urllib.parse import parse_qs, urlparse
+
+        await register_owner(client, mailbox)
+        started = await client.post("/v1/me/connections/slack", headers=csrf(client))
+        query = parse_qs(urlparse(started.json()["authorize_url"]).query)
+        assert "user_scope" in query, "Slack scopes go via user_scope (a user token)"
+        assert "scope" not in query, "a `scope` here would provision a bot"
+        assert "access_type" not in query, "a Google-only knob must not reach Slack"
+
+    async def test_an_expired_state_is_a_404_like_any_forged_one(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+        _connection_id, state = await connect_slack(client)
+
+        await inspector.execute(
+            text(
+                "UPDATE connections SET oauth_state_expires_at = now() - interval '1 minute' "
+                "WHERE oauth_state = :state"
+            ),
+            {"state": state},
+        )
+        await inspector.commit()
+
+        response = await complete(client, state)
+        assert response.status_code == 404  # type: ignore[attr-defined]
+
+    async def test_disconnect_asks_the_provider_to_kill_the_grant(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        fake_oauth: FakeOAuth,
+    ) -> None:
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+
+        response = await client.delete(f"/v1/me/connections/{connection_id}", headers=csrf(client))
+        assert response.status_code == 204
+        assert fake_oauth.revoked == [ACCESS_TOKEN], (
+            "the upstream grant is revoked with the token it protects, before the "
+            "local ciphertext is deleted"
+        )
+
+    def test_no_provider_carries_a_write_scope(self) -> None:
+        """§4.8 admits no write scope for any feature — pinned against the registry.
+
+        `repo:status` was in the GitHub tuple once: GitHub documents it as read/WRITE
+        on commit statuses. This list holds every scope string known to permit a write
+        on its provider; a registry entry matching one is a defect whatever wanted it.
+        """
+        known_write_scopes = {
+            "repo",
+            "repo:status",
+            "write:org",
+            "admin:org",
+            "gist",
+            "chat:write",
+            "channels:write",
+            "files:write",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar",
+            "Files.ReadWrite",
+            "Sites.ReadWrite.All",
+            "write:jira-work",
+            "write:confluence-content",
+        }
+        for provider in PROVIDERS.values():
+            overlap = set(provider.scopes) & known_write_scopes
+            assert not overlap, f"{provider.id} carries write scope(s): {overlap}"

@@ -31,6 +31,8 @@ decision that needs its own ADR before anything writes `source_identities` from 
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import secrets
 from dataclasses import dataclass
@@ -40,8 +42,15 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ServiceUnavailable
+from jutsu_core.providers import (
+    GROUP_LABELS,
+    PROVIDERS,
+    OAuthClient,
+    Provider,
+    oauth_client_for,
+)
 from jutsu_core.rbac import Role, outranks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,11 +58,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jutsu_api.config import Settings
 
 __all__ = [
+    "GROUP_LABELS",
     "PROVIDERS",
     "AccountIdentity",
     "CatalogueEntry",
     "ConnectionView",
     "HttpOAuthTransport",
+    "OAuthClient",
     "OAuthTransport",
     "Provider",
     "TokenGrant",
@@ -72,175 +83,14 @@ __all__ = [
 
 
 # ------------------------------------------------------------------------ registry
+# The registry itself lives in jutsu_core.providers — the worker refreshes tokens and
+# fetches content against the same catalogue, and two copies of a token URL is how the
+# two halves drift. Re-exported here because this module is the API's face for it.
 
-
-@dataclass(frozen=True, slots=True)
-class Provider:
-    id: str
-    name: str
-    #: Grouping for the catalogue UI: google | microsoft | communication | engineering.
-    group: str
-    description: str
-    authorize_url: str
-    token_url: str
-    userinfo_url: str
-    #: Read-only scopes, and nothing else, ever (§4.8). A write scope in this tuple is a
-    #: defect whatever feature wanted it.
-    scopes: tuple[str, ...]
-
-
-_GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
-_GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"  # noqa: S105 - endpoint, not a secret
-_GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
-_MS_AUTH = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-_MS_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"  # noqa: S105
-_MS_USERINFO = "https://graph.microsoft.com/v1.0/me"
-
-
-def _google(id_: str, name: str, description: str, *scopes: str) -> Provider:
-    return Provider(
-        id=id_,
-        name=name,
-        group="google",
-        description=description,
-        authorize_url=_GOOGLE_AUTH,
-        token_url=_GOOGLE_TOKEN,
-        userinfo_url=_GOOGLE_USERINFO,
-        scopes=("openid", "email", *scopes),
-    )
-
-
-def _microsoft(id_: str, name: str, description: str, *scopes: str) -> Provider:
-    return Provider(
-        id=id_,
-        name=name,
-        group="microsoft",
-        description=description,
-        authorize_url=_MS_AUTH,
-        token_url=_MS_TOKEN,
-        userinfo_url=_MS_USERINFO,
-        scopes=("openid", "email", "offline_access", *scopes),
-    )
-
-
-#: The catalogue. Mirrors migration 0012's CHECK constraint — a test inserts every id
-#: to prove the two lists cannot drift apart silently.
-PROVIDERS: dict[str, Provider] = {
-    p.id: p
-    for p in (
-        _google(
-            "google_drive",
-            "Google Drive",
-            "Documents and files you can already open in Drive.",
-            "https://www.googleapis.com/auth/drive.readonly",
-        ),
-        _google(
-            "gmail",
-            "Gmail",
-            "Mail in your mailbox, evaluated against policy before anything is kept.",
-            "https://www.googleapis.com/auth/gmail.readonly",
-        ),
-        _google(
-            "google_calendar",
-            "Google Calendar",
-            "Meetings and attendees from your calendar.",
-            "https://www.googleapis.com/auth/calendar.readonly",
-        ),
-        _google(
-            "google_meet",
-            "Google Meet",
-            "Meeting records and artefacts you have access to.",
-            "https://www.googleapis.com/auth/meetings.space.readonly",
-        ),
-        _microsoft(
-            "onedrive",
-            "OneDrive",
-            "Files you can already open in OneDrive.",
-            "Files.Read",
-        ),
-        _microsoft(
-            "teams",
-            "Microsoft Teams",
-            "Channels and chats you belong to.",
-            "Chat.Read",
-            "ChannelMessage.Read.All",
-        ),
-        _microsoft(
-            "sharepoint",
-            "SharePoint",
-            "Sites and documents you can already reach.",
-            "Sites.Read.All",
-        ),
-        Provider(
-            id="slack",
-            name="Slack",
-            group="communication",
-            description="Conversations in channels you are a member of.",
-            authorize_url="https://slack.com/oauth/v2/authorize",
-            token_url="https://slack.com/api/oauth.v2.access",  # noqa: S106
-            userinfo_url="https://slack.com/api/users.identity",
-            scopes=("channels:history", "channels:read", "users:read"),
-        ),
-        Provider(
-            id="jira",
-            name="Jira",
-            group="engineering",
-            description="Issues and projects you can already see.",
-            authorize_url="https://auth.atlassian.com/authorize",
-            token_url="https://auth.atlassian.com/oauth/token",  # noqa: S106
-            userinfo_url="https://api.atlassian.com/me",
-            scopes=("read:jira-work", "read:jira-user", "offline_access"),
-        ),
-        Provider(
-            id="confluence",
-            name="Confluence",
-            group="engineering",
-            description="Pages and spaces you can already read.",
-            authorize_url="https://auth.atlassian.com/authorize",
-            token_url="https://auth.atlassian.com/oauth/token",  # noqa: S106
-            userinfo_url="https://api.atlassian.com/me",
-            scopes=("read:confluence-content.all", "read:confluence-user", "offline_access"),
-        ),
-        Provider(
-            id="github",
-            name="GitHub",
-            group="engineering",
-            description="Repositories, issues and pull requests you can already see.",
-            authorize_url="https://github.com/login/oauth/authorize",
-            token_url="https://github.com/login/oauth/access_token",  # noqa: S106
-            userinfo_url="https://api.github.com/user",
-            scopes=("read:user", "repo:status", "read:org"),
-        ),
-    )
-}
-
-GROUP_LABELS = {
-    "google": "Google Workspace",
-    "microsoft": "Microsoft",
-    "communication": "Communication",
-    "engineering": "Engineering",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class OAuthClient:
-    client_id: str
-    client_secret: str
-
-
-def oauth_client_for(provider_id: str) -> OAuthClient | None:
-    """The deployment's client registration for one provider, or None.
-
-    Read from the environment at call time rather than frozen into Settings: these are
-    per-deployment operational secrets (Secret Manager in production, `.env` locally),
-    and their absence is a meaningful state the catalogue reports rather than an error.
-    """
-    prefix = f"JUTSU_OAUTH_{provider_id.upper()}"
-    client_id = os.environ.get(f"{prefix}_CLIENT_ID", "").strip()
-    client_secret = os.environ.get(f"{prefix}_CLIENT_SECRET", "").strip()
-    if client_id and client_secret:
-        return OAuthClient(client_id=client_id, client_secret=client_secret)
-    return None
+#: How long a minted state (and its PKCE verifier) stays spendable. Long enough for a
+#: person to read a consent screen twice; short enough that an abandoned attempt is not
+#: a standing invitation.
+STATE_TTL = timedelta(minutes=15)
 
 
 def _fernet() -> Fernet | None:
@@ -287,34 +137,59 @@ class OAuthTransport(Protocol):
     """
 
     async def exchange_code(
-        self, provider: Provider, client: OAuthClient, *, code: str, redirect_uri: str
+        self,
+        provider: Provider,
+        client: OAuthClient,
+        *,
+        code: str,
+        redirect_uri: str,
+        code_verifier: str | None = None,
     ) -> TokenGrant: ...
 
     async def fetch_identity(self, provider: Provider, access_token: str) -> AccountIdentity: ...
+
+    async def revoke_upstream(
+        self, provider: Provider, client: OAuthClient, *, access_token: str
+    ) -> None: ...
 
 
 class HttpOAuthTransport:
     """The real exchange, over HTTPS, with the provider named by the registry."""
 
     async def exchange_code(
-        self, provider: Provider, client: OAuthClient, *, code: str, redirect_uri: str
+        self,
+        provider: Provider,
+        client: OAuthClient,
+        *,
+        code: str,
+        redirect_uri: str,
+        code_verifier: str | None = None,
     ) -> TokenGrant:
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": client.client_id,
+            "client_secret": client.client_secret,
+        }
+        if code_verifier is not None:
+            data["code_verifier"] = code_verifier
         async with httpx.AsyncClient(timeout=20.0) as http:
             response = await http.post(
-                provider.token_url,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "client_id": client.client_id,
-                    "client_secret": client.client_secret,
-                },
-                headers={"Accept": "application/json"},
+                provider.token_url, data=data, headers={"Accept": "application/json"}
             )
         if response.status_code != 200:
             # The body can carry the code and client id back; classify, never forward.
             raise ServiceUnavailable("The provider refused the token exchange.")
         payload = response.json()
+        if payload.get("ok") is False:
+            # Slack answers HTTP 200 with ok=false; treating that as success would
+            # store an error string where a token belongs.
+            raise ServiceUnavailable("The provider refused the token exchange.")
+        if provider.token_style == "slack_user":  # noqa: S105 - a style tag, not a secret
+            # The employee's own token lives in authed_user; a top-level access_token
+            # here would be a bot's, which this product never provisions.
+            payload = payload.get("authed_user") or {}
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             raise ServiceUnavailable("The provider's token response was not usable.")
@@ -335,15 +210,57 @@ class HttpOAuthTransport:
         if response.status_code != 200:
             raise ServiceUnavailable("The provider did not answer for the account identity.")
         payload = response.json()
+        if payload.get("ok") is False:
+            raise ServiceUnavailable("The provider did not answer for the account identity.")
         subject = str(
-            payload.get("sub") or payload.get("account_id") or payload.get("id") or ""
+            payload.get("sub")
+            or payload.get("account_id")
+            or payload.get("user_id")  # Slack auth.test
+            or payload.get("id")
+            or ""
         ).strip()
         label = str(
-            payload.get("email") or payload.get("login") or payload.get("name") or subject
+            payload.get("email")
+            or payload.get("login")
+            or payload.get("name")
+            or payload.get("user")  # Slack auth.test
+            or subject
         ).strip()
         if not subject:
             raise ServiceUnavailable("The provider's identity response carried no subject.")
         return AccountIdentity(subject=subject, label=label)
+
+    async def revoke_upstream(
+        self, provider: Provider, client: OAuthClient, *, access_token: str
+    ) -> None:
+        """Best-effort revocation at the provider on disconnect.
+
+        Deleting the local ciphertext is the authority; this additionally asks the
+        provider to kill the grant so the token is dead everywhere, where the provider
+        offers an endpoint for it (Google, Slack, GitHub do; Microsoft and Atlassian
+        rely on expiry). Failures are swallowed by contract — an unreachable revocation
+        endpoint must not stop a person from disconnecting.
+        """
+        if provider.revoke_url is None or provider.revoke_style is None:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                if provider.revoke_style == "post_token":
+                    await http.post(provider.revoke_url, data={"token": access_token})
+                elif provider.revoke_style == "bearer_post":
+                    await http.post(
+                        provider.revoke_url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                elif provider.revoke_style == "github_grant":
+                    await http.request(
+                        "DELETE",
+                        provider.revoke_url.format(client_id=client.client_id),
+                        auth=(client.client_id, client.client_secret),
+                        json={"access_token": access_token},
+                    )
+        except httpx.HTTPError:
+            return
 
 
 # ------------------------------------------------------------------------ views
@@ -521,22 +438,39 @@ async def start_connection(
         raise Conflict(f"{provider.name} is already connected.")
 
     state = secrets.token_urlsafe(32)
+    # PKCE (S256). The verifier never leaves the server; the provider sees only its
+    # digest, so an intercepted authorization code cannot be exchanged without a value
+    # that exists in exactly one row of this database.
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    expires_at = datetime.now(tz=UTC) + STATE_TTL
     if existing is not None:
         connection_id = existing.id
         await session.execute(
             text(
                 "UPDATE connections SET oauth_state = :state, status = 'connecting', "
+                "oauth_code_verifier = :verifier, oauth_state_expires_at = :expires, "
                 "updated_at = now() WHERE id = :id"
             ),
-            {"state": state, "id": connection_id},
+            {
+                "state": state,
+                "verifier": code_verifier,
+                "expires": expires_at,
+                "id": connection_id,
+            },
         )
     else:
         connection_id = uuid4()
         await session.execute(
             text(
                 "INSERT INTO connections (id, org_id, user_id, provider, status, oauth_state, "
-                "scopes) VALUES (:id, :org, :user, :provider, 'connecting', :state, "
-                "cast(:scopes AS jsonb))"
+                "oauth_code_verifier, oauth_state_expires_at, scopes) "
+                "VALUES (:id, :org, :user, :provider, 'connecting', :state, :verifier, "
+                ":expires, cast(:scopes AS jsonb))"
             ),
             {
                 "id": connection_id,
@@ -544,20 +478,30 @@ async def start_connection(
                 "user": user_id,
                 "provider": provider_id,
                 "state": state,
+                "verifier": code_verifier,
+                "expires": expires_at,
                 "scopes": '["' + '", "'.join(provider.scopes) + '"]',
             },
         )
 
-    query = urlencode(
-        {
-            "response_type": "code",
-            "client_id": client.client_id,
-            "redirect_uri": _redirect_uri(settings),
-            "scope": " ".join(provider.scopes),
-            "state": state,
-            "access_type": "offline",
-        }
-    )
+    params: list[tuple[str, str]] = [
+        ("response_type", "code"),
+        ("client_id", client.client_id),
+        ("redirect_uri", _redirect_uri(settings)),
+        ("state", state),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
+    ]
+    if provider.token_style == "slack_user":  # noqa: S105 - a style tag, not a secret
+        # Slack's `scope` provisions a bot; the employee's own visibility asks via
+        # user_scope, and the exchange reads authed_user accordingly.
+        params.append(("user_scope", " ".join(provider.scopes)))
+    else:
+        params.append(("scope", " ".join(provider.scopes)))
+    # Provider-declared knobs (Google's access_type=offline, Atlassian's audience),
+    # sent only where declared instead of sprayed across all eleven providers.
+    params.extend(provider.extra_authorize_params)
+    query = urlencode(params)
     return StartedFlow(
         connection_id=connection_id, authorize_url=f"{provider.authorize_url}?{query}"
     )
@@ -582,14 +526,16 @@ async def complete_callback(
     row = (
         await session.execute(
             text(
-                "SELECT id, provider, user_id FROM connections "
-                "WHERE oauth_state = :state AND status = 'connecting'"
+                "SELECT id, provider, user_id, oauth_code_verifier FROM connections "
+                "WHERE oauth_state = :state AND status = 'connecting' "
+                "AND (oauth_state_expires_at IS NULL OR oauth_state_expires_at > now())"
             ),
             {"state": state},
         )
     ).first()
     if row is None or row.user_id != user_id:
-        # Not the owner, or a stale/forged state: identical answer, nothing to probe.
+        # Not the owner, or a stale, expired or forged state: identical answer,
+        # nothing to probe.
         raise NotFound("That connection attempt was not found. Start again from Integrations.")
 
     provider = PROVIDERS[row.provider]
@@ -598,15 +544,22 @@ async def complete_callback(
     if client is None or fernet is None:
         raise ServiceUnavailable("This integration is no longer configured.")
 
-    # Spend the state before the exchange: a second callback with the same state must
-    # find nothing, whatever happens next.
+    # Spend the state — and the PKCE verifier with it — before the exchange: a second
+    # callback with the same state must find nothing, whatever happens next.
     await session.execute(
-        text("UPDATE connections SET oauth_state = NULL, updated_at = now() WHERE id = :id"),
+        text(
+            "UPDATE connections SET oauth_state = NULL, oauth_code_verifier = NULL, "
+            "oauth_state_expires_at = NULL, updated_at = now() WHERE id = :id"
+        ),
         {"id": row.id},
     )
 
     grant = await transport.exchange_code(
-        provider, client, code=code, redirect_uri=_redirect_uri(settings)
+        provider,
+        client,
+        code=code,
+        redirect_uri=_redirect_uri(settings),
+        code_verifier=row.oauth_code_verifier,
     )
     identity = await transport.fetch_identity(provider, grant.access_token)
 
@@ -654,8 +607,45 @@ async def complete_callback(
     return _view(updated)
 
 
+async def _revoke_upstream_best_effort(
+    session: AsyncSession, transport: OAuthTransport, *, connection_id: UUID, provider_id: str
+) -> None:
+    """Ask the provider to kill the grant before the local ciphertext is deleted.
+
+    Best-effort by contract: the authority is the local deletion (a credential JUTSU
+    cannot read is a credential JUTSU cannot use), and a provider that is down must
+    never stop a person from disconnecting. The token is decrypted only here, held
+    only for the one revocation call, and never returned.
+    """
+    provider = PROVIDERS.get(provider_id)
+    client = oauth_client_for(provider_id)
+    fernet = _fernet()
+    if provider is None or provider.revoke_url is None or client is None or fernet is None:
+        return
+    ciphertext = (
+        await session.execute(
+            text("SELECT access_token_enc FROM connection_credentials WHERE connection_id = :id"),
+            {"id": connection_id},
+        )
+    ).scalar_one_or_none()
+    if ciphertext is None:
+        return
+    try:
+        access_token = fernet.decrypt(bytes(ciphertext)).decode("utf-8")
+    except InvalidToken:
+        # A rotated Fernet key cannot decrypt old ciphertext; local deletion still
+        # proceeds and the provider-side grant dies at its own expiry.
+        return
+    await transport.revoke_upstream(provider, client, access_token=access_token)
+
+
 async def disconnect_own(
-    session: AsyncSession, *, org_id: UUID, user_id: UUID, connection_id: UUID
+    session: AsyncSession,
+    transport: OAuthTransport,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    connection_id: UUID,
 ) -> None:
     """Disconnect the caller's own connection.
 
@@ -668,15 +658,19 @@ async def disconnect_own(
         await session.execute(
             text(
                 "UPDATE connections SET status = 'disconnected', disconnected_at = now(), "
-                "updated_at = now(), oauth_state = NULL "
-                "WHERE id = :id AND user_id = :user AND status != 'disconnected' RETURNING id"
+                "updated_at = now(), oauth_state = NULL, oauth_code_verifier = NULL "
+                "WHERE id = :id AND user_id = :user AND status != 'disconnected' "
+                "RETURNING id, provider"
             ),
             {"id": connection_id, "user": user_id},
         )
-    ).scalar_one_or_none()
+    ).first()
     if updated is None:
         raise NotFound("That connection was not found.")
 
+    await _revoke_upstream_best_effort(
+        session, transport, connection_id=connection_id, provider_id=updated.provider
+    )
     await session.execute(
         text("DELETE FROM connection_credentials WHERE connection_id = :id"),
         {"id": connection_id},
@@ -692,6 +686,7 @@ async def disconnect_own(
 
 async def revoke_connection(
     session: AsyncSession,
+    transport: OAuthTransport,
     *,
     org_id: UUID,
     actor_id: UUID,
@@ -706,7 +701,7 @@ async def revoke_connection(
     row = (
         await session.execute(
             text(
-                "SELECT c.user_id, ur.role_key FROM connections c "
+                "SELECT c.user_id, c.provider, ur.role_key FROM connections c "
                 "LEFT JOIN user_roles ur ON ur.user_id = c.user_id "
                 "WHERE c.id = :id AND c.status != 'disconnected'"
             ),
@@ -726,9 +721,13 @@ async def revoke_connection(
     await session.execute(
         text(
             "UPDATE connections SET status = 'disconnected', disconnected_at = now(), "
-            "updated_at = now(), oauth_state = NULL WHERE id = :id"
+            "updated_at = now(), oauth_state = NULL, oauth_code_verifier = NULL "
+            "WHERE id = :id"
         ),
         {"id": connection_id},
+    )
+    await _revoke_upstream_best_effort(
+        session, transport, connection_id=connection_id, provider_id=row.provider
     )
     await session.execute(
         text("DELETE FROM connection_credentials WHERE connection_id = :id"),

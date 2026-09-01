@@ -532,6 +532,14 @@ class Connection(Base):
     provider_subject: Mapped[str | None] = mapped_column(String(255))
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     oauth_state: Mapped[str | None] = mapped_column(String(64), unique=True)
+    #: PKCE verifier (migration 0015). Server-side only — the browser carries the S256
+    #: digest to the provider, never this value.
+    oauth_code_verifier: Mapped[str | None] = mapped_column(String(128))
+    #: When the pending state stops being spendable (migration 0015).
+    oauth_state_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Provider fetcher checkpoints (migration 0015): page tokens, delta links,
+    #: updated-since watermarks — shaped by the provider, opaque to everything else.
+    sync_cursor: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = _now()
     updated_at: Mapped[datetime] = _now()
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
