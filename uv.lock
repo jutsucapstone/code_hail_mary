@@ -581,11 +581,15 @@ name = "jutsu-connectors"
 version = "0.1.0"
 source = { editable = "packages/connectors" }
 dependencies = [
+    { name = "httpx" },
     { name = "jutsu-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "jutsu-core", editable = "packages/core" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jutsu-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "jutsu-core"

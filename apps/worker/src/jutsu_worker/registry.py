@@ -69,3 +69,33 @@ def connector_for(system: SourceSystem, config: dict[str, Any]) -> Connector:
         return ManifestConnector(Path(root), manifest)
 
     return LocalConnector(Path(root))
+
+
+async def resolve_connector(
+    system: SourceSystem, config: dict[str, Any], *, org_id: Any
+) -> Connector:
+    """The async face of `connector_for`, covering provider-backed sources too.
+
+    Local sources need nothing asynchronous and delegate straight down. A provider
+    source names a connection in its `config_json`, and building its connector means
+    reading that connection's proven subject — a database read — so the resolution is
+    async. The worker's fetcher factory owns that half; importing it here (not the
+    other way round) keeps this module free of credential concerns, as its docstring
+    promises.
+
+    A connector returned from here may expose `aclose()`; callers that finish with it
+    should call `close_connector`.
+    """
+    if system is SourceSystem.LOCAL:
+        return connector_for(system, config)
+
+    from jutsu_worker.fetchers import build_provider_connector
+
+    return await build_provider_connector(system, config, org_id=org_id)
+
+
+async def close_connector(connector: Connector) -> None:
+    """Release a connector's transport if it holds one. Local connectors hold none."""
+    closer = getattr(connector, "aclose", None)
+    if closer is not None:
+        await closer()

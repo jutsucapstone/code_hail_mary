@@ -70,7 +70,7 @@ from jutsu_worker.jobs import (
     reopen_completed_job,
 )
 from jutsu_worker.pipeline import IngestOutcome, persist_document
-from jutsu_worker.registry import UnsupportedSource, connector_for
+from jutsu_worker.registry import UnsupportedSource, close_connector, resolve_connector
 
 __all__ = [
     "SourceRun",
@@ -221,45 +221,66 @@ async def run_source_job(
     if row is None:
         raise UnsupportedSource("source not found in this organisation")
 
-    connector = connector_for(SourceSystem(row.system), row.config_json or {})
+    connector = await resolve_connector(
+        SourceSystem(row.system), row.config_json or {}, org_id=org_id
+    )
 
     listed = 0
     enqueued = 0
     duplicate = 0
     reopened = 0
-    async for external_id in connector.list_since(row.last_sync_cursor):
-        listed += 1
-        key = document_job_key(org_id, source_id, external_id)
-        created = await enqueue_job(
-            session,
-            org_id=org_id,
-            kind=JobKind.INGEST_DOCUMENT,
-            idempotency_key=key,
-            payload={"source_id": str(source_id), "external_id": external_id},
-        )
-        if created is None:
-            # The key already exists, which means one of two very different things.
-            #
-            # If the previous run *finished* it, this walk is asking the same question
-            # again — has this document changed? — so the job is reopened. Without that a
-            # completed job would shadow the identifier for ever and no later edit would
-            # ever be ingested.
-            #
-            # If it is queued, in flight or permanently failed, it is left exactly as it
-            # is: re-creating it would duplicate work or restart a loop that already gave
-            # up for a reason.
-            if await reopen_completed_job(session, idempotency_key=key):
-                reopened += 1
+    try:
+        listing = connector.list_since(row.last_sync_cursor)
+        async for external_id in listing:
+            listed += 1
+            key = document_job_key(org_id, source_id, external_id)
+            created = await enqueue_job(
+                session,
+                org_id=org_id,
+                kind=JobKind.INGEST_DOCUMENT,
+                idempotency_key=key,
+                payload={"source_id": str(source_id), "external_id": external_id},
+            )
+            if created is None:
+                # The key already exists, which means one of two very different things.
+                #
+                # If the previous run *finished* it, this walk is asking the same
+                # question again — has this document changed? — so the job is reopened.
+                # Without that a completed job would shadow the identifier for ever and
+                # no later edit would ever be ingested.
+                #
+                # If it is queued, in flight or permanently failed, it is left exactly
+                # as it is: re-creating it would duplicate work or restart a loop that
+                # already gave up for a reason.
+                if await reopen_completed_job(session, idempotency_key=key):
+                    reopened += 1
+                else:
+                    duplicate += 1
             else:
-                duplicate += 1
-        else:
-            enqueued += 1
+                enqueued += 1
+    finally:
+        await close_connector(connector)
 
     cursor = started.isoformat()
     await session.execute(
         text("UPDATE sources SET last_sync_cursor = :cursor, last_sync_at = now() WHERE id = :id"),
         {"cursor": cursor, "id": str(source_id)},
     )
+    # A provider-backed source reports back to its connection: the walk finishing IS
+    # the synchronisation the owner's "Last synchronised" describes. Same transaction
+    # as the cursor, so the two can never describe different walks. reauth_required is
+    # deliberately not overwritten — a completed walk under an old token does not prove
+    # the next one can start.
+    backing_connection = (row.config_json or {}).get("connection_id")
+    if backing_connection:
+        await session.execute(
+            text(
+                "UPDATE connections SET last_sync_at = now(), last_error_kind = NULL, "
+                "status = 'connected', updated_at = now() "
+                "WHERE id = :id AND status IN ('connected', 'error')"
+            ),
+            {"id": uuid.UUID(str(backing_connection))},
+        )
 
     await _audit(
         session,
@@ -347,9 +368,14 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
     row = await _load_source(session, source_id)
     if row is None:
         raise UnsupportedSource("source not found in this organisation")
-    connector = connector_for(SourceSystem(row.system), row.config_json or {})
+    connector = await resolve_connector(
+        SourceSystem(row.system), row.config_json or {}, org_id=org_id
+    )
 
-    raw = await connector.fetch(external_id)
+    try:
+        raw = await connector.fetch(external_id)
+    finally:
+        await close_connector(connector)
     await record_state(session, job_id=job.id, state=JobState.NORMALIZED)
 
     # The grants come from the connector, which derives them from the document's own

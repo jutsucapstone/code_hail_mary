@@ -12,9 +12,10 @@ outcomes, each with a distinct shape because each demands a different operator a
   key, no client registration). Also permanent, but the fix is an operator's, and the
   message says so without naming any secret.
 
-Refreshed tokens are re-encrypted and stored in the same transaction as the sync work
-that needed them, so a crash rolls back both together. Atlassian rotates refresh
-tokens on every use — the returned one always replaces the stored one when present.
+Refreshed tokens are re-encrypted and stored on the caller's session; the production
+caller commits them immediately, because Atlassian rotates refresh tokens on every use
+and a rolled-back rotation would leave the row holding a token the provider already
+burned. The returned refresh token always replaces the stored one when present.
 """
 
 from __future__ import annotations
@@ -146,9 +147,12 @@ async def access_token_for(
 ) -> str:
     """A currently-valid access token for this connection, refreshing if stale.
 
-    The refreshed ciphertext is written on the caller's session — the same transaction
-    as the sync work — so a crash rolls both back together and the old (still-valid at
-    the provider) refresh token is not lost.
+    The refreshed ciphertext is written on the caller's session, and the caller's
+    commit discipline matters: providers that ROTATE refresh tokens (Atlassian) burn
+    the old one the moment they answer, so the production caller (ConnectionTokenSource)
+    commits immediately rather than tying the write to the fate of the sync — rolling
+    back a rotated token manufactures a permanent reauth loop out of a transient
+    failure.
     """
     stored = await _load(session, connection_id)
 

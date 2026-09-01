@@ -1,9 +1,10 @@
-"""The connector.sync stage: honest failure until a fetcher exists.
+"""The connector.sync stage: a sync becomes a source walk.
 
 What must hold: a queued sync is CLAIMED and RESOLVED — never left pending forever and
-never completed as if a sync happened. With no fetcher it fails as `source_unavailable`
-(non-retryable, so it goes straight past the retry ladder), the failure is audited, and
-the connection is annotated `sync_unavailable` for its owner's UI.
+never completed as if content moved when it did not. A provider with a real connector
+gets a sources row and an ingest.source job (the existing pipeline IS the sync path);
+a provider without one still fails honestly as source_unavailable, audited, with the
+connection annotated sync_unavailable for its owner's UI.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ async def worker_database(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None
 
 
 async def seed_connection_and_job(org_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
-    """One org, one user, one connected slack connection, one queued sync — exactly the
+    """One org, one user, one connected github connection, one queued sync — exactly the
     rows POST /v1/me/connections/{id}/sync leaves behind."""
     user_id = uuid.uuid4()
     connection_id = uuid.uuid4()
@@ -76,8 +77,9 @@ async def seed_connection_and_job(org_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UU
         )
         await session.execute(
             text(
-                "INSERT INTO connections (id, org_id, user_id, provider, status) "
-                "VALUES (:id, :org, :user, 'slack', 'connected')"
+                "INSERT INTO connections (id, org_id, user_id, provider, status, "
+                "provider_subject) VALUES (:id, :org, :user, 'github', 'connected', "
+                "'583231')"
             ),
             {"id": connection_id, "org": org_id, "user": user_id},
         )
@@ -98,12 +100,86 @@ async def seed_connection_and_job(org_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UU
 
 
 class TestSyncJob:
-    async def test_a_queued_sync_resolves_instead_of_waiting_forever(self) -> None:
+    async def test_a_queued_sync_enqueues_the_walk_and_completes(self) -> None:
         org_id = uuid.uuid4()
-        _connection_id, job_id = await seed_connection_and_job(org_id)
+        connection_id, job_id = await seed_connection_and_job(org_id)
 
         outcome = await process_connector_sync(org_id, job_id=job_id)
-        assert outcome is JOB_FAILED, "with no fetcher, the honest outcome is a failure"
+        assert outcome == 1, "one walk enqueued"
+
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+            ).one()
+            assert job.state == "completed"
+
+            source = (
+                await session.execute(
+                    text(
+                        "SELECT id, system::text AS system, config_json FROM sources "
+                        "WHERE config_json->>'connection_id' = :cid"
+                    ),
+                    {"cid": str(connection_id)},
+                )
+            ).one()
+            assert source.system == "github", "the ACL namespace, not the provider id"
+            assert source.config_json["provider"] == "github"
+
+            walk = (
+                await session.execute(
+                    text(
+                        "SELECT state FROM jobs WHERE kind = 'ingest.source' "
+                        "AND payload_json->>'source_id' = :sid"
+                    ),
+                    {"sid": str(source.id)},
+                )
+            ).one()
+            assert walk.state == "pending"
+
+    async def test_a_second_sync_reuses_the_source_and_reopens_the_walk(self) -> None:
+        org_id = uuid.uuid4()
+        connection_id, job_id = await seed_connection_and_job(org_id)
+        await process_connector_sync(org_id, job_id=job_id)
+
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("UPDATE jobs SET state = 'completed' WHERE kind = 'ingest.source'")
+            )
+            await session.execute(
+                text("UPDATE jobs SET state = 'pending', attempts = 0 WHERE id = :id"),
+                {"id": job_id},
+            )
+
+        outcome = await process_connector_sync(org_id, job_id=job_id)
+        assert outcome == 1
+
+        async with org_session(org_id) as session:
+            sources = (
+                await session.execute(
+                    text("SELECT count(*) FROM sources WHERE config_json->>'connection_id' = :cid"),
+                    {"cid": str(connection_id)},
+                )
+            ).scalar_one()
+            assert sources == 1, "one source per connection, however many syncs"
+            walk = (
+                await session.execute(
+                    text("SELECT state, attempts FROM jobs WHERE kind = 'ingest.source'")
+                )
+            ).one()
+            assert walk.state == "pending", "the completed walk was reopened"
+            assert walk.attempts == 0
+
+    async def test_an_unimplemented_provider_still_fails_honestly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jutsu_worker.sync as sync_module
+
+        monkeypatch.setattr(sync_module, "CONNECTOR_CLASSES", {})
+        org_id = uuid.uuid4()
+        connection_id, job_id = await seed_connection_and_job(org_id)
+
+        outcome = await process_connector_sync(org_id, job_id=job_id)
+        assert outcome is JOB_FAILED
 
         async with org_session(org_id) as session:
             job = (
@@ -112,18 +188,9 @@ class TestSyncJob:
                     {"id": job_id},
                 )
             ).one()
-            # Non-retryable classification: no amount of retrying invents a fetcher.
             assert job.failure_kind == "source_unavailable"
             assert job.state in ("failed", "dead_letter")
-            assert job.state != "pending"
 
-    async def test_the_connection_is_annotated_for_its_owner(self) -> None:
-        org_id = uuid.uuid4()
-        connection_id, job_id = await seed_connection_and_job(org_id)
-
-        await process_connector_sync(org_id, job_id=job_id)
-
-        async with org_session(org_id) as session:
             row = (
                 await session.execute(
                     text("SELECT status, last_error_kind FROM connections WHERE id = :id"),
@@ -131,16 +198,8 @@ class TestSyncJob:
                 )
             ).one()
             assert row.last_error_kind == "sync_unavailable"
-            # The connection itself is fine — the sync failed, not the authorization.
             assert row.status == "connected"
 
-    async def test_the_failure_is_audited_without_error_text(self) -> None:
-        org_id = uuid.uuid4()
-        _, job_id = await seed_connection_and_job(org_id)
-
-        await process_connector_sync(org_id, job_id=job_id)
-
-        async with org_session(org_id) as session:
             entry = (
                 await session.execute(
                     text(
@@ -158,28 +217,38 @@ class TestSyncJob:
             await session.execute(
                 text("INSERT INTO orgs (id, name) VALUES (:id, 'idle')"), {"id": org_id}
             )
-
-        outcome = await process_connector_sync(org_id)
-        assert outcome is None
+        assert await process_connector_sync(org_id) is None
 
 
 class TestDrainOrg:
     """The per-org drain — the worker half of the doorbell (ADR 0012)."""
 
-    async def test_one_drain_resolves_the_backlog_and_then_reports_idle(self) -> None:
+    async def test_one_drain_carries_sync_into_the_walk_which_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No JUTSU_CONNECTION_KEY in this environment, so the walk must fail closed as
+        a deployment problem (provider_permanent) — never fetch, never fabricate."""
         from jutsu_worker.runner import drain_org
 
+        monkeypatch.delenv("JUTSU_CONNECTION_KEY", raising=False)
         org_id = uuid.uuid4()
         _connection_id, job_id = await seed_connection_and_job(org_id)
 
         counts = await drain_org(org_id)
         assert counts["connector.sync"] == 1, "the queued sync was claimed and resolved"
+        assert counts["ingest.source"] == 1, "the walk it enqueued ran in the same drain"
 
         async with org_session(org_id) as session:
-            job = (
+            sync_job = (
                 await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
             ).one()
-            assert job.state in ("failed", "dead_letter")
+            assert sync_job.state == "completed"
+            walk = (
+                await session.execute(
+                    text("SELECT state, failure_kind FROM jobs WHERE kind = 'ingest.source'")
+                )
+            ).one()
+            assert walk.failure_kind == "provider_permanent"
 
         # A second drain finds nothing claimable and stops instead of spinning.
         again = await drain_org(org_id)

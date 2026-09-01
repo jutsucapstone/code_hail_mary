@@ -1,23 +1,28 @@
-"""Connector sync jobs: the durable half of "Sync now".
+"""Connector sync jobs: "Sync now" becomes a source walk.
 
-`POST /v1/me/connections/{id}/sync` enqueues a `connector.sync` row in the same durable
-queue ingestion uses. This module is the worker's side of that contract — and it is
-honest about the platform's current reach: **no per-provider fetcher exists yet**, so a
-claimed sync job fails with the same classified, non-retryable shape an unsupported
-source system produces, lands in the operator's Jobs view as `source_unavailable`, and
-annotates the connection so its owner sees `sync_unavailable` instead of a spinner.
+`POST /v1/me/connections/{id}/sync` enqueues a `connector.sync` row. Claiming it does
+NOT fetch anything itself — it makes sure the connection has its `sources` row and
+enqueues the walk, then the existing pipeline does what it always does: list, fetch,
+mask, chunk, embed, extract, each stage its own durable job. One sync path for local
+corpora and live providers alike; a parallel ingestion system is exactly what ADR 0012
+exists to prevent.
 
-That is deliberately better than the two alternatives: leaving the job `pending`
-forever (a queue that lies about its backlog) or completing it as if a sync happened
-(the fake success §36 forbids). When the first fetcher lands, `fetcher_for` grows its
-first real entry and everything around it — claim, lease, bounded attempts, failure
-classification, the connection annotation — is already in place and tested.
+The `sources` row is the bridge (ADR 0014's data-plane half): `system` is the
+provider's ACL namespace, `config_json` names the connection and the precise provider
+id. `registry.resolve_connector` reads that config back when the walk runs and builds
+the provider connector with the connection's proven subject and refreshed token.
+
+A provider without a connector class still fails honestly as `source_unavailable` and
+annotates the owner's connection `sync_unavailable` — the shape the UI already knows.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 
+from jutsu_connectors.providers import CONNECTOR_CLASSES
+from jutsu_core.providers import PROVIDERS
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,24 +31,19 @@ from jutsu_worker.registry import UnsupportedSource
 __all__ = ["mark_sync_unavailable", "run_sync_job"]
 
 
-def fetcher_for(provider: str) -> None:
-    """The provider fetcher registry. Currently empty, and says so per provider.
-
-    Mirrors `registry.connector_for`'s stance for source systems: the absence of a
-    fetcher is a permanent condition no retry changes, so the exception is the one the
-    classifier already maps to a non-retryable failure.
-    """
-    raise UnsupportedSource(f"no sync fetcher for provider '{provider}' yet")
-
-
 async def run_sync_job(session: AsyncSession, *, job: object) -> int:
-    """Transaction 2 of a sync job. Raises until a fetcher exists.
+    """Transaction 2 of a sync job: ensure the source row, enqueue the walk.
 
     The connection is loaded under the org scope the session already carries; a payload
     naming another tenant's connection finds nothing, exactly as with forged dispatch
-    messages elsewhere in this worker.
+    messages elsewhere in this worker. Returns the number of walks enqueued (1), never
+    a document count — documents are the walk's business.
     """
+    from jutsu_worker.ingest import source_job_key
+    from jutsu_worker.jobs import JobKind, enqueue_job, reopen_completed_job
+
     connection_id = uuid.UUID(str(job.payload["connection_id"]))  # type: ignore[attr-defined]
+    org_id = job.org_id  # type: ignore[attr-defined]
     row = (
         await session.execute(
             text("SELECT id, provider, status FROM connections WHERE id = :id"),
@@ -52,11 +52,53 @@ async def run_sync_job(session: AsyncSession, *, job: object) -> int:
     ).first()
     if row is None:
         raise UnsupportedSource("connection not found in this organisation")
+    if row.status not in ("connected", "error"):
+        raise UnsupportedSource("the connection is not in a syncable state")
 
-    fetcher_for(row.provider)
-    # Unreachable until a fetcher exists; the return type documents the contract
-    # (documents fetched) for when one does.
-    return 0  # pragma: no cover
+    provider = PROVIDERS.get(row.provider)
+    if provider is None or row.provider not in CONNECTOR_CLASSES:
+        raise UnsupportedSource(f"no sync fetcher for provider '{row.provider}' yet")
+
+    source_row = (
+        await session.execute(
+            text(
+                "SELECT id FROM sources WHERE system = CAST(:system AS source_system) "
+                "AND config_json->>'connection_id' = :cid"
+            ),
+            {"system": provider.acl_namespace, "cid": str(connection_id)},
+        )
+    ).first()
+    if source_row is not None:
+        source_id = source_row.id
+    else:
+        source_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO sources (id, org_id, system, config_json) "
+                "VALUES (:id, :org, CAST(:system AS source_system), CAST(:config AS jsonb))"
+            ),
+            {
+                "id": source_id,
+                "org": str(org_id),
+                "system": provider.acl_namespace,
+                "config": json.dumps(
+                    {"connection_id": str(connection_id), "provider": row.provider}
+                ),
+            },
+        )
+
+    key = source_job_key(org_id, source_id)
+    await enqueue_job(
+        session,
+        org_id=org_id,
+        kind=JobKind.INGEST_SOURCE,
+        idempotency_key=key,
+        payload={"source_id": str(source_id)},
+    )
+    # A finished walk holds the key; a person asking to sync again is new work on the
+    # same identity, exactly like a changed document (reopen_completed_job's contract).
+    await reopen_completed_job(session, idempotency_key=key)
+    return 1
 
 
 async def mark_sync_unavailable(session: AsyncSession, *, connection_id: uuid.UUID) -> None:
