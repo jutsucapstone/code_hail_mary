@@ -53,6 +53,10 @@ class Provider:
     #: authed_user block (the employee's own token, not a bot's) and asks for scopes
     #: via user_scope.
     token_style: str = "standard"  # noqa: S105 - a parsing style tag, not a secret
+    #: Which source_identities namespace this provider's proven subject belongs to
+    #: (ADR 0014). Four Google products share one subject (the OIDC sub), three
+    #: Microsoft products share the Graph object id; the namespaces mirror that.
+    acl_namespace: str = ""
     #: Where an access token can be revoked upstream at disconnect, and how:
     #: "post_token" (Google), "bearer_post" (Slack auth.revoke), "github_grant"
     #: (DELETE the whole grant with basic auth). None: the provider offers no
@@ -83,6 +87,7 @@ def _google(id_: str, name: str, description: str, *scopes: str) -> Provider:
         token_url=_GOOGLE_TOKEN,
         userinfo_url=_GOOGLE_USERINFO,
         scopes=("openid", "email", *scopes),
+        acl_namespace="gmail",
         # offline -> a refresh token; consent -> Google reissues one on reconnect
         # instead of silently omitting it the second time.
         extra_authorize_params=(("access_type", "offline"), ("prompt", "consent")),
@@ -101,6 +106,7 @@ def _microsoft(id_: str, name: str, description: str, *scopes: str) -> Provider:
         token_url=_MS_TOKEN,
         userinfo_url=_MS_USERINFO,
         scopes=("openid", "email", "offline_access", *scopes),
+        acl_namespace="m365",
         # No revocation endpoint for v2 access tokens; they expire on their own and
         # the refresh token dies with the local ciphertext.
     )
@@ -116,6 +122,7 @@ def _atlassian(id_: str, name: str, description: str, *scopes: str) -> Provider:
         token_url=_ATLASSIAN_TOKEN,
         userinfo_url=_ATLASSIAN_ME,
         scopes=(*scopes, "offline_access"),
+        acl_namespace=id_,
         # audience is required for api.atlassian.com tokens; consent prompts the
         # grant screen that actually issues offline_access.
         extra_authorize_params=(("audience", "api.atlassian.com"), ("prompt", "consent")),
@@ -184,6 +191,7 @@ PROVIDERS: dict[str, Provider] = {
             # user_scope on the authorize URL (token_style below), because Slack's
             # `scope` parameter provisions a bot.
             scopes=("channels:history", "channels:read", "users:read"),
+            acl_namespace="slack",
             token_style="slack_user",  # noqa: S106 - a parsing style tag, not a secret
             revoke_url="https://slack.com/api/auth.revoke",
             revoke_style="bearer_post",
@@ -215,6 +223,7 @@ PROVIDERS: dict[str, Provider] = {
             # feature. Private-repo *content* would need `repo` (also write) — refused;
             # a GitHub App installation is the read-only path to private content.
             scopes=("read:user", "read:org"),
+            acl_namespace="github",
             revoke_url="https://api.github.com/applications/{client_id}/grant",
             revoke_style="github_grant",
         ),

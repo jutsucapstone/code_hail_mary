@@ -23,10 +23,12 @@ environment is reported `configured: false` and refuses to start a flow with a 5
 the UI then says "not configured for this deployment" instead of pretending. No fake
 OAuth, ever: the flow either round-trips a real provider or does not begin.
 
-**A connection grants no document visibility.** The OAuth callback proves a provider
-subject the way email verification proves an address, and the subject is stored on the
-row — but mapping thirteen providers onto the seven ACL namespaces is an authorization
-decision that needs its own ADR before anything writes `source_identities` from here.
+**Connecting links the proven subject (ADR 0014).** The OAuth callback proves a
+provider subject the way email verification proves an address, and the callback links
+it as a source identity in the provider's ACL namespace — fail-closed when the subject
+is already someone else's. Disconnecting stops the syncing; it deliberately does not
+revoke the identity, because who somebody is does not change when a pipe closes.
+Identity revocation stays the administrative act it always was.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from uuid import UUID, uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ServiceUnavailable
+from jutsu_core.models import SourceSystem
 from jutsu_core.providers import (
     GROUP_LABELS,
     PROVIDERS,
@@ -56,6 +59,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.config import Settings
+from jutsu_api.identities import link_verified_subject
 
 __all__ = [
     "GROUP_LABELS",
@@ -600,6 +604,19 @@ async def complete_callback(
             {"label": identity.label, "subject": identity.subject, "id": row.id},
         )
     ).one()
+
+    # The callback just PROVED this subject belongs to the caller — the identity
+    # endpoint answered for the token minted moments ago. Linking it is what turns a
+    # connection's future content into something its owner can actually see (ADR 0014):
+    # ACL rows written by the fetcher name {namespace}:{subject}, and this row is the
+    # only thing that resolves the caller to that principal. Fail-closed on conflict.
+    await link_verified_subject(
+        session,
+        org_id=org_id,
+        user_id=user_id,
+        source_system=SourceSystem(provider.acl_namespace),
+        subject=identity.subject,
+    )
 
     await _audit(
         session, org_id=org_id, actor_id=user_id, action="connection.connected", resource_id=row.id

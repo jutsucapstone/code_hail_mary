@@ -726,3 +726,112 @@ class TestOAuthHardening:
         for provider in PROVIDERS.values():
             overlap = set(provider.scopes) & known_write_scopes
             assert not overlap, f"{provider.id} carries write scope(s): {overlap}"
+
+
+# --------------------------------------------------------------------------------------
+# ADR 0014 — the callback links the proven subject
+# --------------------------------------------------------------------------------------
+
+
+class TestVerifiedSubjectLink:
+    async def test_completing_a_callback_links_the_proven_subject(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+        _connection_id, state = await connect_slack(client)
+        await complete(client, state)
+
+        row = (
+            await inspector.execute(
+                text(
+                    "SELECT source_system::text AS source_system, subject, linked_by, "
+                    "is_active FROM source_identities WHERE source_system = 'slack'"
+                )
+            )
+        ).one()
+        assert row.subject == "U0AB12CD", "the subject the provider proved, verbatim"
+        assert row.linked_by == "oauth_connection"
+        assert row.is_active is True
+
+    async def test_a_subject_already_held_by_a_colleague_links_nothing(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        inspector: AsyncSession,
+    ) -> None:
+        """Fail-closed: one subject is one person per tenant; nobody's access moves."""
+        await register_owner(client, mailbox)
+        owner_id = (
+            await inspector.execute(
+                text("SELECT id FROM users WHERE email = :email"), {"email": OWNER_EMAIL}
+            )
+        ).scalar_one()
+        org_id = (
+            await inspector.execute(
+                text("SELECT org_id FROM users WHERE id = :id"), {"id": owner_id}
+            )
+        ).scalar_one()
+
+        await invite_and_accept(client, mailbox, email="rival@example.com")
+        # The invited member session is now active; give the OWNER's slack subject to
+        # the member first, then have the member connect slack and prove that subject.
+        # (FakeOAuth always answers U0AB12CD.)
+        await inspector.execute(
+            text(
+                "INSERT INTO source_identities (org_id, user_id, source_system, subject, "
+                "linked_by) VALUES (:org, :user, 'slack', 'U0AB12CD', 'admin')"
+            ),
+            {"org": str(org_id), "user": owner_id},
+        )
+        await inspector.commit()
+
+        _connection_id, state = await connect_slack(client)
+        response = await complete(client, state)
+        assert response.status_code == 303  # type: ignore[attr-defined]
+
+        rows = (
+            await inspector.execute(
+                text(
+                    "SELECT user_id FROM source_identities "
+                    "WHERE source_system = 'slack' AND subject = 'U0AB12CD'"
+                )
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].user_id == owner_id, "the existing holder keeps the subject"
+
+    async def test_disconnecting_does_not_revoke_the_identity(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        inspector: AsyncSession,
+    ) -> None:
+        """Who somebody is does not change when a pipe closes (ADR 0014)."""
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+        await client.delete(f"/v1/me/connections/{connection_id}", headers=csrf(client))
+
+        row = (
+            await inspector.execute(
+                text(
+                    "SELECT is_active, revoked_at FROM source_identities "
+                    "WHERE source_system = 'slack' AND subject = 'U0AB12CD'"
+                )
+            )
+        ).one()
+        assert row.is_active is True
+        assert row.revoked_at is None
+
+    def test_every_provider_declares_a_valid_acl_namespace(self) -> None:
+        from jutsu_core.models import SourceSystem
+
+        for provider in PROVIDERS.values():
+            assert provider.acl_namespace, f"{provider.id} declares no ACL namespace"
+            SourceSystem(provider.acl_namespace)  # raises on an unknown value

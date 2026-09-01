@@ -53,6 +53,7 @@ __all__ = [
 #: a property of the row and the actor is an event.
 LINKED_BY_VERIFIED_EMAIL = "verified_email"
 LINKED_BY_ADMIN = "admin"
+LINKED_BY_OAUTH = "oauth_connection"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,44 @@ async def link_verified_email(
             "system": SourceSystem.LOCAL.value,
             "subject": verified_email,
             "by": LINKED_BY_VERIFIED_EMAIL,
+        },
+    )
+
+
+async def link_verified_subject(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    source_system: SourceSystem,
+    subject: str,
+) -> None:
+    """Link a provider subject an OAuth callback has just PROVEN (ADR 0014).
+
+    The same precedent as `link_verified_email`, in the other namespace direction:
+    the subject arrives from the provider's own identity endpoint, reached with the
+    token minted seconds ago — a verification, never a request field. That is what
+    distinguishes this from the admin self-link refusal: the refusal exists because an
+    admin *asserts* a subject; here the provider *proved* it.
+
+    Fail-closed on conflict exactly like the email path: a subject already held by a
+    different user in this tenant links nothing, and nobody's access moves. The person
+    keeps a working connection (content still syncs under their token) but gains no
+    document visibility until an administrator resolves who the subject belongs to.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO source_identities "
+            "(org_id, user_id, source_system, subject, linked_by) "
+            "VALUES (:org, :user, CAST(:system AS source_system), :subject, :by) "
+            "ON CONFLICT (org_id, source_system, subject) DO NOTHING"
+        ),
+        {
+            "org": str(org_id),
+            "user": str(user_id),
+            "system": source_system.value,
+            "subject": subject,
+            "by": LINKED_BY_OAUTH,
         },
     )
 
