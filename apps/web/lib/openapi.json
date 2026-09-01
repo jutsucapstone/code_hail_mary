@@ -42,6 +42,81 @@
         "title": "AcceptResult",
         "type": "object"
       },
+      "AskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "default": 30,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "K",
+            "type": "integer"
+          },
+          "question": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AskResponse": {
+        "description": "A grounded answer, or an honest refusal \u2014 never a fluent guess.\n\n`answer` is None exactly when `insufficient_evidence` is true. `sources` carries\nthe retrieved passages so the UI can render what the answer was grounded ON, and\nevery citation's `marker` indexes into it (1-based).",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/CitationView"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "insufficient_evidence": {
+            "title": "Insufficient Evidence",
+            "type": "boolean"
+          },
+          "query_tokens": {
+            "title": "Query Tokens",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultView"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "insufficient_evidence",
+          "citations",
+          "sources",
+          "attempts",
+          "query_tokens"
+        ],
+        "title": "AskResponse",
+        "type": "object"
+      },
       "AuditEntry": {
         "properties": {
           "action": {
@@ -295,6 +370,39 @@
           "email"
         ],
         "title": "ChallengeRequest",
+        "type": "object"
+      },
+      "CitationView": {
+        "properties": {
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "marker": {
+            "title": "Marker",
+            "type": "integer"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "marker",
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system"
+        ],
+        "title": "CitationView",
         "type": "object"
       },
       "ConnectStarted": {
@@ -2405,6 +2513,48 @@
         "summary": "Readyz",
         "tags": [
           "ops"
+        ]
+      }
+    },
+    "/v1/ask": {
+      "post": {
+        "description": "Answer a question from retrieved evidence (non-negotiable 3), or refuse.\n\nOrdering is the cost control, exactly as on /v1/search \u2014 with one extra gate at the\nvery front: an unconfigured answer service refuses before a single token is spent\non budget, embedding or retrieval, because \"search works, answers are not set up\"\nis a fact the caller deserves for free.\n\nThe same permission as search, deliberately: composing retrieved evidence into a\ncited paragraph grants access to nothing the caller could not already read one\npassage at a time.",
+        "operationId": "ask_v1_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask",
+        "tags": [
+          "search"
         ]
       }
     },

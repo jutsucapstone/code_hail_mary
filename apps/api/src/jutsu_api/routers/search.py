@@ -30,15 +30,24 @@ the existence oracle §4.5 forbids.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from jutsu_retrieval import DEFAULT_K
 from jutsu_retrieval.search import search_chunks
 from pydantic import BaseModel, Field
 
+from jutsu_api.answers import (
+    AnswerTransport,
+    AnthropicTransport,
+    Citation,
+    answers_configured,
+    synthesise_answer,
+)
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.rate_limit import spend_search_budget
 from jutsu_api.retrieval import (
@@ -198,3 +207,111 @@ async def search(
         ),
         query_tokens=query_tokens,
     )
+
+
+class AskRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    question: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
+    k: int = Field(default=DEFAULT_K, ge=1, le=MAX_K)
+
+
+class CitationView(BaseModel):
+    marker: int
+    chunk_id: str
+    document_id: str
+    document_title: str
+    source_system: str
+
+
+class AskResponse(BaseModel):
+    """A grounded answer, or an honest refusal — never a fluent guess.
+
+    `answer` is None exactly when `insufficient_evidence` is true. `sources` carries
+    the retrieved passages so the UI can render what the answer was grounded ON, and
+    every citation's `marker` indexes into it (1-based).
+    """
+
+    answer: str | None
+    insufficient_evidence: bool
+    citations: list[CitationView]
+    sources: list[SearchResultView]
+    attempts: int
+    query_tokens: int
+
+
+def get_answer_transport() -> AnswerTransport:
+    """The model call. Tests override this exactly like the embedder and the mailer."""
+    return AnthropicTransport()
+
+
+AnswerTransportDep = Annotated[AnswerTransport, Depends(get_answer_transport)]
+
+
+@router.post("/ask")
+@requires(Permission.RETRIEVAL_QUERY)
+async def ask(
+    payload: AskRequest,
+    principal: CurrentPrincipal,
+    session: Db,
+    embedder: QueryEmbedderDep,
+    transport: AnswerTransportDep,
+) -> AskResponse:
+    """Answer a question from retrieved evidence (non-negotiable 3), or refuse.
+
+    Ordering is the cost control, exactly as on /v1/search — with one extra gate at the
+    very front: an unconfigured answer service refuses before a single token is spent
+    on budget, embedding or retrieval, because "search works, answers are not set up"
+    is a fact the caller deserves for free.
+
+    The same permission as search, deliberately: composing retrieved evidence into a
+    cited paragraph grants access to nothing the caller could not already read one
+    passage at a time.
+    """
+    if not answers_configured():
+        raise ServiceUnavailable(
+            "Answers are not configured for this deployment yet. Retrieval still works — "
+            "an administrator must add the answer provider's credentials."
+        )
+
+    await spend_search_budget(org_id=principal.org_id, user_id=principal.user_id)
+
+    vector, query_tokens = await embedder.embed(payload.question)
+
+    page = await search_chunks(
+        session,
+        user_id=principal.user_id,
+        query_vector=vector,
+        k=payload.k,
+        after=None,
+    )
+
+    outcome = await synthesise_answer(
+        transport, question=payload.question, evidence=list(page.items)
+    )
+
+    return AskResponse(
+        answer=outcome.answer,
+        insufficient_evidence=outcome.insufficient_evidence,
+        citations=[CitationView(**vars_citation(c)) for c in outcome.citations],
+        sources=[
+            SearchResultView(
+                chunk_id=str(item.chunk_id),
+                document_id=str(item.document_id),
+                document_title=item.document_title,
+                source_system=item.source_system,
+                text=item.text,
+                char_start=item.char_start,
+                char_end=item.char_end,
+                score=item.score,
+                occurred_at=item.occurred_at,
+            )
+            for item in page.items
+        ],
+        attempts=outcome.attempts,
+        query_tokens=query_tokens,
+    )
+
+
+def vars_citation(citation: Citation) -> dict[str, object]:
+    return asdict(citation)

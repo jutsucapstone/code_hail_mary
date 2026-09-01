@@ -31,7 +31,7 @@ export const SURFACES: readonly Surface[] = [
       "Ask in plain language, get a grounded answer where every claim is clickable through to a highlighted source span. Refuses rather than guesses.",
     kind: "table-stakes",
     slice: "S18–S19",
-    status: "stub",
+    status: "live",
   },
   {
     slug: "decisions",

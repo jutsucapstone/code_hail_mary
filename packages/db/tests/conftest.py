@@ -260,7 +260,11 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
                 "expires_at) VALUES (gen_random_uuid(), :org, :code, :user, :user, "
                 "now() + interval '30 days')"
             ),
-            {"org": org_id, "user": user_id, "code": f"KT-JUTSU-AAAA000{1 if label == 'alpha' else 2}"},
+            {
+                "org": org_id,
+                "user": user_id,
+                "code": f"KT-JUTSU-AAAA000{1 if label == 'alpha' else 2}",
+            },
         )
 
     await conn.commit()

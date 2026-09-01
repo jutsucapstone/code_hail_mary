@@ -1,6 +1,6 @@
 "use client";
 
-import { EvidenceSearch } from "@/components/product/evidence-search";
+import { AskExperience } from "@/components/product/ask-experience";
 import { useKtPackage } from "@/components/kt/kt-shell";
 
 /**
@@ -23,7 +23,7 @@ export default function Page() {
           Every passage returned is real evidence your account is authorised to read.
         </p>
       </div>
-      <EvidenceSearch />
+      <AskExperience />
     </div>
   );
 }

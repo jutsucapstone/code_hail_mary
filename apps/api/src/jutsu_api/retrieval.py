@@ -163,10 +163,21 @@ def get_query_embedder() -> QueryEmbedder:
 
     Lazy rather than at import: `create_app()` runs in `scripts/emit-openapi.py` with no
     credentials and no project, and a schema dump must not need a Vertex configuration.
+
+    Missing configuration is translated to the 503 the envelope can carry. It used to
+    escape as a bare RuntimeError — a 500 with "something went wrong on our side" — which
+    told a caller on an unconfigured deployment nothing at all, and told the §34 states
+    story exactly wrong: this is a deployment fact, not a fault.
     """
     global _embedder
     if _embedder is None:
-        _embedder = QueryEmbedder(VertexTransport(get_embedding_settings()))
+        try:
+            _embedder = QueryEmbedder(VertexTransport(get_embedding_settings()))
+        except MissingEmbeddingSettings as exc:
+            raise ServiceUnavailable(
+                "Search is not configured for this deployment yet: the embedding "
+                "provider needs credentials before queries can be embedded."
+            ) from exc
     return _embedder
 
 

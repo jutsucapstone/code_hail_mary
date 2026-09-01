@@ -12,6 +12,7 @@ dependencies = [
     "pydantic[email]>=2.9",
     "httpx>=0.28.1",
     "cryptography>=50.0.1",
+    "anthropic>=1.2.0",
 ]
 
 [dependency-groups]

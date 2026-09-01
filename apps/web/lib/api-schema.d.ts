@@ -54,6 +54,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask
+         * @description Answer a question from retrieved evidence (non-negotiable 3), or refuse.
+         *
+         *     Ordering is the cost control, exactly as on /v1/search — with one extra gate at the
+         *     very front: an unconfigured answer service refuses before a single token is spent
+         *     on budget, embedding or retrieval, because "search works, answers are not set up"
+         *     is a fact the caller deserves for free.
+         *
+         *     The same permission as search, deliberately: composing retrieved evidence into a
+         *     cited paragraph grants access to nothing the caller could not already read one
+         *     passage at a time.
+         */
+        post: operations["ask_v1_ask_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/audit": {
         parameters: {
             query?: never;
@@ -1008,6 +1037,38 @@ export interface components {
             /** Jutsu Id */
             jutsu_id: string;
         };
+        /** AskRequest */
+        AskRequest: {
+            /**
+             * K
+             * @default 30
+             */
+            k: number;
+            /** Question */
+            question: string;
+        };
+        /**
+         * AskResponse
+         * @description A grounded answer, or an honest refusal — never a fluent guess.
+         *
+         *     `answer` is None exactly when `insufficient_evidence` is true. `sources` carries
+         *     the retrieved passages so the UI can render what the answer was grounded ON, and
+         *     every citation's `marker` indexes into it (1-based).
+         */
+        AskResponse: {
+            /** Answer */
+            answer: string | null;
+            /** Attempts */
+            attempts: number;
+            /** Citations */
+            citations: components["schemas"]["CitationView"][];
+            /** Insufficient Evidence */
+            insufficient_evidence: boolean;
+            /** Query Tokens */
+            query_tokens: number;
+            /** Sources */
+            sources: components["schemas"]["SearchResultView"][];
+        };
         /** AuditEntry */
         AuditEntry: {
             /** Action */
@@ -1102,6 +1163,19 @@ export interface components {
              * Format: email
              */
             email: string;
+        };
+        /** CitationView */
+        CitationView: {
+            /** Chunk Id */
+            chunk_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Marker */
+            marker: number;
+            /** Source System */
+            source_system: string;
         };
         /** ConnectStarted */
         ConnectStarted: {
@@ -1929,6 +2003,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    ask_v1_ask_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -122,8 +122,10 @@ def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS kt_packages_org_isolation ON kt_packages")
     op.drop_table("kt_packages")
     op.execute(
-        sa.text(
-            "DELETE FROM role_permissions WHERE permission_key IN (:m, :o)"
-        ).bindparams(m=MANAGE, o=OPEN)
+        sa.text("DELETE FROM role_permissions WHERE permission_key IN (:m, :o)").bindparams(
+            m=MANAGE, o=OPEN
+        )
     )
-    op.execute(sa.text("DELETE FROM permissions WHERE key IN (:m, :o)").bindparams(m=MANAGE, o=OPEN))
+    op.execute(
+        sa.text("DELETE FROM permissions WHERE key IN (:m, :o)").bindparams(m=MANAGE, o=OPEN)
+    )

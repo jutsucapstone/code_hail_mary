@@ -196,6 +196,10 @@ export type KtDocumentPage =
 type KtCreateBody = paths["/v1/kt"]["post"]["requestBody"]["content"]["application/json"];
 type KtScopes = paths["/v1/kt/scopes"]["get"]["responses"][200]["content"]["application/json"];
 
+export type AskResponse =
+  paths["/v1/ask"]["post"]["responses"][200]["content"]["application/json"];
+export type AskCitation = AskResponse["citations"][number];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -506,6 +510,18 @@ export const api = {
       { method: "GET" },
     );
   },
+
+
+  /**
+   * A grounded answer over retrieved evidence, or an honest refusal.
+   *
+   * POST for the same reason search is: the question is user-authored text that must
+   * not reach access logs in a URL. The body carries only the question and k — the
+   * model, the prompt and the grounding gate are all server-side (§28), so nothing a
+   * browser sends can influence which model answers or how it is checked.
+   */
+  ask: (body: { question: string; k?: number }) =>
+    call<AskResponse>("/v1/ask", { method: "POST", body: JSON.stringify(body) }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };
