@@ -1,16 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Pill, When } from "@/components/admin/page-scaffold";
-import {
-  FailureState,
-  LoadingRegion,
-  Skeleton,
-} from "@/components/states";
+import { EmptyState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
+import { Field } from "@/components/pilot/field";
 import { api, type IntegrationEntry } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
@@ -202,6 +199,7 @@ function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
 export default function IntegrationsPage() {
   const searchParams = useSearchParams();
   const connectedParam = searchParams.get("connected");
+  const [query, setQuery] = useState("");
 
   const catalogue = useQuery({
     queryKey: ["integrations"],
@@ -217,8 +215,22 @@ export default function IntegrationsPage() {
     }
   }, [connectedParam]);
 
+  // The search filters the real catalogue; it never invents an entry. A term that
+  // matches nothing gets an honest "not supported yet" state instead of a blank grid,
+  // because the person typing "Notion" deserves an answer, not an absence (§2).
+  const needle = query.trim().toLowerCase();
   const groups = new Map<string, IntegrationEntry[]>();
+  let shown = 0;
   for (const entry of catalogue.data?.items ?? []) {
+    if (
+      needle &&
+      !entry.name.toLowerCase().includes(needle) &&
+      !entry.description.toLowerCase().includes(needle) &&
+      !entry.group_label.toLowerCase().includes(needle)
+    ) {
+      continue;
+    }
+    shown += 1;
     const list = groups.get(entry.group_label) ?? [];
     list.push(entry);
     groups.set(entry.group_label, list);
@@ -255,7 +267,31 @@ export default function IntegrationsPage() {
           </div>
         </LoadingRegion>
       ) : (
-        [...groups.entries()].map(([label, entries]) => (
+        <>
+          <div className="max-w-sm">
+            <Field
+              id="integration-search"
+              name="integration-search"
+              type="search"
+              label="Search platforms"
+              placeholder="Search any platform or tool…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+
+          {shown === 0 ? (
+            <EmptyState title={`"${query.trim()}" is not supported yet`}>
+              <p>
+                It is not in the connector catalogue this deployment can serve. New
+                connectors are added platform-side so every one stays read-only and
+                policy-governed — ask your administrator to request it, and it will
+                appear here the release it lands.
+              </p>
+            </EmptyState>
+          ) : null}
+
+          {[...groups.entries()].map(([label, entries]) => (
           <section key={label} aria-labelledby={`group-${label}`} className="flex flex-col gap-3">
             <h2
               id={`group-${label}`}
@@ -269,7 +305,8 @@ export default function IntegrationsPage() {
               ))}
             </ul>
           </section>
-        ))
+          ))}
+        </>
       )}
     </div>
   );
