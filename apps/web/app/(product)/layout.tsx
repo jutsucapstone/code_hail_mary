@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Home } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { FeedbackToggle } from "@/components/site/feedback-toggle";
 import { ThemeToggle } from "@/components/site/theme-toggle";
+import { Button } from "@/components/ui/button";
 
 import { SURFACES } from "@/lib/surfaces";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
@@ -48,13 +50,22 @@ export default function ProductLayout({ children }: { children: React.ReactNode 
             </ul>
           </nav>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* The organisation is no longer read from the cookie — there is nothing in
                 it to read. Surfacing it here means asking GET /v1/me, which these six
                 surfaces do not do yet, so the badge is simply absent rather than showing
                 a placeholder that would be indistinguishable from real data (§4.11). */}
             <FeedbackToggle />
             <ThemeToggle />
+            <span aria-hidden="true" className="mx-1 h-5 w-px bg-hairline-strong" />
+            {/* The way back: these surfaces are reached FROM the console, and a person
+                deep in an answer needs a door home that is not the browser button. */}
+            <Button asChild size="sm" variant="outline" className="border-hairline-strong">
+              <Link href="/me">
+                <Home className="size-3.5" aria-hidden="true" />
+                Home
+              </Link>
+            </Button>
           </div>
         </div>
       </header>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
 
 import { Container } from "@/components/site/section";
+import { KtScene } from "@/components/product/kt-scene";
 import { FormError } from "@/components/pilot/submit-button";
 import { Field } from "@/components/pilot/field";
 import { api } from "@/lib/api";
@@ -49,6 +50,7 @@ export default function KnowledgeTransferEntryPage() {
 
   return (
     <Container className="py-16 lg:py-24">
+      <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,42rem)_minmax(0,1fr)]">
       <div className="max-w-2xl">
         <p className="eyebrow flex items-center gap-2.5 text-brand">
           <span aria-hidden="true" className="h-1 w-1 rounded-full bg-brand" />
@@ -96,6 +98,10 @@ export default function KnowledgeTransferEntryPage() {
           bounded by the package&apos;s scope and by what your own account is authorised
           to read — and your administrator can revoke it at any time.
         </p>
+      </div>
+
+      {/* Desktop-only ambient scene; the component gates its own runtime download. */}
+      <KtScene className="relative hidden h-[32rem] overflow-clip rounded-3xl border border-hairline-strong shadow-[0_24px_80px_-32px] shadow-foreground/25 lg:block" />
       </div>
     </Container>
   );

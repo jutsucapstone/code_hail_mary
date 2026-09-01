@@ -28,6 +28,8 @@ export interface MemberSection {
   status: MemberSectionStatus;
   /** The slice that makes it live. Shown to the reader, not buried in a comment. */
   slice: string;
+  /** Sidebar IA group (§6). Ungrouped sections render as the flat run at the top. */
+  group?: string;
 }
 
 export const MEMBER_SECTIONS: readonly MemberSection[] = [
@@ -42,6 +44,7 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
   {
     href: "/ask",
     name: "Ask JUTSU",
+    group: "Knowledge",
     description: "Search the organisational memory you are authorised to read.",
     permission: "retrieval:query",
     status: "live",
@@ -50,8 +53,27 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
   {
     href: "/me/knowledge",
     name: "My knowledge",
-    description: "What your authorized context contains, counted honestly.",
+    group: "Knowledge",
+    description: "What your authorised context contains, counted honestly.",
     permission: "retrieval:query",
+    status: "live",
+    slice: "P3",
+  },
+  {
+    href: "/handover",
+    name: "Knowledge transfer",
+    group: "Knowledge",
+    description: "Open a knowledge-transfer package shared with you.",
+    permission: null,
+    status: "live",
+    slice: "S26–S27",
+  },
+  {
+    href: "/me/integrations",
+    name: "My integrations",
+    group: "Integrations",
+    description: "Connect your own applications so their content can be indexed.",
+    permission: null,
     status: "live",
     slice: "P3",
   },
@@ -61,6 +83,10 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     // escalation the API refuses for administrators.
     href: "/me/identities",
     name: "Source identities",
+    // Under Access, never Integrations — an identity GRANTS document visibility, a
+    // connector merely fetches content, and filing them together is what invites a
+    // "disconnect" that silently revokes access (the console-traps rule).
+    group: "Access",
     description: "The accounts you are known by, and the documents they let you read.",
     permission: "integration:self_manage",
     status: "live",
@@ -73,25 +99,10 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     // is stated because the endpoint requires it, not to filter anyone out.
     href: "/me/profile",
     name: "Profile",
+    group: "Account",
     description: "Your role, team and working context.",
     permission: "profile:self_read",
     status: "live",
     slice: "P1",
-  },
-  {
-    href: "/me/integrations",
-    name: "My integrations",
-    description: "Connect your own applications so their content can be indexed.",
-    permission: null,
-    status: "live",
-    slice: "P3",
-  },
-  {
-    href: "/handover",
-    name: "Knowledge transfer",
-    description: "Open a knowledge-transfer package shared with you.",
-    permission: null,
-    status: "live",
-    slice: "S26–S27",
   },
 ] as const;

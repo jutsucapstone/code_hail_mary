@@ -58,10 +58,11 @@ export default function SignInPage() {
     const email = String(form.get("work_email") ?? "");
 
     try {
-      // The challenge is keyed on the address, which is what the person has to control.
-      // The JUTSU ID is carried through so the next step can show which account is being
-      // opened; it grants nothing on its own.
-      await api.requestChallenge({ email });
+      // The pair is what gets verified: the server delivers a code only when the JUTSU
+      // ID and the address resolve to the same membership, and answers identically
+      // either way so neither field becomes an oracle. The code going to the mailbox
+      // stays the thing that authenticates.
+      await api.requestChallenge({ email, jutsu_id: jutsuId || null });
       router.push(`/pilot/verify?to=${encodeURIComponent(email)}`);
     } catch (error) {
       const message =

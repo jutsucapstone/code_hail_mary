@@ -9,15 +9,12 @@ import { MEMBER_SECTIONS } from "@/lib/member-nav";
  * Chrome for a person who belongs to an organisation without administering it.
  *
  * Structure is shared with the management console through `ConsoleShell` — same header,
- * same identity fetch, same sign-out, same expired-session handling. What stays different
- * is the `inline` variant: a horizontal section strip over a prose-width column rather
- * than a sidebar.
- *
- * That difference is deliberate and not cosmetic. A sidebar is filtered by permission,
- * and a bare Member holds almost none — `profile:self_read` and `retrieval:query` are in
- * every role's set, while `org:read` and `member:read` are not. Rendering their console
- * framed by a near-empty navigation column reads as broken rather than as "this is your
- * page".
+ * same identity fetch, same sign-out, same expired-session handling, same grouped
+ * sidebar. This surface once used the `inline` strip because a permission-filtered
+ * sidebar would have been nearly empty for a bare Member; that stopped being true the
+ * release every section here became visible to every role (each is either
+ * permission-null or gated on a permission in `_EVERYONE`), and at seven sections the
+ * strip wrapped to two lines — which reads as a layout accident, not a navigation.
  *
  * The same constraint is why this surface shows a JUTSU ID and a role rather than an
  * organisation name: the name lives behind `GET /v1/orgs/current`, which requires
@@ -43,12 +40,13 @@ export function MemberShell({ children }: { children: React.ReactNode }) {
         status: section.status,
         slice: section.slice,
         permission: section.permission,
+        group: section.group,
       })),
     [],
   );
 
   return (
-    <ConsoleShell sections={sections} navLabel="Your console" variant="inline">
+    <ConsoleShell sections={sections} navLabel="Your console" variant="sidebar">
       {children}
     </ConsoleShell>
   );
