@@ -308,6 +308,33 @@ class TestDrainFollowUp:
         await drain_org_jobs({"redis": redis}, str(org_id))
         assert redis.enqueued == [("drain_org_jobs", f"drain-retry:{org_id}")]
 
+    async def test_claimable_leftovers_re_ring_almost_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A drain stopped at its soft deadline (or killed at arq's hard one) leaves
+        pending work; the follow-up must not wait a backoff it does not owe."""
+        from jutsu_worker.main import drain_org_jobs
+
+        org_id = uuid.uuid4()
+        _connection_id, _job_id = await seed_connection_and_job(org_id)
+
+        async def out_of_time(org: uuid.UUID, **kwargs: object) -> dict[str, int]:
+            # The soft deadline elapsed before anything was claimed.
+            return {"connector.sync": 0}
+
+        monkeypatch.setattr("jutsu_worker.main.drain_org", out_of_time)
+
+        class RecordingRedis:
+            def __init__(self) -> None:
+                self.enqueued: list[tuple[str, str]] = []
+
+            async def enqueue_job(self, name: str, *args: str, **kwargs: object) -> None:
+                self.enqueued.append((name, str(kwargs.get("_job_id"))))
+
+        redis = RecordingRedis()
+        await drain_org_jobs({"redis": redis}, str(org_id))
+        assert redis.enqueued == [("drain_org_jobs", f"drain-more:{org_id}")]
+
     async def test_an_idle_org_rings_nothing(self) -> None:
         from jutsu_worker.main import drain_org_jobs
 

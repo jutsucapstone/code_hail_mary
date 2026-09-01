@@ -257,6 +257,7 @@ async def drain_org(
     embedder_factory: object | None = None,
     extraction_transport: ExtractionTransport | None = None,
     max_jobs: int = 500,
+    max_seconds: float = 480.0,
 ) -> dict[str, int]:
     """Run every claimable job for one organisation until its queue is idle.
 
@@ -275,7 +276,22 @@ async def drain_org(
     Embedding jobs are attempted only when the embedding provider is configured;
     unconfigured, they stay `pending` where the Jobs page can see them, which is the
     honest outcome. Extraction jobs are gated at enqueue time already.
+
+    Two bounds, learned live: `max_seconds` stops a drain before arq's job timeout
+    kills it mid-provider-call (a 40-document extraction backlog on a large model
+    outruns ten minutes comfortably), and the dispatch layer re-rings for whatever
+    remains. And expired leases are reclaimed FIRST — the walk does this for its own
+    org, but a drain that starts with a lease orphaned by a killed predecessor would
+    otherwise skip that job until the next walk happened to run.
     """
+    import time as _time
+
+    from jutsu_worker.jobs import reclaim_expired_leases
+
+    async with org_session(org_id) as session:
+        await reclaim_expired_leases(session)
+
+    deadline = _time.monotonic() + max_seconds
     from jutsu_retrieval.client import VertexTransport
     from jutsu_retrieval.config import MissingEmbeddingSettings, get_embedding_settings
 
@@ -302,7 +318,7 @@ async def drain_org(
             embedder = Embedder(transport, settings)
 
     try:
-        while ran < max_jobs:
+        while ran < max_jobs and _time.monotonic() < deadline:
             progressed = False
 
             if await process_connector_sync(org_id) is not None:

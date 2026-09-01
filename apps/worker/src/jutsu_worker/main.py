@@ -138,22 +138,45 @@ async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
     if ran:
         logger.info("%s", {"event": "org_drained", "org_id": org_id, "jobs": ran})
 
-    # A job in retry_scheduled with a future next_attempt_at was not claimable by this
-    # drain — and nothing else will ever ring for it: the doorbell fires on *enqueue*,
-    # and a retry is not an enqueue. Ring again after the shortest backoff has passed,
-    # with a deterministic job id so a burst of drains collapses into one follow-up.
+    # Two kinds of leftover, two follow-ups. Work claimable NOW remains when the
+    # drain stopped at its own soft deadline (or a predecessor was killed at arq's
+    # hard one) — ring again almost immediately. A retry_scheduled job with a future
+    # next_attempt_at has no doorbell of its own — the doorbell fires on *enqueue*,
+    # and a retry is not an enqueue — so ring after the shortest backoff has passed.
+    # Deterministic job ids collapse bursts into one follow-up each.
     async with org_session(uuid.UUID(org_id)) as session:
+        claimable_now = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM jobs WHERE state = 'pending' "
+                    "OR (state = 'retry_scheduled' AND next_attempt_at <= now())"
+                )
+            )
+        ).scalar_one()
         retries_waiting = (
-            await session.execute(text("SELECT count(*) FROM jobs WHERE state = 'retry_scheduled'"))
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM jobs WHERE state = 'retry_scheduled' "
+                    "AND next_attempt_at > now()"
+                )
+            )
         ).scalar_one()
     redis = ctx.get("redis")
-    if retries_waiting and redis is not None:
-        await redis.enqueue_job(
-            "drain_org_jobs",
-            org_id,
-            _defer_by=timedelta(seconds=60),
-            _job_id=f"drain-retry:{org_id}",
-        )
+    if redis is not None:
+        if claimable_now:
+            await redis.enqueue_job(
+                "drain_org_jobs",
+                org_id,
+                _defer_by=timedelta(seconds=5),
+                _job_id=f"drain-more:{org_id}",
+            )
+        elif retries_waiting:
+            await redis.enqueue_job(
+                "drain_org_jobs",
+                org_id,
+                _defer_by=timedelta(seconds=60),
+                _job_id=f"drain-retry:{org_id}",
+            )
     return counts
 
 
@@ -214,4 +237,7 @@ class WorkerSettings:
     #: the job function directly and never constructed a Worker.
     redis_settings = RedisSettings.from_dsn(os.environ.get("REDIS_URL", DEFAULT_REDIS_URL))
     max_jobs = 10
-    job_timeout = 600
+    #: A drain does provider work (embedding batches, model extractions) and bounds
+    #: itself at 480s; the hard ceiling sits comfortably above the soft one so arq
+    #: kills only a drain that is genuinely wedged, not one that is merely busy.
+    job_timeout = 900
