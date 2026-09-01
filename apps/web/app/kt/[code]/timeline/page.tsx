@@ -1,7 +1,7 @@
 "use client";
 
-import { KtCapabilityGate } from "@/components/kt/kt-pages";
+import { KtTimeline } from "@/components/kt/kt-insights";
 
 export default function Page() {
-  return <KtCapabilityGate name="Timeline" what="The chronological knowledge timeline" />;
+  return <KtTimeline />;
 }

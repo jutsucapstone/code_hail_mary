@@ -28,7 +28,13 @@ from jutsu_retrieval.embeddings import Embedder
 from sqlalchemy import text
 
 from jutsu_worker.pipeline import IngestOutcome
-from jutsu_worker.runner import process_document, process_embedding, process_source
+from jutsu_worker.runner import (
+    process_connector_sync,
+    process_document,
+    process_embedding,
+    process_extraction,
+    process_source,
+)
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 
@@ -96,6 +102,25 @@ async def embed_document(ctx: dict[str, Any], org_id: str, job_id: str | None = 
         await transport.aclose()
 
 
+async def sync_connection(ctx: dict[str, Any], org_id: str, job_id: str | None = None) -> None:
+    """Dispatch entry point for one queued connector sync.
+
+    Same authorization stance as every dispatch function here: the arguments hint at
+    where to look, row-level security decides what that scope can see.
+    """
+    await process_connector_sync(uuid.UUID(org_id), job_id=uuid.UUID(job_id) if job_id else None)
+
+
+async def extract_document_job(
+    ctx: dict[str, Any], org_id: str, job_id: str | None = None
+) -> int | None:
+    """Dispatch entry point for one queued extraction."""
+    result = await process_extraction(
+        uuid.UUID(org_id), job_id=uuid.UUID(job_id) if job_id else None
+    )
+    return result if isinstance(result, int) else None
+
+
 async def reap_expired_registrations(ctx: dict[str, Any]) -> int:
     """Delete staged registrations, challenges and rate-limit rows that have aged out.
 
@@ -124,7 +149,14 @@ class WorkerSettings:
     """arq settings. Queue access is behind this one interface so the prod swap to
     Cloud Tasks (§5) touches nothing else."""
 
-    functions: ClassVar[list[object]] = [ping, ingest_source, ingest_document, embed_document]
+    functions: ClassVar[list[object]] = [
+        ping,
+        ingest_source,
+        ingest_document,
+        embed_document,
+        sync_connection,
+        extract_document_job,
+    ]
 
     #: `run_at_startup` so a deploy clears whatever accumulated while nothing was
     #: running, rather than waiting for the next slot. `unique` is arq's default and is

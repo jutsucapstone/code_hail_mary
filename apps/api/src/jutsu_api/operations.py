@@ -284,6 +284,15 @@ class SourceRow:
     last_sync_at: datetime | None
     #: Current document versions only — superseded versions are history, not inventory.
     document_count: int
+    #: Ingestion jobs for this source's documents, counted by outcome. Real pipeline
+    #: telemetry (§11): pending + running are in flight, completed made it through
+    #: fetch→mask→chunk→persist, failed/dead_letter did not.
+    jobs_pending: int
+    jobs_completed: int
+    jobs_failed: int
+    #: The last walk's own counters, written by the worker in the same transaction as
+    #: the cursor advance. Empty until a walk has run.
+    last_walk: dict[str, int]
 
 
 async def list_sources(session: AsyncSession) -> list[SourceRow]:
@@ -295,10 +304,21 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
     rows = (
         await session.execute(
             text(
-                "SELECT s.id, s.system, s.status, s.last_sync_at, "
-                "count(d.id) FILTER (WHERE d.superseded_by IS NULL) AS document_count "
+                "SELECT s.id, s.system, s.status, s.last_sync_at, s.stats_json, "
+                "count(d.id) FILTER (WHERE d.superseded_by IS NULL) AS document_count, "
+                # Document jobs carry deterministic keys prefixed by their source, which
+                # is what makes this join possible without a source_id column on jobs.
+                "(SELECT count(*) FROM jobs j WHERE j.idempotency_key LIKE "
+                " 'ingest.document:' || s.org_id || ':' || s.id || ':%' "
+                " AND j.state IN ('pending', 'fetching', 'running')) AS jobs_pending, "
+                "(SELECT count(*) FROM jobs j WHERE j.idempotency_key LIKE "
+                " 'ingest.document:' || s.org_id || ':' || s.id || ':%' "
+                " AND j.state = 'completed') AS jobs_completed, "
+                "(SELECT count(*) FROM jobs j WHERE j.idempotency_key LIKE "
+                " 'ingest.document:' || s.org_id || ':' || s.id || ':%' "
+                " AND j.state IN ('failed', 'dead_letter')) AS jobs_failed "
                 "FROM sources s LEFT JOIN documents d ON d.source_id = s.id "
-                "GROUP BY s.id, s.system, s.status, s.last_sync_at "
+                "GROUP BY s.id, s.system, s.status, s.last_sync_at, s.stats_json "
                 "ORDER BY s.system, s.id"
             )
         )
@@ -310,6 +330,10 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
             status=r.status,
             last_sync_at=r.last_sync_at,
             document_count=r.document_count,
+            jobs_pending=r.jobs_pending,
+            jobs_completed=r.jobs_completed,
+            jobs_failed=r.jobs_failed,
+            last_walk=(r.stats_json or {}).get("last_walk", {}),
         )
         for r in rows
     ]

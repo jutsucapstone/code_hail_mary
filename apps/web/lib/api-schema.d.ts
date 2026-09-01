@@ -648,6 +648,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Insights
+         * @description Extracted, quote-gated claims the RECIPIENT may read, in the package window.
+         *
+         *     `type` filters to one claim type; omitted, it returns every type the package's
+         *     scope covers, date-ordered — the timeline. Every row carries its verbatim quote and
+         *     the chunk it anchors to, so a citation is one evidence fetch away.
+         */
+        get: operations["read_kt_insights_v1_kt__kt_code__insights_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/insights-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Kt Insight Summary */
+        get: operations["read_kt_insight_summary_v1_kt__kt_code__insights_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{package_id}": {
         parameters: {
             query?: never;
@@ -1397,6 +1438,8 @@ export interface components {
              */
             email: string;
             role: components["schemas"]["Role"];
+            /** Role Title */
+            role_title?: string | null;
         };
         /** JobEntry */
         JobEntry: {
@@ -1543,6 +1586,55 @@ export interface components {
             items: components["schemas"]["KtDocumentOut"][];
             /** Next Cursor */
             next_cursor: string | null;
+        };
+        /** KtInsightOut */
+        KtInsightOut: {
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /** Claim Type */
+            claim_type: string;
+            /** Confidence */
+            confidence: number;
+            /** Date */
+            date: string | null;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Quote */
+            quote: string;
+            /** Summary */
+            summary: string | null;
+        };
+        /** KtInsightSummaryOut */
+        KtInsightSummaryOut: {
+            /** By Type */
+            by_type: {
+                [key: string]: number;
+            };
+        };
+        /** KtInsightsOut */
+        KtInsightsOut: {
+            /** Items */
+            items: components["schemas"]["KtInsightOut"][];
         };
         /** KtRecipientOut */
         KtRecipientOut: {
@@ -1956,8 +2048,18 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Jobs Completed */
+            jobs_completed: number;
+            /** Jobs Failed */
+            jobs_failed: number;
+            /** Jobs Pending */
+            jobs_pending: number;
             /** Last Sync At */
             last_sync_at: string | null;
+            /** Last Walk */
+            last_walk: {
+                [key: string]: number;
+            };
             /** Status */
             status: string;
             /** System */
@@ -2924,6 +3026,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KtDocumentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_kt_insights_v1_kt__kt_code__insights_get: {
+        parameters: {
+            query?: {
+                type?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtInsightsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_kt_insight_summary_v1_kt__kt_code__insights_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtInsightSummaryOut"];
                 };
             };
             /** @description Validation Error */

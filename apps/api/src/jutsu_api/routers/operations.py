@@ -80,6 +80,10 @@ class SourceEntry(BaseModel):
     status: str
     last_sync_at: datetime | None
     document_count: int
+    jobs_pending: int
+    jobs_completed: int
+    jobs_failed: int
+    last_walk: dict[str, int]
 
 
 class SourcePageOut(BaseModel):

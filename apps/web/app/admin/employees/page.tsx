@@ -120,7 +120,12 @@ export default function EmployeesPage() {
     const email = String(form.get("email") ?? "");
 
     try {
-      await api.invite({ email, role: String(form.get("role") ?? "member") as Role });
+      const roleTitle = String(form.get("role_title") ?? "").trim();
+      await api.invite({
+        email,
+        role: String(form.get("role") ?? "member") as Role,
+        role_title: roleTitle || null,
+      });
       setInvited(email);
       element.reset();
       load(query);
@@ -212,6 +217,14 @@ export default function EmployeesPage() {
                 ))}
               </select>
             </div>
+            <Field
+              id="invite-role-title"
+              name="role_title"
+              label="Role title (optional)"
+              placeholder="e.g. Head of Platform"
+              maxLength={128}
+              className="sm:w-64"
+            />
             <SubmitButton
               pending={inviting}
               pendingLabel="Sending…"
@@ -220,6 +233,10 @@ export default function EmployeesPage() {
               Send invitation
             </SubmitButton>
           </form>
+          <p className="mt-2 text-xs text-muted-foreground">
+            A title is how the role reads on their profile. What they may do comes from
+            the role you selected — a title grants nothing.
+          </p>
 
           {inviteError ? (
             <div className="mt-4">

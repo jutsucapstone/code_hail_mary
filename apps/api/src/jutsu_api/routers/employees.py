@@ -69,6 +69,10 @@ class InvitePayload(BaseModel):
     #: A role, chosen from the catalogue. `extra="forbid"` above plus this enum means a
     #: client cannot smuggle an arbitrary string into `user_roles.role_key`.
     role: Role
+    #: Optional free-text TITLE (§1's "other option where user can write"). Becomes the
+    #: invitee's profile designation — vocabulary, never authority: permissions come
+    #: from `role` above and nothing else.
+    role_title: str | None = Field(default=None, max_length=128)
 
 
 class InvitationAccepted(BaseModel):
@@ -126,6 +130,7 @@ async def create_invitation(
         role=payload.role,
         settings=settings,
         sender=sender,
+        role_title=payload.role_title,
     )
     return InvitationAccepted()
 

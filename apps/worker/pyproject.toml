@@ -14,6 +14,7 @@ dependencies = [
     # `make seed` writes a run receipt, which is the only record of what a seed cost.
     "jutsu-evals",
     "arq>=0.26",
+    "anthropic>=1.2.0",
 ]
 
 [build-system]

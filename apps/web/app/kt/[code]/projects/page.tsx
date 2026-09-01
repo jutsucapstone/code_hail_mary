@@ -1,7 +1,7 @@
 "use client";
 
-import { KtCapabilityGate } from "@/components/kt/kt-pages";
+import { KtInsightsList } from "@/components/kt/kt-insights";
 
 export default function Page() {
-  return <KtCapabilityGate name="Projects" what="Project structures, their people and their open items" />;
+  return <KtInsightsList claimType="project" title="Projects" emptyWord="projects" />;
 }

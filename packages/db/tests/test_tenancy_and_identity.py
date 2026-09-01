@@ -37,12 +37,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 #: `pii_vault` in particular holds masked-value material and is unprotected today.
 RLS_PENDING_BACKFILL = frozenset(
     {
-        "sources",
-        "jobs",
-        "pii_vault",
-        "extraction_runs",
-        "extraction_claims",
-        "resolution_queue",
+        # Nullable org_id by design: harness runs are not tenant rows, and scoping a
+        # table whose rows may legitimately have no tenant is a different decision
+        # from a backfill. The only remaining holdout — 0010 covered sources/jobs,
+        # 0014 covered pii_vault and the extraction/resolution tables.
         "eval_runs",
     }
 )

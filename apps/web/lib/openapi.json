@@ -837,6 +837,18 @@
           },
           "role": {
             "$ref": "#/components/schemas/Role"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
           }
         },
         "required": [
@@ -1259,6 +1271,126 @@
           "next_cursor"
         ],
         "title": "KtDocumentPageOut",
+        "type": "object"
+      },
+      "KtInsightOut": {
+        "properties": {
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "claim_type": {
+            "title": "Claim Type",
+            "type": "string"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "quote": {
+            "title": "Quote",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "id",
+          "claim_type",
+          "summary",
+          "name",
+          "date",
+          "quote",
+          "confidence",
+          "document_id",
+          "document_title",
+          "chunk_id",
+          "occurred_at"
+        ],
+        "title": "KtInsightOut",
+        "type": "object"
+      },
+      "KtInsightSummaryOut": {
+        "properties": {
+          "by_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Type",
+            "type": "object"
+          }
+        },
+        "required": [
+          "by_type"
+        ],
+        "title": "KtInsightSummaryOut",
+        "type": "object"
+      },
+      "KtInsightsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KtInsightOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "KtInsightsOut",
         "type": "object"
       },
       "KtRecipientOut": {
@@ -2296,6 +2428,18 @@
             "title": "Id",
             "type": "string"
           },
+          "jobs_completed": {
+            "title": "Jobs Completed",
+            "type": "integer"
+          },
+          "jobs_failed": {
+            "title": "Jobs Failed",
+            "type": "integer"
+          },
+          "jobs_pending": {
+            "title": "Jobs Pending",
+            "type": "integer"
+          },
           "last_sync_at": {
             "anyOf": [
               {
@@ -2307,6 +2451,13 @@
               }
             ],
             "title": "Last Sync At"
+          },
+          "last_walk": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Last Walk",
+            "type": "object"
           },
           "status": {
             "title": "Status",
@@ -2322,7 +2473,11 @@
           "system",
           "status",
           "last_sync_at",
-          "document_count"
+          "document_count",
+          "jobs_pending",
+          "jobs_completed",
+          "jobs_failed",
+          "last_walk"
         ],
         "title": "SourceEntry",
         "type": "object"
@@ -3927,6 +4082,120 @@
           }
         },
         "summary": "Read Kt Documents",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/insights": {
+      "get": {
+        "description": "Extracted, quote-gated claims the RECIPIENT may read, in the package window.\n\n`type` filters to one claim type; omitted, it returns every type the package's\nscope covers, date-ordered \u2014 the timeline. Every row carries its verbatim quote and\nthe chunk it anchors to, so a citation is one evidence fetch away.",
+        "operationId": "read_kt_insights_v1_kt__kt_code__insights_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtInsightsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Insights",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/insights-summary": {
+      "get": {
+        "operationId": "read_kt_insight_summary_v1_kt__kt_code__insights_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtInsightSummaryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Insight Summary",
         "tags": [
           "kt"
         ]

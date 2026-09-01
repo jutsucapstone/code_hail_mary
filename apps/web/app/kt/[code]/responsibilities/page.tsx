@@ -1,7 +1,13 @@
 "use client";
 
-import { KtCapabilityGate } from "@/components/kt/kt-pages";
+import { KtInsightsList } from "@/components/kt/kt-insights";
 
 export default function Page() {
-  return <KtCapabilityGate name="Responsibilities" what="Responsibilities and the processes behind them" />;
+  return (
+    <KtInsightsList
+      claimType="responsibility"
+      title="Responsibilities"
+      emptyWord="responsibilities"
+    />
+  );
 }

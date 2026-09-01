@@ -85,10 +85,10 @@ export default function MePage() {
             What happens next
           </h2>
           <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            Connecting your own accounts is the next step, and it is not built yet.
-            Nothing is connected on your behalf and nothing is read from your tools until
-            you connect them yourself. Your administrator will let you know when that
-            opens.
+            Connect your own work tools under Integrations — nothing is connected on
+            your behalf, and nothing is read from a tool until you connect it yourself.
+            What you can connect is governed by your organisation&apos;s policies, and you
+            can disconnect at any time.
           </p>
         </div>
       </section>

@@ -671,3 +671,56 @@ class TestMyKnowledge:
         assert body["by_source"] == [{"source_system": "local", "documents": 1}]
         assert body["recent"][0]["title"] == "My design doc"
         assert body["linked_identities"] == 1
+
+
+class TestRoleTitle:
+    async def test_a_written_title_lands_as_the_invitees_designation(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """§1's free-text option: vocabulary on the profile, authority from the catalogue."""
+        await register_owner(client, mailbox)
+        sent = await client.post(
+            "/v1/employees/invitations",
+            json={
+                "email": "ops@example.com",
+                "role": "it_admin",
+                "role_title": "Head of Platform Operations",
+            },
+            headers=csrf(client),
+        )
+        assert sent.status_code == 202, sent.text
+        token = mailbox.last.secrets["token"]
+        accepted = await client.post(
+            "/v1/invitations/accept", json={"token": token, "full_name": "Ops Person"}
+        )
+        assert accepted.status_code == 200, accepted.text
+
+        # Signed in as the invitee now: the title is on their own profile…
+        profile = (await client.get("/v1/me/profile")).json()
+        assert profile["designation"] == "Head of Platform Operations"
+        # …while their authority is exactly the catalogued role, nothing more.
+        me = (await client.get("/v1/me")).json()
+        assert me["role"] == "it_admin"
+
+    async def test_the_title_confers_no_permission(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """A member titled "Chief Everything Officer" is still a member."""
+        await register_owner(client, mailbox)
+        sent = await client.post(
+            "/v1/employees/invitations",
+            json={
+                "email": "grand@example.com",
+                "role": "member",
+                "role_title": "Chief Everything Officer",
+            },
+            headers=csrf(client),
+        )
+        assert sent.status_code == 202
+        token = mailbox.last.secrets["token"]
+        await client.post(
+            "/v1/invitations/accept", json={"token": token, "full_name": "Grand Title"}
+        )
+
+        assert (await client.get("/v1/employees")).status_code == 403
+        assert (await client.get("/v1/audit")).status_code == 403

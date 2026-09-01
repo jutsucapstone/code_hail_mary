@@ -49,6 +49,7 @@ from jutsu_retrieval.persistence import embed_pending_chunks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_worker.extraction import extraction_configured, extraction_job_key
 from jutsu_worker.jobs import (
     FailureKind,
     Job,
@@ -270,6 +271,27 @@ async def run_source_job(
             "reclaimed": reclaimed,
         },
     )
+    # The walk's numbers land on the source row too (§11): the Knowledge Sources UI
+    # reads measured stage counters from here rather than reconstructing them from
+    # job rows. Same transaction as the cursor advance, so the stats and the cursor
+    # can never describe different walks.
+    await session.execute(
+        text("UPDATE sources SET stats_json = stats_json || cast(:stats AS jsonb) WHERE id = :id"),
+        {
+            "stats": json.dumps(
+                {
+                    "last_walk": {
+                        "listed": listed,
+                        "enqueued": enqueued,
+                        "duplicate": duplicate,
+                        "reopened": reopened,
+                        "reclaimed": reclaimed,
+                    }
+                }
+            ),
+            "id": str(source_id),
+        },
+    )
     logger.info(
         "source_run org=%s source=%s listed=%d enqueued=%d reopened=%d duplicate=%d reclaimed=%d",
         org_id,
@@ -385,6 +407,22 @@ async def run_embedding_job(
     run = await embed_pending_chunks(job.org_id, embedder, limit=limit, document_id=document_id)
 
     await record_state(session, job_id=job.id, state=JobState.PERSISTED)
+
+    # Embedding done means the document is retrievable; extraction is the next stage,
+    # and it is queued here — in the same transaction as this job's completion — so a
+    # crash between the two re-runs the idempotent enqueue rather than losing it.
+    # Gated on configuration at ENQUEUE time: on a deployment with no extraction
+    # provider, queueing jobs whose only possible outcome is failure would fill the
+    # dead-letter view with noise about a fact the operator already knows.
+    if extraction_configured():
+        await enqueue_job(
+            session,
+            org_id=job.org_id,
+            kind=JobKind.EXTRACT_DOCUMENT,
+            idempotency_key=extraction_job_key(job.org_id, document_id),
+            payload={"document_id": str(document_id)},
+        )
+
     await _audit(
         session,
         org_id=job.org_id,

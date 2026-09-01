@@ -82,8 +82,16 @@ export default function SourcesPage() {
       ) : (
         <TableShell
           caption="Knowledge sources with system, sync status, last synchronised time and document count."
-          headings={["System", "Status", "Last synchronised", "Documents"]}
-          minWidth="min-w-[36rem]"
+          headings={[
+            "System",
+            "Status",
+            "Last synchronised",
+            "Documents",
+            "In flight",
+            "Indexed",
+            "Failed",
+          ]}
+          minWidth="min-w-[48rem]"
         >
           {sources.data.items.map((source) => (
             <tr key={source.id} className="border-b border-hairline last:border-b-0">
@@ -96,6 +104,17 @@ export default function SourcesPage() {
               </td>
               <td className="px-5 py-3.5 text-xs tabular-nums text-muted-foreground">
                 {source.document_count}
+              </td>
+              <td className="px-5 py-3.5 text-xs tabular-nums text-muted-foreground">
+                {source.jobs_pending}
+              </td>
+              <td className="px-5 py-3.5 text-xs tabular-nums text-muted-foreground">
+                {source.jobs_completed}
+              </td>
+              <td className="px-5 py-3.5">
+                <Pill tone={source.jobs_failed > 0 ? "bad" : "neutral"}>
+                  {source.jobs_failed}
+                </Pill>
               </td>
             </tr>
           ))}

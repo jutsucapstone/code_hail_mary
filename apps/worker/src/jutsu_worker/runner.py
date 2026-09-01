@@ -36,6 +36,11 @@ from typing import Final, final
 from jutsu_db.engine import org_session
 from jutsu_retrieval.embeddings import Embedder
 
+from jutsu_worker.extraction import (
+    AnthropicExtractionTransport,
+    ExtractionTransport,
+    extract_document,
+)
 from jutsu_worker.ingest import (
     record_failure,
     run_document_job,
@@ -44,11 +49,14 @@ from jutsu_worker.ingest import (
 )
 from jutsu_worker.jobs import Job, JobKind, JobState, claim_job
 from jutsu_worker.pipeline import IngestOutcome
+from jutsu_worker.sync import mark_sync_unavailable, run_sync_job
 
 __all__ = [
     "JOB_FAILED",
+    "process_connector_sync",
     "process_document",
     "process_embedding",
+    "process_extraction",
     "process_source",
 ]
 
@@ -168,4 +176,68 @@ async def process_embedding(
     except Exception as error:
         state = await _record_failure(job, error)
         logger.info("embedding_job_failed job=%s state=%s", job.id, state.value)
+        return JOB_FAILED
+
+
+async def process_connector_sync(
+    org_id: uuid.UUID, *, job_id: uuid.UUID | None = None
+) -> int | _JobFailed | None:
+    """Run one queued sync. Returns documents fetched, JOB_FAILED, or None if idle.
+
+    The connection annotation happens in a FOURTH transaction, after the failure is
+    recorded: the work transaction is dead, and the failure transaction belongs to the
+    job row — mixing the connection update into it would couple the queue's bookkeeping
+    to a data-plane row it does not own.
+    """
+    job = await _claim(org_id, JobKind.CONNECTOR_SYNC, job_id)
+    if job is None:
+        return None
+
+    try:
+        async with org_session(org_id) as session:
+            fetched = await run_sync_job(session, job=job)
+            from jutsu_worker.jobs import complete_job
+
+            await complete_job(session, job_id=job.id)
+            return fetched
+    except Exception as error:
+        state = await _record_failure(job, error)
+        connection_id = job.payload.get("connection_id")
+        if connection_id:
+            async with org_session(org_id) as session:
+                await mark_sync_unavailable(session, connection_id=uuid.UUID(str(connection_id)))
+        logger.info("sync_job_failed job=%s state=%s", job.id, state.value)
+        return JOB_FAILED
+
+
+async def process_extraction(
+    org_id: uuid.UUID,
+    *,
+    job_id: uuid.UUID | None = None,
+    transport: ExtractionTransport | None = None,
+) -> int | _JobFailed | None:
+    """Run one queued extraction. Returns claims stored, JOB_FAILED, or None if idle.
+
+    The transport is injectable for the same reason every paid provider here is: the
+    quote gate has to be tested against a model that misbehaves on purpose.
+    """
+    job = await _claim(org_id, JobKind.EXTRACT_DOCUMENT, job_id)
+    if job is None:
+        return None
+
+    try:
+        async with org_session(org_id) as session:
+            result = await extract_document(
+                session,
+                org_id=org_id,
+                document_id=uuid.UUID(str(job.payload["document_id"])),
+                transport=transport or AnthropicExtractionTransport(),
+            )
+            from jutsu_worker.jobs import complete_job
+
+            await complete_job(session, job_id=job.id)
+            return result.stored
+    except Exception as error:
+        state = await _record_failure(job, error)
+        logger.info("extraction_job_failed job=%s state=%s", job.id, state.value)
         return JOB_FAILED

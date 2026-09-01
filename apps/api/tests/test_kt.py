@@ -150,13 +150,15 @@ class TestLifecycle:
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         subject = await user_id_of(client, "leaver@example.com")
 
+        # "decisions" became servable when extraction landed; a category with nothing
+        # behind it must still be refused by name.
         response = await client.post(
             "/v1/kt",
-            json={"subject_user_id": subject, "scope": ["decisions"], "validity_days": 30},
+            json={"subject_user_id": subject, "scope": ["astrology"], "validity_days": 30},
             headers=csrf(client),
         )
         assert response.status_code == 422
-        assert "decisions" in response.json()["error"]["message"]
+        assert "astrology" in response.json()["error"]["message"]
 
     async def test_a_member_cannot_manage_packages(
         self, client: AsyncClient, mailbox: RecordingEmailSender
@@ -506,3 +508,180 @@ class TestKtDocuments:
         )
         response = await client.get(f"/v1/kt/{package['kt_code']}/documents")
         assert response.status_code == 403
+
+
+class TestKtInsights:
+    async def seed_claims(self, client: AsyncClient, db_session: AsyncSession, org_id: str) -> None:
+        """Two decision claims from finished runs — one on a document the recipient's
+        principal can read, one on a document granted to somebody else."""
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        source_id = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO sources (id, org_id, system, config_json) "
+                "VALUES (:id, :org, 'local', '{}'::jsonb)"
+            ),
+            {"id": source_id, "org": org_id},
+        )
+        for title, principal, quote in (
+            ("Visible decision doc", "local:newhire@example.com", "we chose PostgreSQL"),
+            ("Hidden decision doc", "local:somebody-else", "we chose MongoDB"),
+        ):
+            doc_id = uuid.uuid4()
+            await db_session.execute(
+                text(
+                    "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+                    "content_hash, acl_hash, body_original, body_masked, created_at) "
+                    "VALUES (:id, :org, :src, :ext, :title, :ext, 'a', :q, :q, now())"
+                ),
+                {
+                    "id": doc_id,
+                    "org": org_id,
+                    "src": source_id,
+                    "ext": title,
+                    "title": title,
+                    "q": quote,
+                },
+            )
+            chunk_id = uuid.uuid4()
+            await db_session.execute(
+                text(
+                    "INSERT INTO chunks (id, document_id, org_id, ordinal, text, "
+                    "char_start, char_end, token_count) "
+                    "VALUES (:id, :doc, :org, 0, :text, 0, :end, 5)"
+                ),
+                {
+                    "id": chunk_id,
+                    "doc": doc_id,
+                    "org": org_id,
+                    "text": quote,
+                    "end": len(quote),
+                },
+            )
+            await db_session.execute(
+                text(
+                    "INSERT INTO document_acl (document_id, principal_type, principal_id, "
+                    "org_id, permission) VALUES (:doc, 'user', :pid, :org, 'read')"
+                ),
+                {"doc": doc_id, "pid": principal, "org": org_id},
+            )
+            # The run's stats name the document; the read model's "current" is the
+            # latest finished run per document.
+            per_doc_run = uuid.uuid4()
+            await db_session.execute(
+                text(
+                    "INSERT INTO extraction_runs (id, org_id, extractor_version, "
+                    "prompt_hash, model, finished_at, stats_json) "
+                    "VALUES (:id, :org, 'v1', 'h', 'test', now(), cast(:stats AS jsonb))"
+                ),
+                {
+                    "id": per_doc_run,
+                    "org": org_id,
+                    "stats": '{"document_id": "' + str(doc_id) + '"}',
+                },
+            )
+            await db_session.execute(
+                text(
+                    "INSERT INTO extraction_claims (id, run_id, chunk_id, org_id, "
+                    "claim_type, payload_json, confidence) "
+                    "VALUES (gen_random_uuid(), :run, :chunk, :org, 'decision', "
+                    "cast(:payload AS jsonb), 0.9)"
+                ),
+                {
+                    "run": per_doc_run,
+                    "chunk": chunk_id,
+                    "org": org_id,
+                    "payload": (
+                        '{"summary": "' + title + '", "quote": "' + quote + '", '
+                        '"document_id": "' + str(doc_id) + '"}'
+                    ),
+                },
+            )
+        await db_session.commit()
+
+    async def test_insights_are_filtered_by_the_recipients_own_acl(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        """Non-negotiable 6: a claim whose evidence the caller cannot read is invisible."""
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions", "documents"])
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await self.seed_claims(client, db_session, org_id)
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        response = await client.get(
+            f"/v1/kt/{package['kt_code']}/insights", params={"type": "decision"}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [item["document_title"] for item in body["items"]] == ["Visible decision doc"]
+        assert "MongoDB" not in response.text
+
+        summary = (await client.get(f"/v1/kt/{package['kt_code']}/insights-summary")).json()
+        assert summary["by_type"] == {"decision": 1}
+
+    async def test_a_type_outside_the_packages_scope_is_refused(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["documents"])
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        response = await client.get(
+            f"/v1/kt/{package['kt_code']}/insights", params={"type": "decision"}
+        )
+        assert response.status_code == 403
+
+    async def test_the_widened_scope_catalogue_is_served(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """§13's wizard offers exactly what the backend can now fill."""
+        await register_owner(client, mailbox)
+        body = (await client.get("/v1/kt/scopes")).json()
+        assert set(body["supported"]) == {
+            "documents",
+            "profile",
+            "decisions",
+            "people",
+            "projects",
+            "meetings",
+            "responsibilities",
+        }
+
+    async def test_revocation_closes_insights_immediately(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, scope=["decisions"])
+
+        await invite_and_accept(client, mailbox, email="newhire@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
+        await sign_in(client, mailbox, email="newhire@example.com")
+
+        closed = await client.get(
+            f"/v1/kt/{package['kt_code']}/insights", params={"type": "decision"}
+        )
+        assert closed.status_code == 403
+        assert "revoked" in closed.json()["error"]["message"].lower()

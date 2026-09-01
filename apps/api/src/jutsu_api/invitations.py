@@ -86,6 +86,7 @@ async def invite_employee(
     role: Role,
     settings: Settings,
     sender: EmailSender,
+    role_title: str | None = None,
 ) -> IssuedInvitation:
     """Invite someone into the actor's organisation.
 
@@ -108,8 +109,9 @@ async def invite_employee(
             await session.execute(
                 text(
                     "INSERT INTO invitations "
-                    "(id, org_id, email, role_key, token_hash, invited_by, expires_at) "
-                    "VALUES (:id, :org, :email, :role, :token, :by, :expires) "
+                    "(id, org_id, email, role_key, token_hash, invited_by, expires_at, "
+                    "role_title) "
+                    "VALUES (:id, :org, :email, :role, :token, :by, :expires, :title) "
                     "RETURNING id"
                 ),
                 {
@@ -120,6 +122,10 @@ async def invite_employee(
                     "token": _hash(token),
                     "by": actor.user_id,
                     "expires": expires_at,
+                    # A TITLE, not a role (§17): free text the inviter wrote, applied to
+                    # the invitee's profile designation at acceptance. It confers no
+                    # permission — role_key above is the closed-catalogue authority.
+                    "title": (role_title or "").strip()[:128] or None,
                 },
             )
         ).scalar_one()
@@ -216,7 +222,7 @@ async def accept_invitation(
                 "UPDATE invitations SET accepted_at = now() "
                 "WHERE id = :id AND accepted_at IS NULL "
                 "AND revoked_at IS NULL AND expires_at > now() "
-                "RETURNING email, role_key"
+                "RETURNING email, role_key, role_title"
             ),
             {"id": invitation_id},
         )
@@ -227,7 +233,7 @@ async def accept_invitation(
         # would let someone probe which links were real.
         raise Unauthenticated("That invitation is no longer valid.")
 
-    email, role_key = consumed
+    email, role_key, role_title = consumed
 
     identity_id = (
         await session.execute(
@@ -271,6 +277,19 @@ async def accept_invitation(
         text("INSERT INTO user_roles (user_id, org_id, role_key) VALUES (:u, :o, :r)"),
         {"u": user_id, "o": org_id, "r": role_key},
     )
+
+    # The written role title (§1's free-text option) lands as the person's profile
+    # designation — display vocabulary they can edit later, never authority. The
+    # permissions above came from the closed catalogue and nothing here widens them.
+    if role_title:
+        await session.execute(
+            text(
+                "INSERT INTO employee_profiles (user_id, org_id, designation) "
+                "VALUES (:u, :o, :d) ON CONFLICT (user_id) DO UPDATE SET "
+                "designation = EXCLUDED.designation"
+            ),
+            {"u": user_id, "o": org_id, "d": role_title},
+        )
     await session.execute(
         text("SELECT auth.record_membership(:identity, :org, :user)"),
         {"identity": identity_id, "org": org_id, "user": user_id},

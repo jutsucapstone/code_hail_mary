@@ -641,4 +641,12 @@ RLS_TABLES: tuple[str, ...] = (
     # Migration 0013 — the package row itself is tenant data; the code inside it is
     # only meaningful inside the tenant, which is precisely the point.
     "kt_packages",
+    # Migration 0014 — the extraction tables went live (a worker writes claims now),
+    # and pii_vault / resolution_queue rode along: all four had carried org_id since
+    # 0001 with no policy, which was a debt while they were schema-only and would have
+    # been a live §4.7 violation the day extraction ran.
+    "pii_vault",
+    "extraction_runs",
+    "extraction_claims",
+    "resolution_queue",
 )

@@ -47,12 +47,19 @@ __all__ = [
     "revoke_package",
 ]
 
-#: The categories the backend can actually serve today, and no others (§13: "do not
-#: expose categories that the backend cannot support"). Documents come from the corpus
-#: under the recipient's ACL; profile comes from `employee_profiles`. Projects,
-#: decisions, meetings, people and timeline arrive with knowledge-graph extraction and
-#: join this tuple when they do.
-SUPPORTED_SCOPES: tuple[str, ...] = ("documents", "profile")
+#: The categories the backend can actually serve (§13). Documents come from the corpus
+#: under the recipient's ACL; profile from `employee_profiles`; the rest from
+#: extraction_claims — evidence-anchored, quote-gated, and filtered by the recipient's
+#: own ACL over each claim's evidence at read time.
+SUPPORTED_SCOPES: tuple[str, ...] = (
+    "documents",
+    "profile",
+    "decisions",
+    "people",
+    "projects",
+    "meetings",
+    "responsibilities",
+)
 
 _REVOKED_MESSAGE = "This Knowledge Transfer package has been revoked."
 _EXPIRED_MESSAGE = "This Knowledge Transfer package has expired."
@@ -604,3 +611,191 @@ async def kt_documents(
         ],
         next_cursor=next_cursor,
     )
+
+
+# ------------------------------------------------------------------------ insights
+
+#: Which package scope category authorises which claim type. The wizard's categories
+#: and the extractor's taxonomy meet here, in one place.
+_CLAIM_SCOPE: dict[str, str] = {
+    "decision": "decisions",
+    "person": "people",
+    "project": "projects",
+    "meeting": "meetings",
+    "responsibility": "responsibilities",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class KtInsight:
+    id: UUID
+    claim_type: str
+    summary: str | None
+    name: str | None
+    date: str | None
+    quote: str
+    confidence: float
+    document_id: UUID
+    document_title: str
+    chunk_id: UUID
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KtInsightSummary:
+    by_type: dict[str, int]
+
+
+_LATEST_RUN_JOIN = (
+    "JOIN extraction_runs r ON r.id = cl.run_id AND r.finished_at IS NOT NULL "
+    "AND r.id = ("
+    "  SELECT r2.id FROM extraction_runs r2 "
+    "  WHERE r2.stats_json->>'document_id' = d.id::text "
+    "  AND r2.finished_at IS NOT NULL "
+    "  ORDER BY r2.started_at DESC LIMIT 1"
+    ") "
+)
+
+
+async def kt_insights(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    principals: frozenset[str],
+    groups: frozenset[str],
+    claim_type: str | None,
+    limit: int,
+) -> list[KtInsight]:
+    """Extracted claims inside the package window THE RECIPIENT MAY ALREADY READ.
+
+    Three gates, in the order they run: the package itself (`_open_for` — binding,
+    expiry, revocation), the package's scope (a claim type outside it is refused), and
+    the recipient's own ACL — retrieval's predicate, inside the SQL, over the DOCUMENT
+    each claim's evidence chunk belongs to. A claim whose evidence the caller cannot
+    read does not exist for them (non-negotiable 6).
+
+    Only claims from each document's LATEST finished run qualify: re-extraction
+    supersedes by versioning, and the read model is where "current" is defined.
+    """
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    scope = list(row.scope)  # type: ignore[attr-defined]
+
+    if claim_type is not None:
+        category = _CLAIM_SCOPE.get(claim_type)
+        if category is None:
+            raise ValidationFailed(f"Unknown insight type. One of: {', '.join(_CLAIM_SCOPE)}.")
+        if category not in scope:
+            raise PermissionDenied(f"{category.capitalize()} are not part of this package's scope.")
+
+    bounded = max(1, min(limit, 200))
+    filters = ["d.superseded_by IS NULL"]
+    params: dict[str, object] = {
+        "limit": bounded,
+        "principals": list(principals),
+        "groups": list(groups),
+    }
+    if claim_type is not None:
+        params["claim_type"] = claim_type
+        filters.append("cl.claim_type = :claim_type")
+    else:
+        # The timeline: every type the package's scope covers.
+        allowed = [t for t, cat in _CLAIM_SCOPE.items() if cat in scope]
+        if not allowed:
+            return []
+        params["allowed_types"] = allowed
+        filters.append("cl.claim_type = ANY(:allowed_types)")
+    if row.period_start is not None:  # type: ignore[attr-defined]
+        params["period_start"] = row.period_start  # type: ignore[attr-defined]
+        filters.append("d.created_at >= :period_start")
+    if row.period_end is not None:  # type: ignore[attr-defined]
+        params["period_end"] = row.period_end  # type: ignore[attr-defined]
+        filters.append("d.created_at <= :period_end")
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT cl.id, cl.claim_type, cl.confidence, cl.payload_json, "
+                "cl.chunk_id, "
+                "d.id AS document_id, d.title AS document_title, d.created_at AS occurred_at "
+                "FROM extraction_claims cl "
+                "JOIN chunks ch ON ch.id = cl.chunk_id "
+                "JOIN documents d ON d.id = ch.document_id "
+                + _LATEST_RUN_JOIN
+                + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)} "
+                "ORDER BY COALESCE(NULLIF(cl.payload_json->>'date', ''), "
+                "to_char(d.created_at, 'YYYY-MM-DD')) DESC, cl.id DESC "
+                "LIMIT :limit"
+            ),
+            params,
+        )
+    ).all()
+
+    return [
+        KtInsight(
+            id=r.id,
+            claim_type=r.claim_type,
+            summary=(r.payload_json.get("summary") or None),
+            name=(r.payload_json.get("name") or None),
+            date=(r.payload_json.get("date") or None),
+            quote=r.payload_json.get("quote", ""),
+            confidence=r.confidence,
+            document_id=r.document_id,
+            document_title=r.document_title,
+            chunk_id=r.chunk_id,
+            occurred_at=r.occurred_at,
+        )
+        for r in rows
+    ]
+
+
+async def kt_insight_summary(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    principals: frozenset[str],
+    groups: frozenset[str],
+) -> KtInsightSummary:
+    """Counts per claim type, under exactly the gates the lists themselves run.
+
+    This is where the Overview's and the Handover's figures come from — the same ACL
+    predicate that will serve the rows, so a count can never exceed what its list would
+    show (§17.6 in miniature).
+    """
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    scope = list(row.scope)  # type: ignore[attr-defined]
+    allowed = [t for t, cat in _CLAIM_SCOPE.items() if cat in scope]
+    if not allowed:
+        return KtInsightSummary(by_type={})
+
+    filters = ["d.superseded_by IS NULL", "cl.claim_type = ANY(:allowed_types)"]
+    params: dict[str, object] = {
+        "principals": list(principals),
+        "groups": list(groups),
+        "allowed_types": allowed,
+    }
+    if row.period_start is not None:  # type: ignore[attr-defined]
+        params["period_start"] = row.period_start  # type: ignore[attr-defined]
+        filters.append("d.created_at >= :period_start")
+    if row.period_end is not None:  # type: ignore[attr-defined]
+        params["period_end"] = row.period_end  # type: ignore[attr-defined]
+        filters.append("d.created_at <= :period_end")
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT cl.claim_type, count(*) AS n "
+                "FROM extraction_claims cl "
+                "JOIN chunks ch ON ch.id = cl.chunk_id "
+                "JOIN documents d ON d.id = ch.document_id "
+                + _LATEST_RUN_JOIN
+                + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)} "
+                "GROUP BY cl.claim_type"
+            ),
+            params,
+        )
+    ).all()
+    return KtInsightSummary(by_type={r.claim_type: r.n for r in rows})

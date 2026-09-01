@@ -28,6 +28,8 @@ from jutsu_api.kt import (
     create_package,
     get_package,
     kt_documents,
+    kt_insight_summary,
+    kt_insights,
     list_packages,
     revoke_package,
 )
@@ -240,3 +242,75 @@ async def read_kt_documents(
         items=[KtDocumentOut(**asdict(item)) for item in page.items],
         next_cursor=page.next_cursor,
     )
+
+
+class KtInsightOut(BaseModel):
+    id: UUID
+    claim_type: str
+    summary: str | None
+    name: str | None
+    #: The date the passage itself stated, when it stated one. Never inferred.
+    date: str | None
+    #: The verbatim evidence, exactly as the quote gate verified it.
+    quote: str
+    confidence: float
+    document_id: UUID
+    document_title: str
+    chunk_id: UUID
+    occurred_at: datetime
+
+
+class KtInsightsOut(BaseModel):
+    items: list[KtInsightOut]
+
+
+class KtInsightSummaryOut(BaseModel):
+    #: Counts per claim type, computed under the same ACL predicate that serves the
+    #: rows — a count here can never exceed what the list would show.
+    by_type: dict[str, int]
+
+
+@router.get("/kt/{kt_code}/insights")
+@requires(Permission.KT_OPEN)
+async def read_kt_insights(
+    kt_code: str,
+    principal: CurrentPrincipal,
+    session: Db,
+    type: Annotated[str | None, Query(max_length=32)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> KtInsightsOut:
+    """Extracted, quote-gated claims the RECIPIENT may read, in the package window.
+
+    `type` filters to one claim type; omitted, it returns every type the package's
+    scope covers, date-ordered — the timeline. Every row carries its verbatim quote and
+    the chunk it anchors to, so a citation is one evidence fetch away.
+    """
+    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    items = await kt_insights(
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        principals=principals,
+        groups=groups,
+        claim_type=type,
+        limit=limit,
+    )
+    return KtInsightsOut(items=[KtInsightOut(**asdict(item)) for item in items])
+
+
+@router.get("/kt/{kt_code}/insights-summary")
+@requires(Permission.KT_OPEN)
+async def read_kt_insight_summary(
+    kt_code: str, principal: CurrentPrincipal, session: Db
+) -> KtInsightSummaryOut:
+    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    summary = await kt_insight_summary(
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        principals=principals,
+        groups=groups,
+    )
+    return KtInsightSummaryOut(by_type=summary.by_type)

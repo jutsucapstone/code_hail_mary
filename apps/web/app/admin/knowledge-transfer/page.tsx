@@ -56,6 +56,11 @@ const PERIOD_CHOICES = [
 const SCOPE_LABELS: Record<string, string> = {
   documents: "Documents",
   profile: "Role & profile",
+  decisions: "Decisions",
+  people: "Key contacts",
+  projects: "Projects",
+  meetings: "Meetings",
+  responsibilities: "Responsibilities",
 };
 
 function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
@@ -165,8 +170,8 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          Projects, decisions, meetings and people join this list when knowledge-graph
-          extraction is available — the wizard only offers what the platform can fill.
+          Every category is served from real data: documents under the recipient&apos;s
+          own access, and the rest from evidence-anchored knowledge extraction.
         </p>
       </fieldset>
 

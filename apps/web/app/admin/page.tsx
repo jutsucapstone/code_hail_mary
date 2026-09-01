@@ -211,11 +211,12 @@ export default function AdminOverviewPage() {
             What happens next
           </h2>
           <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            Inviting people works now — send someone an invitation from Employees and
-            their JUTSU ID is issued when they accept, not before. Connecting your tools
-            is the next step and is not built yet; the sections in the sidebar that are
-            still to come are listed with the slice that delivers them rather than
-            showing figures that are not real.
+            Invite people from Employees — their JUTSU ID is issued when they accept,
+            not before. Everyone then connects their own work tools under Workspace
+            Integrations, subject to the policies you set on the Integrations page here.
+            Once a live connector completes its first ingestion, its documents appear
+            under Knowledge sources with real counts — nothing on these screens is ever
+            estimated.
           </p>
         </div>
       </section>

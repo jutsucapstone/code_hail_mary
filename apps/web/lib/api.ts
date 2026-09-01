@@ -205,6 +205,12 @@ export type MyKnowledge =
 export type Departments =
   paths["/v1/departments"]["get"]["responses"][200]["content"]["application/json"];
 
+export type KtInsights =
+  paths["/v1/kt/{kt_code}/insights"]["get"]["responses"][200]["content"]["application/json"];
+export type KtInsight = KtInsights["items"][number];
+export type KtInsightSummary =
+  paths["/v1/kt/{kt_code}/insights-summary"]["get"]["responses"][200]["content"]["application/json"];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -534,6 +540,28 @@ export const api = {
 
   /** Departments as people declared them on their own profiles, with member counts. */
   departments: () => call<Departments>("/v1/departments", { method: "GET" }),
+
+
+  /**
+   * Extracted, quote-gated claims the recipient may read. `type` narrows to one
+   * claim type; omitted, every in-scope type arrives date-ordered — the timeline.
+   */
+  ktInsights: (ktCode: string, params: { type?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.type) search.set("type", params.type);
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtInsights>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/insights${suffix}`,
+      { method: "GET" },
+    );
+  },
+
+  /** Counts per claim type, under the same ACL predicate that serves the rows. */
+  ktInsightSummary: (ktCode: string) =>
+    call<KtInsightSummary>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/insights-summary`,
+      { method: "GET" },
+    ),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

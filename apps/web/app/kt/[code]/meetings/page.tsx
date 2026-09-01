@@ -1,7 +1,7 @@
 "use client";
 
-import { KtCapabilityGate } from "@/components/kt/kt-pages";
+import { KtInsightsList } from "@/components/kt/kt-insights";
 
 export default function Page() {
-  return <KtCapabilityGate name="Meetings" what="Meeting records, participants and action items" />;
+  return <KtInsightsList claimType="meeting" title="Meetings" emptyWord="meetings" />;
 }

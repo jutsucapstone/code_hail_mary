@@ -72,6 +72,13 @@ class JobKind(StrEnum):
     INGEST_SOURCE = "ingest.source"
     INGEST_DOCUMENT = "ingest.document"
     EMBED_DOCUMENT = "embed.document"
+    #: "Sync now" from the console. Enqueued by the API; drained here. No fetcher
+    #: exists yet, so the handler fails these honestly rather than faking a sync —
+    #: see jutsu_worker.sync for the stance.
+    CONNECTOR_SYNC = "connector.sync"
+    #: LLM extraction over a document's masked chunks (spec §10). Enqueued when its
+    #: embedding completes, and only when the extraction provider is configured.
+    EXTRACT_DOCUMENT = "extract.document"
 
 
 class JobState(StrEnum):

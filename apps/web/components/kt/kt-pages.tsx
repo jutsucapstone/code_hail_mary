@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { GitBranch } from "lucide-react";
 
 import { LoadMore, Pill, When } from "@/components/admin/page-scaffold";
 import { EmptyState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
@@ -14,19 +13,35 @@ import { classifyApiError } from "@/lib/api-error";
  * The KT console's pages, sharing the package context the shell established.
  *
  * One honesty rule runs through all of them: a tab either renders REAL data from a real
- * endpoint, or it says precisely which capability the platform is missing (§36). The
- * graph tabs — projects, decisions, meetings, people, responsibilities, timeline — are
- * navigable because a recipient should see the shape of what a package will hold, and
- * they say "requires knowledge-graph extraction" because that is the truth.
+ * endpoint, or it says precisely why it is empty (§36). The knowledge tabs — projects,
+ * decisions, meetings, people, responsibilities, timeline — live in kt-insights.tsx and
+ * are served from evidence-anchored extraction claims under the recipient's own ACL.
  */
 
 const SCOPE_LABELS: Record<string, string> = {
   documents: "Documents",
   profile: "Role & profile",
+  decisions: "Decisions",
+  people: "Key contacts",
+  projects: "Projects",
+  meetings: "Meetings",
+  responsibilities: "Responsibilities",
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  decision: "Decisions",
+  person: "People",
+  project: "Projects",
+  meeting: "Meetings",
+  responsibility: "Responsibilities",
 };
 
 export function KtOverview() {
-  const { pkg } = useKtPackage();
+  const { pkg, code } = useKtPackage();
+  const summary = useQuery({
+    queryKey: ["kt", code, "insight-summary"],
+    queryFn: () => api.ktInsightSummary(code),
+  });
 
   return (
     <div className="flex flex-col gap-8">
@@ -96,6 +111,24 @@ export function KtOverview() {
                 {pkg.subject.department ?? "Not recorded"}
               </dd>
             </div>
+          </dl>
+        </section>
+      ) : null}
+
+      {summary.data && Object.keys(summary.data.by_type).length > 0 ? (
+        <section aria-labelledby="kt-counts-heading" className="flex flex-col gap-4">
+          <h2 id="kt-counts-heading" className="display text-xl font-semibold">
+            What this package holds for you
+          </h2>
+          {/* Counts computed under the same ACL predicate that serves the rows — a
+              figure here can never exceed what its tab would show. */}
+          <dl className="grid grid-cols-2 gap-px overflow-clip rounded-2xl border border-hairline bg-hairline sm:grid-cols-5">
+            {Object.entries(summary.data.by_type).map(([type, count]) => (
+              <div key={type} className="flex flex-col gap-1 bg-background p-4">
+                <dd className="display text-2xl font-semibold tabular-nums">{count}</dd>
+                <dt className="text-xs text-muted-foreground">{TYPE_LABELS[type] ?? type}</dt>
+              </div>
+            ))}
           </dl>
         </section>
       ) : null}
@@ -199,37 +232,6 @@ export function KtDocuments() {
           {more ? <LoadMore onClick={() => void loadOlder()} pending={loadingMore} /> : null}
         </>
       )}
-    </div>
-  );
-}
-
-/**
- * A tab whose data source does not exist on this deployment yet.
- *
- * Navigable on purpose — the recipient should see the shape of what a package can hold
- * — and honest on purpose: the sentence names the missing capability rather than
- * showing an empty table that reads as "nothing happened" (§36).
- */
-export function KtCapabilityGate({ name, what }: { name: string; what: string }) {
-  return (
-    <div className="flex flex-col gap-6">
-      <h2 className="display text-xl font-semibold">{name}</h2>
-      <div className="flex flex-col items-start gap-4 rounded-2xl border border-hairline bg-surface/40 p-8">
-        <span
-          aria-hidden="true"
-          className="flex size-10 items-center justify-center rounded-xl border border-hairline-strong bg-surface text-brand"
-        >
-          <GitBranch className="size-5" />
-        </span>
-        <div>
-          <h3 className="display text-lg font-semibold">Waiting on the knowledge graph</h3>
-          <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            {what} come from knowledge-graph extraction, which this deployment has not
-            run yet. When extraction lands, packages include this section automatically —
-            nothing here will ever be an invented placeholder.
-          </p>
-        </div>
-      </div>
     </div>
   );
 }

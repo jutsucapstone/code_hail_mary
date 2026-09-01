@@ -267,5 +267,51 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
             },
         )
 
+        # Migration 0014's four newly protected tables, one row each per tenant, so
+        # test_counts_do_not_leak covers them. The claim anchors to this tenant's own
+        # chunk; the vault row to its document; ciphertext is arbitrary bytes because
+        # isolation, not cryptography, is what is under test.
+        await conn.execute(
+            text(
+                "INSERT INTO pii_vault (vault_key, document_id, org_id, pii_type, ciphertext) "
+                "VALUES (:key, :doc, :org, 'email', :blob)"
+            ),
+            {
+                "key": f"vault-{label}",
+                "doc": doc_id,
+                "org": org_id,
+                "blob": f"cipher-{label}".encode(),
+            },
+        )
+        run_id = uuid.uuid4()
+        await conn.execute(
+            text(
+                "INSERT INTO extraction_runs (id, org_id, extractor_version, prompt_hash, "
+                "model) VALUES (:id, :org, 'v1', 'hash', 'test-model')"
+            ),
+            {"id": run_id, "org": org_id},
+        )
+        chunk_row = (
+            await conn.execute(
+                text("SELECT id FROM chunks WHERE org_id = :org LIMIT 1"), {"org": org_id}
+            )
+        ).scalar_one()
+        await conn.execute(
+            text(
+                "INSERT INTO extraction_claims (id, run_id, chunk_id, org_id, claim_type, "
+                "payload_json, confidence) VALUES (gen_random_uuid(), :run, :chunk, :org, "
+                "'decision', '{}'::jsonb, 0.9)"
+            ),
+            {"run": run_id, "chunk": chunk_row, "org": org_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO resolution_queue (id, org_id, entity_kind, payload_json, "
+                "candidates_json, score) VALUES (gen_random_uuid(), :org, 'person', "
+                "'{}'::jsonb, '[]'::jsonb, 0.5)"
+            ),
+            {"org": org_id},
+        )
+
     await conn.commit()
     return org_a, org_b
