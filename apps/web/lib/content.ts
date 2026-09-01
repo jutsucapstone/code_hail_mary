@@ -56,12 +56,15 @@ export const manifesto = {
   footnote: "Keep scrolling.",
 } as const;
 
+// Root-relative `/#hash`, not bare `#hash`: the header and footer also render on
+// /privacy and /terms, where a bare fragment resolves against the legal page and
+// silently goes nowhere. Consumers that need the section id strip the `/#` prefix.
 export const nav = [
-  { label: "Problem", href: "#problem" },
-  { label: "How it works", href: "#how-it-works" },
-  { label: "Architecture", href: "#architecture" },
-  { label: "Comparison", href: "#landscape" },
-  { label: "FAQ", href: "#faq" },
+  { label: "Problem", href: "/#problem" },
+  { label: "How it works", href: "/#how-it-works" },
+  { label: "Architecture", href: "/#architecture" },
+  { label: "Comparison", href: "/#landscape" },
+  { label: "FAQ", href: "/#faq" },
 ] as const;
 
 /**
@@ -82,7 +85,7 @@ export const hero = {
   headline: siteConfig.name,
   tagline: siteConfig.tagline,
   subhead:
-    "One living memory of your organization — people, projects, decisions and skills in a single temporal graph. Ask anything, trace any decision, lose nothing.",
+    "One living memory of your organisation — people, projects, decisions and skills in a single temporal graph. Ask anything, trace any decision, lose nothing.",
   // Opens the pilot funnel, where a visitor picks whether they are setting an
   // organisation up or joining one that already exists.
   primaryCta: { label: "Request a pilot", href: PILOT_PATH },
@@ -168,7 +171,7 @@ export const problem = {
     {
       id: "onboarding",
       title: "Onboarding pays twice",
-      body: "New joiners spend months re-learning what the organization has already paid to learn once.",
+      body: "New joiners spend months re-learning what the organisation has already paid to learn once.",
     },
     {
       id: "blindspot",
@@ -274,7 +277,7 @@ export const landscape = {
 
 export const contact = {
   eyebrow: "Get started",
-  title: "Bring your organization's memory online.",
+  title: "Bring your organisation's memory online.",
   lead: "A read-only overlay on the systems you already run. No process disruption, no migration, a pilot in twelve weeks.",
   // Also drives the header button, desktop and mobile (site-header.tsx).
   primaryCta: { label: "Request a pilot", href: PILOT_PATH },
@@ -293,7 +296,7 @@ export const announcement = {
 
 export const howItWorks = {
   eyebrow: "How it works",
-  title: "Three steps to organizational memory.",
+  title: "Three steps to organisational memory.",
   lead: "Read-only connectors in, a temporal graph in the middle, cited answers out. No migration, and no change to how anyone works.",
   steps: [
     {
@@ -355,17 +358,17 @@ export const footerNav = [
   {
     heading: "Product",
     links: [
-      { label: "The problem", href: "#problem" },
-      { label: "Memory graph", href: "#hero" },
-      { label: "How it works", href: "#how-it-works" },
-      { label: "Architecture", href: "#architecture" },
-      { label: "Comparison", href: "#landscape" },
+      { label: "The problem", href: "/#problem" },
+      { label: "Memory graph", href: "/#hero" },
+      { label: "How it works", href: "/#how-it-works" },
+      { label: "Architecture", href: "/#architecture" },
+      { label: "Comparison", href: "/#landscape" },
     ],
   },
   {
     heading: "Company",
     links: [
-      { label: "Questions", href: "#faq" },
+      { label: "Questions", href: "/#faq" },
       { label: "Request a pilot", href: PILOT_PATH },
       { label: "Contact us", href: CONTACT_MAILTO },
     ],
@@ -375,7 +378,7 @@ export const footerNav = [
     links: [
       { label: "Privacy", href: "/privacy" },
       { label: "Terms", href: "/terms" },
-      { label: "Security", href: "#architecture" },
+      { label: "Security", href: "/#architecture" },
     ],
   },
 ] as const;

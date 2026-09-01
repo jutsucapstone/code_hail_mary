@@ -217,11 +217,14 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      # `--set-env-vars` REPLACES the whole set rather than merging into it, so every
-      # variable the service needs must be listed here. Anything set by hand with
+      # `--set-env-vars` REPLACES the whole set rather than merging into it, and here
+      # that replacement is the contract: the pipeline fully OWNS the environment, so
+      # every variable the service needs is listed below and config drifts back to what
+      # this file says, never away from it. Anything set by hand with
       # `gcloud run services update --update-env-vars` survives exactly until the next
       # deploy and then disappears — which presents as a working mail transport that
-      # stops working on an unrelated push.
+      # stops working on an unrelated push. Secrets are the one exception, and the flag
+      # below differs for exactly that reason.
       #
       # SMTP_FROM is not optional with this provider. Resend authenticates as the literal
       # username `resend`, and the settings fall back to the username when no From is
@@ -233,9 +236,20 @@ jobs:
       # down (the web image is built with the same value at line 120), and a default
       # nobody can see from the deploy is a default nobody updates when the domain moves.
       #
-      # Secrets are referenced, never passed. `--set-secrets` mounts them from Secret
-      # Manager at start, so nothing sensitive appears in the workflow, in a Cloud Run
+      # Secrets are referenced, never passed. They mount from Secret Manager at
+      # container start, so nothing sensitive appears in the workflow, in a Cloud Run
       # environment variable, or in `gcloud run services describe` output (§4.10).
+      #
+      # `--update-secrets`, NOT `--set-secrets`, and the difference is a contract with
+      # operators: per gcloud's flag semantics, --update-secrets MERGES into the
+      # previous revision's secret set, while --set-secrets replaces it wholesale. The
+      # per-provider OAuth pairs (JUTSU_OAUTH_*_CLIENT_ID / _CLIENT_SECRET) are mounted
+      # once, by hand, with `gcloud run services update --update-secrets` — see
+      # docs/oauth-provider-setup.md — and the pipeline must PRESERVE them: with
+      # --set-secrets every push silently wiped the mounts and every connected provider
+      # reverted to "not configured". The cost of merging is that this list can only
+      # add; retiring a secret is a manual `--remove-secrets`, which is the right
+      # ceremony for an action that revokes.
       # `--allow-unauthenticated`, deliberately. The Next proxy calls this over the public
       # URL carrying no Google credential, so a private service rejects every request a
       # browser makes. Closing it properly means granting the web service account
@@ -263,7 +277,7 @@ jobs:
             --service-account "${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --add-cloudsql-instances "${{ secrets.CLOUD_SQL_INSTANCE }}" \
             --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,SMTP_HOST=smtp.resend.com,SMTP_PORT=587,SMTP_FROM=JUTSU <noreply@jutsu.co.in>,JUTSU_APP_URL=https://jutsu.co.in,GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }},VERTEX_LOCATION=asia-south1" \
-            --set-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest,ANTHROPIC_API_KEY=jutsu-anthropic-api-key:latest,JUTSU_CONNECTION_KEY=jutsu-connection-key:latest" \
+            --update-secrets "DATABASE_URL=jutsu-database-url:latest,JUTSU_EMAIL_PEPPER=jutsu-email-pepper:latest,SMTP_USERNAME=jutsu-smtp-username:latest,SMTP_PASSWORD=jutsu-smtp-password:latest,ANTHROPIC_API_KEY=jutsu-anthropic-api-key:latest,JUTSU_CONNECTION_KEY=jutsu-connection-key:latest" \
             --min-instances 0 \
             --max-instances 10 \
             --allow-unauthenticated \

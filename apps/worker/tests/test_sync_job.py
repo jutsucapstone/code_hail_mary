@@ -270,6 +270,103 @@ class TestDrainOrg:
             ).one()
             assert job.state == "pending", "another org's drain must not have touched it"
 
+    async def test_an_exhausted_deadline_claims_nothing(self) -> None:
+        """`max_seconds` keeps the drain under arq's hard timeout, which would kill it
+        mid-provider-call. At zero the loop must not claim even one job — a bound that
+        lets one more claim through is advisory, and advisory is how a drain dies
+        holding a lease."""
+        from jutsu_worker.runner import drain_org
+
+        org_id = uuid.uuid4()
+        _connection_id, job_id = await seed_connection_and_job(org_id)
+
+        counts = await drain_org(org_id, max_seconds=0)
+        assert sum(counts.values()) == 0
+
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+            ).one()
+            assert job.state == "pending", "the job waits for a drain with time to run it"
+
+    async def test_an_orphaned_lease_is_reclaimed_before_the_deadline_gate(self) -> None:
+        """A predecessor killed at arq's hard timeout leaves a working state, an expired
+        lease and no transaction holding the row. Reclaim runs FIRST, outside the
+        deadline loop — even a drain with no time left returns the job to the queue,
+        rather than skipping it until the org's next walk happens to run."""
+        from jutsu_worker.runner import drain_org
+
+        org_id = uuid.uuid4()
+        _connection_id, job_id = await seed_connection_and_job(org_id)
+        async with org_session(org_id) as session:
+            await session.execute(
+                text(
+                    "UPDATE jobs SET state = 'fetching', attempts = 1, "
+                    "locked_until = now() - interval '1 hour' WHERE id = :id"
+                ),
+                {"id": job_id},
+            )
+
+        counts = await drain_org(org_id, max_seconds=0)
+        assert sum(counts.values()) == 0
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+            ).one()
+            assert job.state == "retry_scheduled", "reclaimed, not skipped"
+
+        counts = await drain_org(org_id)
+        assert counts["connector.sync"] == 1, "the reclaimed job was claimed and run"
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+            ).one()
+            assert job.state == "completed"
+
+
+class TestReauthAnnotation:
+    """A dead grant surfaces inside the WALK, not the connector.sync job: the token is
+    fetched when the connector first calls the provider, and by then the sync job has
+    completed. The failure path must still reach the connection row, or its owner keeps
+    a Sync button that can only fail where Reconnect belongs."""
+
+    async def test_a_walk_that_dies_at_the_providers_door_flips_the_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jutsu_worker.fetchers as fetchers
+        from jutsu_worker.credentials import ReauthRequired
+        from jutsu_worker.runner import drain_org
+
+        async def refuse(session: object, *, connection_id: uuid.UUID) -> str:
+            raise ReauthRequired("The provider rejected the refresh token.")
+
+        monkeypatch.setattr(fetchers, "access_token_for", refuse)
+
+        org_id = uuid.uuid4()
+        connection_id, _job_id = await seed_connection_and_job(org_id)
+
+        counts = await drain_org(org_id)
+        assert counts["connector.sync"] == 1
+        assert counts["ingest.source"] == 1, "the walk is where the token is first used"
+
+        async with org_session(org_id) as session:
+            walk = (
+                await session.execute(
+                    text("SELECT state, failure_kind FROM jobs WHERE kind = 'ingest.source'")
+                )
+            ).one()
+            assert walk.failure_kind == "provider_permanent"
+            assert walk.state == "failed", "no retry can revive a revoked grant"
+
+            row = (
+                await session.execute(
+                    text("SELECT status, last_error_kind FROM connections WHERE id = :id"),
+                    {"id": connection_id},
+                )
+            ).one()
+            assert row.status == "reauth_required"
+            assert row.last_error_kind == "reauth_required"
+
 
 class TestDrainFollowUp:
     """A retry with a future next_attempt_at has no doorbell of its own — the drain

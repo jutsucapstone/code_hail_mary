@@ -99,10 +99,10 @@ export function EmployeeConnections({
             <span className="text-muted-foreground">
               {connection.last_sync_at ? (
                 <>
-                  Last sync <When iso={connection.last_sync_at} />
+                  Last synchronised <When iso={connection.last_sync_at} />
                 </>
               ) : (
-                "Never synced"
+                "Not yet synchronised"
               )}
             </span>
             <span className="tabular-nums text-muted-foreground">

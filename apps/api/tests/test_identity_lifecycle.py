@@ -375,6 +375,37 @@ class TestIdempotentAutomaticLinking:
         assert len(await list_identities(db_session, user_id=first)) == 1
         assert await list_identities(db_session, user_id=second) == []
 
+    async def test_reverifying_after_a_revocation_relinks(self, db_session: AsyncSession) -> None:
+        """The reconnect case: a revoked row is history, not a permanent claim.
+
+        Before migration 0016 the `ON CONFLICT DO NOTHING` hit the revoked row and the
+        employee silently regained nothing — fail-closed against the wrong row. The new
+        active link lands beside the revoked one, so the trail still shows both.
+        """
+        org = await make_org(db_session, "alpha")
+        member = await make_user(db_session, org, "grace", Role.MEMBER)
+        await link_verified_email(db_session, org_id=org, user_id=member, verified_email="g@x.test")
+        first = (await list_identities(db_session, user_id=member))[0]
+        await revoke_identity(
+            db_session,
+            actor_id=member,
+            actor_org_id=org,
+            actor_role=Role.MEMBER,
+            target_user_id=member,
+            identity_id=first.id,
+        )
+
+        await link_verified_email(db_session, org_id=org, user_id=member, verified_email="g@x.test")
+
+        rows = await list_identities(db_session, user_id=member)
+        assert len(rows) == 2, "the revoked row must survive beside the fresh link"
+        assert {row.is_active for row in rows} == {True, False}
+        active = next(row for row in rows if row.is_active)
+        assert active.id != first.id
+        assert active.linked_by == LINKED_BY_VERIFIED_EMAIL
+        principals, _ = await scoped_acl_principals(db_session, user_id=member)
+        assert principals == frozenset({"local:g@x.test"})
+
     async def test_two_tenants_may_hold_the_same_address(self, db_session: AsyncSession) -> None:
         """Uniqueness is `(org_id, source_system, subject)`, never global (ADR 0010 §3)."""
         alpha = await make_org(db_session, "alpha")
@@ -573,6 +604,65 @@ class TestAdministrativeLinking:
 
         principals, _ = await scoped_acl_principals(db_session, user_id=first)
         assert principals == frozenset({"slack:U01ABCDEF"}), "the original link moved"
+
+    async def test_revoke_then_link_moves_a_subject_to_its_new_holder(
+        self, db_session: AsyncSession
+    ) -> None:
+        """The sanctioned transfer flow, end to end.
+
+        The Conflict above tells an administrator a transfer "must be an explicit
+        revoke-then-link". Until migration 0016 the revoked row still occupied an
+        unconditional unique constraint, so the second half of that instruction was a
+        permanent 409 — the flow the product prescribed was impossible by schema.
+        """
+        org = await make_org(db_session, "alpha")
+        admin = await make_user(db_session, org, "ida", Role.IT_ADMIN)
+        leaver = await make_user(db_session, org, "grace", Role.MEMBER)
+        successor = await make_user(db_session, org, "alan", Role.MEMBER)
+        linked = await link_identity(
+            db_session,
+            actor_id=admin,
+            actor_org_id=org,
+            actor_role=Role.IT_ADMIN,
+            target_user_id=leaver,
+            source_system=SourceSystem.SLACK,
+            subject="U01ABCDEF",
+        )
+
+        await revoke_identity(
+            db_session,
+            actor_id=admin,
+            actor_org_id=org,
+            actor_role=Role.IT_ADMIN,
+            target_user_id=leaver,
+            identity_id=linked.id,
+        )
+        relinked = await link_identity(
+            db_session,
+            actor_id=admin,
+            actor_org_id=org,
+            actor_role=Role.IT_ADMIN,
+            target_user_id=successor,
+            source_system=SourceSystem.SLACK,
+            subject="U01ABCDEF",
+        )
+
+        assert relinked.is_active is True
+        assert relinked.id != linked.id, "the transfer must mint a new row, not move one"
+        old_principals, _ = await scoped_acl_principals(db_session, user_id=leaver)
+        new_principals, _ = await scoped_acl_principals(db_session, user_id=successor)
+        assert old_principals == frozenset()
+        assert new_principals == frozenset({"slack:U01ABCDEF"})
+
+        # Both acts are on the record: the transfer reads as a revoke AND a link, each
+        # naming the identity row it touched.
+        revoked = await audit_rows(db_session, "identity.revoked")
+        linked_rows = await audit_rows(db_session, "identity.linked")
+        assert [uuid.UUID(str(row.resource_id)) for row in revoked] == [linked.id]
+        assert [uuid.UUID(str(row.resource_id)) for row in linked_rows] == [
+            linked.id,
+            relinked.id,
+        ]
 
     async def test_a_blank_subject_is_refused(self, db_session: AsyncSession) -> None:
         org = await make_org(db_session, "alpha")

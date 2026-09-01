@@ -107,6 +107,27 @@ describe("audit page", () => {
 
     expect(await screen.findByText(/nothing recorded yet/i)).toBeInTheDocument();
   });
+
+  it("retires Load more after the final page instead of restarting the walk", async () => {
+    const fetchMock = scriptFetch(
+      { status: 200, body: { items: [auditEntry()], next_cursor: "cursor-2" } },
+      {
+        status: 200,
+        body: { items: [auditEntry({ id: 8, action: "invitation.sent" })], next_cursor: null },
+      },
+    );
+    renderWithQuery(<AuditPage />);
+    await screen.findByText("member.role_changed");
+
+    await userEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    // The walk ends when a page comes back with no cursor. Before the exhausted flag,
+    // the null cursor fell back to the HEAD page's cursor — the button came back and
+    // clicking it re-appended page two as duplicates.
+    expect(await screen.findByText("invitation.sent")).toBeInTheDocument();
+    expect(calledUrl(fetchMock, 1)).toContain("cursor=cursor-2");
+    expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
+  });
 });
 
 describe("settings page", () => {
@@ -240,6 +261,37 @@ describe("employees page role control", () => {
     renderWithQuery(<EmployeesPage />);
 
     expect(await screen.findByText("Outranks you")).toBeInTheDocument();
+  });
+
+  it("appends the next page under Load more and retires the button on the last one", async () => {
+    const fetchMock = scriptFetch(
+      { status: 200, body: { items: [employee()], next_cursor: "cursor-2" } },
+      {
+        status: 200,
+        body: {
+          items: [
+            employee({
+              id: "88888888-8888-4888-8888-888888888888",
+              email: "ada@example.com",
+              display_name: "Ada Lovelace",
+              jutsu_id: "JUTSU-EMP-BBBBBBBB",
+            }),
+          ],
+          next_cursor: null,
+        },
+      },
+    );
+    renderWithQuery(<EmployeesPage />);
+    await screen.findByText("Grace Hopper");
+
+    await userEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    // Appended under the head page, not replacing it — and the button retires once the
+    // server says there is nothing older.
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
+    expect(calledUrl(fetchMock, 1)).toContain("cursor=cursor-2");
+    expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
   });
 
   it("renders no role column at all without member:assign_role", async () => {

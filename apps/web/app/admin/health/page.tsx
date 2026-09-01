@@ -118,7 +118,20 @@ export default function HealthPage() {
             </ul>
           </section>
 
-          {jobs.data ? (
+          {jobs.error ? (
+            <section aria-labelledby="queue-heading" className="flex flex-col gap-4">
+              <h2 id="queue-heading" className="display text-xl font-semibold">
+                Queue pressure
+              </h2>
+              {/* On a health page especially, a silently missing section reads as
+                  "queue fine" — the one page whose job is to say what is not. */}
+              <FailureState
+                failure={classifyApiError(jobs.error)}
+                onRetry={() => void jobs.refetch()}
+                deniedWhat="reading queue statistics"
+              />
+            </section>
+          ) : jobs.data ? (
             <section aria-labelledby="queue-heading" className="flex flex-col gap-4">
               <h2 id="queue-heading" className="display text-xl font-semibold">
                 Queue pressure

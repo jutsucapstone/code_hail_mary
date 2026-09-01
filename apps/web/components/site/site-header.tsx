@@ -56,7 +56,9 @@ function useActiveSection(ids: readonly string[]) {
   return active;
 }
 
-const NAV_SECTION_IDS = nav.map((item) => item.href.replace("#", ""));
+// Nav hrefs are `/#hash` so they survive the legal pages; the section ids carry
+// no slash, so the whole prefix comes off, not just the `#`.
+const NAV_SECTION_IDS = nav.map((item) => item.href.replace("/#", ""));
 
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
@@ -104,8 +106,8 @@ export function SiteHeader() {
           scrolled ? "h-14 lg:h-15" : "h-16 lg:h-18",
         )}
       >
-        <a
-          href="#hero"
+        <Link
+          href="/#hero"
           className="group flex items-center gap-2.5 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand"
           aria-label={`${siteConfig.name} — home`}
         >
@@ -114,12 +116,12 @@ export function SiteHeader() {
             className="h-7 w-7 shrink-0 transition-transform duration-300 group-hover:scale-105"
           />
           <Wordmark className="w-[4.75rem]" />
-        </a>
+        </Link>
 
         <nav aria-label="Primary" className="hidden lg:block">
           <ul className="flex items-center gap-1">
             {nav.map((item) => {
-              const isActive = activeSection === item.href.replace("#", "");
+              const isActive = activeSection === item.href.replace("/#", "");
               return (
                 <li key={item.href} className="relative">
                   <a
@@ -217,7 +219,7 @@ export function SiteHeader() {
                 >
                   {item.label}
                   <span aria-hidden="true" className="eyebrow text-muted-foreground">
-                    {item.href.replace("#", "")}
+                    {item.href.replace("/#", "")}
                   </span>
                 </a>
               </li>

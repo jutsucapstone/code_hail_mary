@@ -25,6 +25,7 @@ from jutsu_api.auth_service import (
     open_session,
     revoke_session,
     scoped_role,
+    spend_sign_in_budget,
     verify_challenge,
 )
 from jutsu_api.config import (
@@ -53,6 +54,11 @@ class ChallengeRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     email: EmailStr
+    #: Optional cross-check, never an authorisation input. A JUTSU id is 18 characters;
+    #: the headroom is for the hand-typed forms the Crockford normaliser repairs. When
+    #: present, the code is delivered only if the id and the address resolve to the same
+    #: membership — the response is the identical 202 either way.
+    jutsu_id: str | None = Field(default=None, max_length=24)
 
 
 class ChallengeAccepted(BaseModel):
@@ -111,12 +117,17 @@ async def request_challenge(
     settings: SettingsDep,
     sender: SenderDep,
 ) -> ChallengeAccepted:
+    # Before any mail or any auth-schema write. Each request delivers a message to an
+    # address the caller names and writes an identity row and a challenge — an open
+    # relay without a ceiling, exactly like staging (§20's precedent).
+    await spend_sign_in_budget(session, address=str(payload.email), settings=settings)
     await issue_challenge(
         session,
         address=str(payload.email),
         purpose=ChallengePurpose.SIGN_IN,
         settings=settings,
         sender=sender,
+        jutsu_id=payload.jutsu_id,
     )
     return ChallengeAccepted()
 

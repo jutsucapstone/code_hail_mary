@@ -54,6 +54,7 @@ from jutsu_worker.credentials import (
     CredentialsUnavailable,
     ReauthRequired,
     TransientRefreshError,
+    mark_reauth_required,
 )
 from jutsu_worker.extraction import extraction_configured, extraction_job_key
 from jutsu_worker.jobs import (
@@ -61,7 +62,6 @@ from jutsu_worker.jobs import (
     Job,
     JobKind,
     JobState,
-    claim_job,
     complete_job,
     enqueue_job,
     fail_job,
@@ -532,6 +532,32 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
     return FailureKind.INTERNAL, True
 
 
+async def _backing_connection_id(
+    session: AsyncSession, *, payload: dict[str, Any]
+) -> uuid.UUID | None:
+    """The connection behind a job's source, when the payload names a source at all.
+
+    `ingest.source` and `ingest.document` payloads carry `source_id`; a provider-backed
+    source's `config_json` names its connection. A local source names none, and a source
+    deleted mid-flight finds no row — both answer None rather than raise, because the
+    job failure this rides on is already classified and must stand on its own.
+    """
+    raw_source_id = payload.get("source_id")
+    if not raw_source_id:
+        return None
+    row = (
+        await session.execute(
+            text(
+                "SELECT config_json->>'connection_id' AS connection_id FROM sources WHERE id = :id"
+            ),
+            {"id": str(raw_source_id)},
+        )
+    ).first()
+    if row is None or not row.connection_id:
+        return None
+    return uuid.UUID(str(row.connection_id))
+
+
 async def record_failure(session: AsyncSession, *, job: Job, error: BaseException) -> JobState:
     """Classify, persist and audit a failed attempt.
 
@@ -539,6 +565,14 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
     and provider exceptions are written by code that does not carry document text in them,
     and this is the boundary that has to keep it that way, because `jobs.error` is read by
     operators and exported with the audit trail.
+
+    A `ReauthRequired` failure also flips the backing connection. The runner annotates
+    `connector.sync` jobs, whose payload names the connection — but the token is fetched
+    when the connector first calls the provider, so the error actually surfaces inside
+    the walk and the fetch, whose payloads name only the source. Without the lookup here
+    the owner keeps a Sync button that can only fail where Reconnect belongs. Same
+    session as the failure write: `run_source_job` already annotates the connection's
+    success in the walk's own transaction, and the two rows describe one event.
     """
     kind, retryable = classify(error)
     message = f"{type(error).__name__}: {error}"
@@ -579,22 +613,8 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
         state.value,
         job.attempts,
     )
+    if isinstance(error, ReauthRequired):
+        connection_id = await _backing_connection_id(session, payload=job.payload)
+        if connection_id is not None:
+            await mark_reauth_required(session, connection_id=connection_id)
     return state
-
-
-async def claim_and_run_document(
-    session: AsyncSession, *, job_id: uuid.UUID | None = None
-) -> IngestOutcome | None:
-    """Claim one document job and run it, recording whatever happens. For the worker loop.
-
-    Returns None when there was nothing to claim, which is the ordinary idle case rather
-    than an error.
-    """
-    job = await claim_job(session, kind=JobKind.INGEST_DOCUMENT, job_id=job_id)
-    if job is None:
-        return None
-    try:
-        return await run_document_job(session, job=job)
-    except Exception as error:
-        await record_failure(session, job=job, error=error)
-        return None

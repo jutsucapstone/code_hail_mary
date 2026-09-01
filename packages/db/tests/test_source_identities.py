@@ -104,6 +104,36 @@ class TestSchema:
             await link(conn, org, user, "slack", "U01ABC")
         await conn.rollback()
 
+    async def test_a_revoked_row_does_not_block_relinking(self, conn: AsyncConnection) -> None:
+        """Uniqueness is one ACTIVE holder per subject, not one row ever (migration 0016).
+
+        Revocation is a flag, so the history row keeps its three columns for ever. An
+        unconditional constraint would turn every revocation into a permanent claim and
+        the sanctioned revoke-then-link transfer into a guaranteed conflict.
+        """
+        org, user = await make_org_with_user(conn, "alpha")
+        await link(conn, org, user, "slack", "U01ABC", active=False)
+        await link(conn, org, user, "slack", "U01ABC")
+
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT is_active FROM source_identities "
+                        "WHERE user_id = :u ORDER BY is_active"
+                    ),
+                    {"u": user},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == [False, True], "the history row must survive beside the fresh link"
+
+        with pytest.raises(DBAPIError):
+            await link(conn, org, user, "slack", "U01ABC")
+        await conn.rollback()
+
     async def test_user_groups_carries_an_org_id(self, conn: AsyncConnection) -> None:
         """It shipped without one, which left an authorisation input unscoped."""
         row = (

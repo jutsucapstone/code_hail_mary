@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import {
@@ -48,6 +49,10 @@ export default function AuditPage() {
   // Older pages accumulate under the newest-first head page as the reader walks back.
   const [older, setOlder] = useState<AuditEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  // Distinct from `cursor === null`, which is also the state before any walk: without
+  // it the null cursor falls back to the head page's cursor and the walk restarts,
+  // re-appending page two under a resurrected button.
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mayRead = can(capabilities, "audit:read");
@@ -73,6 +78,9 @@ export default function AuditPage() {
       const page = await api.audit({ cursor: next, outcome: outcome || null });
       setOlder((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
+      if (page.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
     } finally {
       setLoadingMore(false);
     }
@@ -83,10 +91,11 @@ export default function AuditPage() {
     // A filter change starts a fresh walk; stale older pages belong to the old filter.
     setOlder([]);
     setCursor(null);
+    setExhausted(false);
   }
 
   const rows = [...(head.data?.items ?? []), ...older];
-  const more = cursor ?? head.data?.next_cursor;
+  const more = !exhausted && (cursor ?? head.data?.next_cursor);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 [@media(max-height:820px)]:gap-6">

@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { Building2, IdCard, ShieldCheck, UserRound } from "lucide-react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
-import { ErrorState, LoadingRegion, Skeleton } from "@/components/states";
+import { ErrorState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
 import { useQuery } from "@tanstack/react-query";
 
 import { StatStrip } from "@/components/admin/page-scaffold";
 import { ApiError, api } from "@/lib/api";
+import { classifyApiError } from "@/lib/api-error";
 import type { components } from "@/lib/api-schema";
+import { ROLE_LABELS } from "@/lib/permissions";
 
 type Organisation = components["schemas"]["OrganisationProfile"];
 
@@ -141,7 +143,20 @@ export default function AdminOverviewPage() {
         </dl>
       </section>
 
-      {overview.data ? (
+      {overview.error ? (
+        <section aria-labelledby="ops-heading" className="flex flex-col gap-4">
+          <h2 id="ops-heading" className="display text-xl font-semibold sm:text-2xl">
+            Knowledge & operations
+          </h2>
+          {/* A silently absent strip reads as "no counts exist", which is a data bug
+              nobody files; the failure says what actually happened. */}
+          <FailureState
+            failure={classifyApiError(overview.error)}
+            onRetry={() => void overview.refetch()}
+            deniedWhat="reading the operational counts"
+          />
+        </section>
+      ) : overview.data ? (
         <section aria-labelledby="ops-heading" className="flex flex-col gap-4">
           <h2 id="ops-heading" className="display text-xl font-semibold sm:text-2xl">
             Knowledge & operations
@@ -179,7 +194,9 @@ export default function AdminOverviewPage() {
           </div>
           <div className="flex flex-col gap-1.5 bg-background p-6 [@media(max-height:820px)]:p-4">
             <dt className="text-sm text-muted-foreground">Your role</dt>
-            <dd className="text-sm text-foreground">{capabilities.role}</dd>
+            <dd className="text-sm text-foreground">
+              {ROLE_LABELS[capabilities.role] ?? capabilities.role}
+            </dd>
           </div>
           <div className="flex flex-col gap-1.5 bg-background p-6 [@media(max-height:820px)]:p-4">
             <dt className="text-sm text-muted-foreground">Organisation ID</dt>
@@ -212,8 +229,8 @@ export default function AdminOverviewPage() {
           </h2>
           <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
             Invite people from Employees — their JUTSU ID is issued when they accept,
-            not before. Everyone then connects their own work tools under Workspace
-            Integrations, subject to the policies you set on the Integrations page here.
+            not before. Everyone then connects their own work tools under My
+            integrations, subject to the policies you set on the Integrations page here.
             Once a live connector completes its first ingestion, its documents appear
             under Knowledge sources with real counts — nothing on these screens is ever
             estimated.

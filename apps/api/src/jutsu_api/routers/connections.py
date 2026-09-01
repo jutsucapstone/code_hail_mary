@@ -15,6 +15,7 @@ and the test suite greps them to keep it that way.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 from jutsu_api.connectors import (
     HttpOAuthTransport,
     OAuthTransport,
+    abandon_callback,
     complete_callback,
     connection_summary,
     disconnect_own,
@@ -159,6 +161,17 @@ async def connect(
     return ConnectStarted(connection_id=flow.connection_id, authorize_url=flow.authorize_url)
 
 
+def _deny_reason(error: str | None) -> str:
+    """A provider's error code, reduced to a charset that can carry nothing else.
+
+    The value lands in a redirect URL the browser will display and every proxy will
+    log, and it arrived from outside — so it is stripped to a label (`access_denied`)
+    or replaced with one, never forwarded as sent.
+    """
+    cleaned = re.sub(r"[^a-z0-9_]", "", (error or "").lower())
+    return cleaned[:32] or "denied"
+
+
 @router.get("/connections/callback", include_in_schema=False)
 @requires(Permission.INTEGRATION_SELF_MANAGE)
 async def oauth_callback(
@@ -168,7 +181,8 @@ async def oauth_callback(
     transport: TransportDep,
     response: Response,
     state: str = Query(min_length=16, max_length=128),
-    code: str = Query(min_length=1, max_length=2048),
+    code: str | None = Query(default=None, min_length=1, max_length=2048),
+    error: str | None = Query(default=None, max_length=128),
 ) -> RedirectResponse:
     """The provider's redirect lands here, through the web proxy, with the session.
 
@@ -177,8 +191,21 @@ async def oauth_callback(
     the caller's own connecting row, spent before the exchange — is the defence, and it
     is the standard one for exactly this flow.
 
+    A denial arrives here too: the person clicked Deny, so the provider sends `error`
+    and no `code`. That is a browser mid-redirect, not an API client — raw JSON would
+    be a dead end — so the attempt is closed out and the browser goes back to the page
+    that started it, with a reason and nothing sensitive in the URL.
+
     Out of the OpenAPI schema because no client calls it: browsers arrive here.
     """
+    if code is None or error is not None:
+        provider_id = await abandon_callback(session, user_id=principal.user_id, state=state)
+        reason = provider_id or _deny_reason(error)
+        return RedirectResponse(
+            url=f"/me/integrations?connect_error={reason}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     view = await complete_callback(
         session,
         settings,

@@ -20,7 +20,7 @@ push to main
      │                              pushed to Artifact Registry
      ├── migrate                    Cloud Run job, alembic upgrade head
      │                              runs as the OWNER, before any service is deployed
-     └── deploy                     api · worker · web
+     └── deploy                     api · reaper job · web
                                     then curls the web URL and rolls back if it never 200s
 ```
 
@@ -201,19 +201,43 @@ EXTENSION` can report success and leave no extension behind.
 
 ### 6. Secrets
 
-Referenced by the pipeline, never passed through it. `--set-secrets` mounts them at
-container start, so nothing sensitive appears in the workflow, in a Cloud Run environment
-variable, or in `gcloud run services describe` output.
+Referenced by the pipeline, never passed through it. The deploy mounts them from Secret
+Manager at container start with `--update-secrets` — the merging form, so hand-mounted
+secrets survive a push — and nothing sensitive appears in the workflow, in a Cloud Run
+environment variable, or in `gcloud run services describe` output.
 
 ```bash
+# The app role, for the services. NOSUPERUSER NOBYPASSRLS — see §5.
 printf '%s' 'postgresql+asyncpg://jutsu_app:PASSWORD@/jutsu?host=/cloudsql/PROJECT:REGION:jutsu' \
   | gcloud secrets create jutsu-database-url --data-file=-
+
+# The owner, for the migration job (§7). `jutsu_app` cannot run DDL, by design.
+printf '%s' 'postgresql+asyncpg://jutsu:PASSWORD@/jutsu?host=/cloudsql/PROJECT:REGION:jutsu' \
+  | gcloud secrets create jutsu-migration-url --data-file=-
 
 python -c "import secrets; print(secrets.token_urlsafe(32))" \
   | gcloud secrets create jutsu-email-pepper --data-file=-
 
-printf '%s' 'redis://HOST:6379' | gcloud secrets create jutsu-redis-url --data-file=-
+# Answers and extraction run on the Claude API. Absent, /v1/ask refuses with 503 and
+# extraction jobs are never enqueued — honest unavailability, not a crash.
+printf '%s' 'sk-ant-xxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-anthropic-api-key --data-file=-
+
+# Fernet key encrypting provider OAuth tokens at rest. Piped straight from the
+# generator, so the value never touches the shell history or the screen.
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  | gcloud secrets create jutsu-connection-key --data-file=-
 ```
+
+There is deliberately **no `jutsu-redis-url`**. Production has no Redis — the reaper is
+a scheduled Cloud Run job for exactly that cost reason (§8), and the deploy mounts no
+`REDIS_URL`: sync jobs enqueue durable rows that wait, visible on the Jobs page, and the
+mount lands together with the worker slice that would hear the doorbell.
+
+The per-provider OAuth pairs (`jutsu-oauth-github-client-id` / `...-secret`, …) are not
+listed here or in the pipeline. An operator mounts each pair once with
+`gcloud run services update --update-secrets`, and the deploy — which also uses
+`--update-secrets`, the merging form — preserves them across every push. See
+`docs/oauth-provider-setup.md`.
 
 ### 6a. The mail transport
 
@@ -329,7 +353,7 @@ piece of this deployment put together, to delete a handful of rows every five mi
 
 ```bash
 gcloud run jobs create jutsu-reap \
-  --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/jutsu/api:bootstrap" \
+  --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/jutsu/worker:bootstrap" \
   --region="$REGION" \
   --service-account="jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
   --set-cloudsql-instances="${PROJECT_ID}:${REGION}:jutsu" \
@@ -338,8 +362,12 @@ gcloud run jobs create jutsu-reap \
   --max-retries=2 --task-timeout=5m
 ```
 
-The API image, not a separate one: it carries `jutsu_worker` too, because one base image
-for both is less to keep patched than two that drift.
+The worker image, because that is where the pipeline points this job: `deploy.yml`
+repoints `jutsu-reap` at the worker image it just built on every push, so creating the
+job from anything else holds for exactly one deploy. The worker image is the same build
+as the API image with a different default command (`infra/docker/worker.Dockerfile` says
+so at the top) — still one build to keep patched, not two that drift — and the
+`--command` above overrides the default either way.
 
 Then a schedule, and a service account allowed to invoke it:
 

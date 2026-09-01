@@ -17,8 +17,11 @@ the seam's contract is exactly two provider calls.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
@@ -26,16 +29,20 @@ from jutsu_api.config import Settings, get_settings
 from jutsu_api.connectors import (
     PROVIDERS,
     AccountIdentity,
+    HttpOAuthTransport,
     OAuthClient,
     Provider,
     TokenGrant,
+    start_connection,
 )
 from jutsu_api.deps import get_db, get_email_sender
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.main import create_app
 from jutsu_api.routers.connections import get_oauth_transport
 from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
+from jutsu_core.errors import Conflict, ServiceUnavailable
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 REGISTRATION = {
@@ -106,7 +113,23 @@ async def client(
     settings: Settings,
     mailbox: RecordingEmailSender,
     fake_oauth: FakeOAuth,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[AsyncClient]:
+    """The app, plus what the callback's own-session spend forces this fixture to own.
+
+    `complete_callback` spends the OAuth state on its own committed session through
+    `jutsu_db.engine` — the rate limiter's design, for the rate limiter's reason — so
+    exactly as in `test_search_api`: `DATABASE_URL` must point at the application role
+    (`db_session` set it to the privileged migration URL for Alembic, under which RLS
+    is silently inert), and the process-wide engine cache must be disposed around every
+    test or a later test inherits a pool bound to a closed event loop.
+    """
+    from jutsu_db.engine import dispose_engine
+
+    await dispose_engine()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
     app = create_app()
 
     async def _db() -> AsyncIterator[AsyncSession]:
@@ -120,7 +143,10 @@ async def client(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="https://testserver") as http:
+        http.app = app  # type: ignore[attr-defined]
         yield http
+
+    await dispose_engine()
 
 
 def csrf(client: AsyncClient) -> dict[str, str]:
@@ -218,6 +244,75 @@ class TestCatalogue:
         response = await client.post("/v1/me/connections/napster", headers=csrf(client))
         assert response.status_code == 404
 
+    async def test_document_count_measures_current_documents_of_the_connections_source(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        db_session: AsyncSession,
+    ) -> None:
+        """Pins the join key: `sources.config_json->>'connection_id' = connections.id`.
+
+        The count is §2's "indexed item counts where available" — measured, so this
+        seeds the measurement: a source naming the connection, one current document,
+        one superseded version that is history and must not count.
+        """
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        source_id = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO sources (id, org_id, system, config_json, status) "
+                "VALUES (:id, :org, 'slack', cast(:config AS jsonb), 'idle')"
+            ),
+            {
+                "id": source_id,
+                "org": org_id,
+                "config": f'{{"connection_id": "{connection_id}"}}',
+            },
+        )
+        current = uuid.uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+                "content_hash, acl_hash, body_original, body_masked, created_at) "
+                "VALUES (:id, :org, :src, 'msg-1', 'Current version', 'h2', 'a', 'b', 'b', now())"
+            ),
+            {"id": current, "org": org_id, "src": source_id},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+                "content_hash, acl_hash, body_original, body_masked, superseded_by, created_at) "
+                "VALUES (:id, :org, :src, 'msg-1', 'Old version', 'h1', 'a', 'b', 'b', "
+                ":new, now())"
+            ),
+            {"id": uuid.uuid4(), "org": org_id, "src": source_id, "new": current},
+        )
+
+        try:
+            body = (await client.get("/v1/integrations")).json()
+            slack = next(item for item in body["items"] if item["id"] == "slack")
+            assert slack["connection"]["document_count"] == 1, "current versions only"
+        finally:
+            # Migration 0010's downgrade deliberately refuses once anything has been
+            # superseded, and this fixture's teardown downgrades to base — so the
+            # version history seeded above must not outlive the test, even a failing
+            # one, or every test after it fails at setup.
+            await db_session.execute(
+                text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+            )
+            await db_session.execute(
+                text("DELETE FROM documents WHERE source_id = :src"), {"src": source_id}
+            )
+            await db_session.commit()
+
 
 # --------------------------------------------------------------------------------------
 # The flow itself
@@ -298,6 +393,140 @@ class TestConnectFlow:
         replay = await complete(client, state)
         assert replay.status_code == 404  # type: ignore[attr-defined]
         assert fake_oauth.exchanges == ["provider-code-1"], "the replay must not reach the provider"
+
+    async def test_a_provider_blip_spends_the_state_anyway(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+    ) -> None:
+        """The spend commits before the exchange, so a 503 cannot hand the state back.
+
+        Spent on the request transaction, a provider failure would roll the spend back
+        and leave the state replayable for its whole TTL — the exact shape the rate
+        limiter's own-session commit exists to prevent.
+        """
+
+        class BlippingOAuth(FakeOAuth):
+            """Down for exactly the first exchange, then healthy again."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.blips = 1
+
+            async def exchange_code(
+                self,
+                provider: Provider,
+                oauth_client: OAuthClient,
+                *,
+                code: str,
+                redirect_uri: str,
+                code_verifier: str | None = None,
+            ) -> TokenGrant:
+                if self.blips:
+                    self.blips -= 1
+                    raise ServiceUnavailable("The provider refused the token exchange.")
+                return await super().exchange_code(
+                    provider,
+                    oauth_client,
+                    code=code,
+                    redirect_uri=redirect_uri,
+                    code_verifier=code_verifier,
+                )
+
+        await register_owner(client, mailbox)
+        _, state = await connect_slack(client)
+
+        blipping = BlippingOAuth()
+        client.app.dependency_overrides[get_oauth_transport] = lambda: blipping  # type: ignore[attr-defined]
+
+        first = await complete(client, state)
+        assert first.status_code == 503  # type: ignore[attr-defined]
+
+        replay = await complete(client, state)
+        assert replay.status_code == 404  # type: ignore[attr-defined]
+        assert blipping.exchanges == [], "a spent state must never reach the provider again"
+
+    async def test_a_denied_grant_redirects_back_with_a_reason(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        fake_oauth: FakeOAuth,
+    ) -> None:
+        """Clicking Deny lands a browser here with an error and no code.
+
+        Raw 422 JSON would strand the person; instead the attempt is closed out — the
+        state spent like any finished callback's — and the browser goes back to the
+        Integrations page with a reason and nothing sensitive in the URL.
+        """
+        await register_owner(client, mailbox)
+        _, state = await connect_slack(client)
+
+        denied = await client.get(
+            "/v1/connections/callback",
+            params={"state": state, "error": "access_denied"},
+            follow_redirects=False,
+        )
+        assert denied.status_code == 303
+        assert denied.headers["location"] == "/me/integrations?connect_error=slack"
+        assert fake_oauth.exchanges == [], "a denial must not reach the provider"
+
+        body = (await client.get("/v1/integrations")).json()
+        slack = next(item for item in body["items"] if item["id"] == "slack")
+        assert slack["connection"]["status"] == "error", "the row says what happened"
+
+        replay = await complete(client, state)
+        assert replay.status_code == 404, "the denial spent the state"  # type: ignore[attr-defined]
+
+    async def test_a_lost_insert_race_is_the_same_conflict_sentence(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        settings: Settings,
+        db_session: AsyncSession,
+    ) -> None:
+        """Two tabs racing one Connect: the loser gets the pre-check's 409, not a 500.
+
+        The interleaving cannot be produced over HTTP with one session, so the race is
+        staged at the seam: a session that answers the pre-check honestly and then
+        loses the INSERT to `uq_connections_live`, exactly as Postgres would report it.
+        """
+
+        class RacingSession:
+            def __init__(self, real: AsyncSession) -> None:
+                self._real = real
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._real, name)
+
+            async def execute(self, statement: Any, params: Any = None) -> Any:
+                if "INSERT INTO connections" in str(statement):
+                    raise IntegrityError(
+                        "INSERT INTO connections",
+                        params,
+                        Exception(
+                            'duplicate key value violates unique constraint "uq_connections_live"'
+                        ),
+                    )
+                return await self._real.execute(statement, params)
+
+        await register_owner(client, mailbox)
+        org_id = uuid.UUID((await client.get("/v1/orgs/current")).json()["id"])
+        user_id = uuid.UUID((await client.get("/v1/me")).json()["user_id"])
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(org_id)}
+        )
+
+        with pytest.raises(Conflict, match=r"Slack is already connected\."):
+            await start_connection(
+                RacingSession(db_session),  # type: ignore[arg-type]
+                settings,
+                org_id=org_id,
+                user_id=user_id,
+                provider_id="slack",
+            )
 
     async def test_someone_elses_state_is_a_404(
         self,
@@ -387,6 +616,41 @@ class TestDisconnectAndRevoke:
             await inspector.execute(text("SELECT count(*) FROM connection_credentials"))
         ).scalar_one()
         assert remaining == 0, "a disconnected connection must not keep a usable credential"
+
+    async def test_disconnect_survives_a_revocation_that_throws(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        oauth_env: None,
+        inspector: AsyncSession,
+    ) -> None:
+        """Best-effort means ANY revocation failure, not only the ones httpx names.
+
+        The local deletion is the authority; a transport that throws something
+        unexpected must not leave a person unable to disconnect — or worse, leave the
+        credential row behind because the request rolled back after deleting it.
+        """
+
+        class ExplodingRevokeOAuth(FakeOAuth):
+            async def revoke_upstream(
+                self, provider: Provider, oauth_client: OAuthClient, *, access_token: str
+            ) -> None:
+                raise RuntimeError("the revocation endpoint answered with garbage")
+
+        await register_owner(client, mailbox)
+        connection_id, state = await connect_slack(client)
+        await complete(client, state)
+
+        exploding = ExplodingRevokeOAuth()
+        client.app.dependency_overrides[get_oauth_transport] = lambda: exploding  # type: ignore[attr-defined]
+
+        response = await client.delete(f"/v1/me/connections/{connection_id}", headers=csrf(client))
+        assert response.status_code == 204
+
+        remaining = (
+            await inspector.execute(text("SELECT count(*) FROM connection_credentials"))
+        ).scalar_one()
+        assert remaining == 0, "the local deletion is the authority and must still happen"
 
     async def test_reconnecting_after_disconnect_is_allowed(
         self,
@@ -726,6 +990,131 @@ class TestOAuthHardening:
         for provider in PROVIDERS.values():
             overlap = set(provider.scopes) & known_write_scopes
             assert not overlap, f"{provider.id} carries write scope(s): {overlap}"
+
+
+# --------------------------------------------------------------------------------------
+# The real transport, deterministically — every branch against a scripted provider
+# --------------------------------------------------------------------------------------
+
+
+def _http_transport(handler: object) -> HttpOAuthTransport:
+    """The real transport over `httpx.MockTransport` — its injection seam, exercised."""
+    return HttpOAuthTransport(httpx.AsyncClient(transport=httpx.MockTransport(handler)))  # type: ignore[arg-type]
+
+
+CLIENT = OAuthClient(client_id="cid", client_secret="cs")
+
+
+class TestHttpOAuthTransport:
+    async def test_slack_ok_false_is_a_refusal_not_a_token(self) -> None:
+        """Slack answers HTTP 200 with ok=false; storing that body would put an error
+        string where a token belongs."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"ok": False, "error": "invalid_code"})
+
+        with pytest.raises(ServiceUnavailable):
+            await _http_transport(handler).exchange_code(
+                PROVIDERS["slack"], CLIENT, code="c", redirect_uri="https://app/cb"
+            )
+
+    async def test_slack_grant_comes_from_authed_user_never_the_bot(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "access_token": "xoxb-bot-token",
+                    "authed_user": {
+                        "access_token": "xoxp-user-token",
+                        "refresh_token": "xoxe-refresh",
+                        "expires_in": 3600,
+                    },
+                },
+            )
+
+        grant = await _http_transport(handler).exchange_code(
+            PROVIDERS["slack"], CLIENT, code="c", redirect_uri="https://app/cb"
+        )
+        assert grant.access_token == "xoxp-user-token", "the employee's token, not a bot's"
+        assert grant.refresh_token == "xoxe-refresh"
+        assert grant.expires_in == 3600
+
+    async def test_a_failed_exchange_forwards_nothing_from_the_body(self) -> None:
+        """The body can carry the code and client id back; classify, never forward."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, text="error=bad_verification_code&code=SENTINEL-code")
+
+        with pytest.raises(ServiceUnavailable) as refusal:
+            await _http_transport(handler).exchange_code(
+                PROVIDERS["github"], CLIENT, code="c", redirect_uri="https://app/cb"
+            )
+        assert "SENTINEL" not in str(refusal.value)
+        assert "bad_verification_code" not in str(refusal.value)
+
+    @pytest.mark.parametrize(
+        ("payload", "subject", "label"),
+        [
+            ({"sub": "google-sub", "account_id": "shadow", "email": "a@b"}, "google-sub", "a@b"),
+            ({"account_id": "atlassian-acct", "name": "Ada"}, "atlassian-acct", "Ada"),
+            ({"ok": True, "user_id": "U123", "user": "ada"}, "U123", "ada"),  # Slack auth.test
+            ({"id": 4242, "login": "octo"}, "4242", "octo"),
+        ],
+    )
+    async def test_identity_subject_fallback_chain(
+        self, payload: dict[str, object], subject: str, label: str
+    ) -> None:
+        """sub → account_id → user_id → id, in that order, across the providers'
+        identity shapes — including Slack's auth.test, which has none of OIDC's."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        identity = await _http_transport(handler).fetch_identity(PROVIDERS["github"], "tok")
+        assert identity.subject == subject
+        assert identity.label == label
+
+    async def test_revoke_styles_send_what_each_provider_documents(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        transport = _http_transport(handler)
+
+        await transport.revoke_upstream(PROVIDERS["google_drive"], CLIENT, access_token="tok-g")
+        google = seen.pop()
+        assert google.method == "POST"
+        assert str(google.url) == "https://oauth2.googleapis.com/revoke"
+        assert b"token=tok-g" in google.content
+
+        await transport.revoke_upstream(PROVIDERS["slack"], CLIENT, access_token="tok-s")
+        slack = seen.pop()
+        assert slack.method == "POST"
+        assert slack.headers["Authorization"] == "Bearer tok-s"
+
+        await transport.revoke_upstream(PROVIDERS["github"], CLIENT, access_token="tok-h")
+        github = seen.pop()
+        assert github.method == "DELETE"
+        assert str(github.url) == "https://api.github.com/applications/cid/grant"
+        assert github.headers["Authorization"].startswith("Basic ")
+        assert b"tok-h" in github.content
+
+        # No declared endpoint (Microsoft relies on expiry): nothing is sent at all.
+        await transport.revoke_upstream(PROVIDERS["onedrive"], CLIENT, access_token="tok-m")
+        assert seen == []
+
+    async def test_an_unreachable_revocation_endpoint_is_swallowed(self) -> None:
+        """Disconnecting must not depend on a provider being up."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("nothing listening")
+
+        await _http_transport(handler).revoke_upstream(
+            PROVIDERS["slack"], CLIENT, access_token="tok"
+        )
 
 
 # --------------------------------------------------------------------------------------

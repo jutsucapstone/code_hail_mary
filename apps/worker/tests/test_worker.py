@@ -14,6 +14,7 @@ So the schedule is asserted separately from the behaviour.
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator
 from itertools import pairwise
 from pathlib import Path
@@ -36,6 +37,13 @@ MIGRATION_DB_ENV = "JUTSU_TEST_MIGRATION_URL"
 #: Resolved at import, not inside the fixture: `Path.resolve` touches the filesystem, and
 #: blocking I/O inside a coroutine stalls the loop it is running on.
 DB_PACKAGE = Path(__file__).resolve().parents[3] / "packages" / "db"
+
+#: The API's queue module, by path. The doorbell contract test reads it as text because
+#: apps/worker must never import jutsu_api — an import here would be the first arrow in
+#: a dependency cycle between the two apps, and the name is all the test needs.
+API_QUEUE_MODULE = (
+    Path(__file__).resolve().parents[3] / "apps" / "api" / "src" / "jutsu_api" / "queue.py"
+)
 
 
 def _alembic_config(url: str) -> Config:
@@ -105,6 +113,23 @@ def test_default_dsn_parses() -> None:
     It is the path every fresh checkout takes before anyone writes a `.env`.
     """
     assert RedisSettings.from_dsn(DEFAULT_REDIS_URL).host == "localhost"
+
+
+class TestDoorbellNameContract:
+    """The API rings the worker by string name — arq resolves `DRAIN_JOB_NAME` against
+    whatever `WorkerSettings.functions` registered. Nothing type-checks that coupling:
+    rename either side and every doorbell is published to a function that does not
+    exist, silently, while the job rows wait for a drain that never comes."""
+
+    def _drain_job_name(self) -> str:
+        source = API_QUEUE_MODULE.read_text(encoding="utf-8")
+        match = re.search(r'^DRAIN_JOB_NAME\s*=\s*"([^"]+)"$', source, re.MULTILINE)
+        assert match is not None, "the API queue module no longer pins DRAIN_JOB_NAME"
+        return match.group(1)
+
+    def test_the_name_the_api_rings_is_registered_here(self) -> None:
+        registered = {getattr(fn, "__name__", None) for fn in WorkerSettings.functions}
+        assert self._drain_job_name() in registered
 
 
 class TestReaperSchedule:

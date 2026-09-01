@@ -183,7 +183,7 @@ export function EvidenceSearch() {
             maxLength={MAX_QUERY_CHARS}
             placeholder="Search the corpus — a question, a project, a decision"
             aria-label="Search query"
-            className="w-full rounded-xl border border-hairline bg-surface/40 py-3 pl-11 pr-4 text-sm placeholder:text-muted-foreground/70 focus-visible:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            className="w-full rounded-xl border border-hairline bg-surface/40 py-3 pl-11 pr-4 text-sm placeholder:text-muted-foreground/80 focus-visible:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           />
         </div>
         <button

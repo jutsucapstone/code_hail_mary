@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { AlertOctagon, ListTodo, Loader2, Skull } from "lucide-react";
+import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import {
@@ -52,6 +53,9 @@ export default function JobsPage() {
   const [state, setState] = useState<string>("");
   const [older, setOlder] = useState<JobPage["items"]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  // Distinct from `cursor === null`, which is also the state before any walk: without
+  // it the null cursor falls back to the head page's cursor and the walk restarts.
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mayRead = can(capabilities, "org:read");
@@ -80,6 +84,9 @@ export default function JobsPage() {
       const page = await api.jobs({ cursor: next, state: state || null });
       setOlder((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
+      if (page.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
     } finally {
       setLoadingMore(false);
     }
@@ -89,10 +96,11 @@ export default function JobsPage() {
     setState(value);
     setOlder([]);
     setCursor(null);
+    setExhausted(false);
   }
 
   const rows = [...(head.data?.items ?? []), ...older];
-  const more = cursor ?? head.data?.next_cursor;
+  const more = !exhausted && (cursor ?? head.data?.next_cursor);
   const byState = stats.data?.by_state ?? {};
 
   return (
@@ -103,7 +111,13 @@ export default function JobsPage() {
         provider payloads belong.
       </PageHeader>
 
-      {stats.data ? (
+      {stats.error ? (
+        <FailureState
+          failure={classifyApiError(stats.error)}
+          onRetry={() => void stats.refetch()}
+          deniedWhat="reading queue statistics"
+        />
+      ) : stats.data ? (
         <StatStrip
           columns={4}
           stats={[

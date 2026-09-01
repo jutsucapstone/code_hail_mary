@@ -291,21 +291,26 @@ export default function IntegrationsPage() {
             </EmptyState>
           ) : null}
 
-          {[...groups.entries()].map(([label, entries]) => (
-          <section key={label} aria-labelledby={`group-${label}`} className="flex flex-col gap-3">
-            <h2
-              id={`group-${label}`}
-              className="font-mono text-[0.6875rem] uppercase tracking-[0.14em] text-muted-foreground"
-            >
-              · {label}
-            </h2>
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {entries.map((entry) => (
-                <ConnectorCard key={entry.id} entry={entry} />
-              ))}
-            </ul>
-          </section>
-          ))}
+          {[...groups.entries()].map(([label, entries]) => {
+            // `aria-labelledby` holds a space-separated id list, so a label with
+            // spaces would reference several ids that exist nowhere.
+            const headingId = `group-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+            return (
+              <section key={label} aria-labelledby={headingId} className="flex flex-col gap-3">
+                <h2
+                  id={headingId}
+                  className="font-mono text-[0.6875rem] uppercase tracking-[0.14em] text-muted-foreground"
+                >
+                  · {label}
+                </h2>
+                <ul className="grid gap-3 sm:grid-cols-2">
+                  {entries.map((entry) => (
+                    <ConnectorCard key={entry.id} entry={entry} />
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
         </>
       )}
     </div>

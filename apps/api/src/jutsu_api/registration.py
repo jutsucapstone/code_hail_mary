@@ -56,6 +56,7 @@ from jutsu_core.domains import DomainError, canonical_domain, domain_of, normali
 from jutsu_core.errors import JutsuError
 from jutsu_core.ids import JutsuIdKind, generate_jutsu_id
 from jutsu_core.rbac import Role
+from jutsu_db.engine import unscoped_session
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -231,6 +232,20 @@ async def _record_event(
     )
 
 
+async def _record_refusal(*, digest: bytes, domain: str | None, outcome: str) -> None:
+    """The same trail, for an event whose caller is about to raise.
+
+    `get_db` wraps the request in one transaction and rolls it back on the exception,
+    so a throttled or duplicate outcome written on the request session recorded
+    nothing. Committed on its own session instead — the same shape as the search
+    limiter's spend (rate_limit.py) — before the refusal unwinds. Unscoped is correct
+    here: `auth.registration_events` is org-less by design (nothing durable exists
+    yet), and the definer function is the only thing touched.
+    """
+    async with unscoped_session() as event_session:
+        await _record_event(event_session, digest=digest, domain=domain, outcome=outcome)
+
+
 async def stage_registration(
     session: AsyncSession,
     request: RegistrationRequest,
@@ -285,7 +300,7 @@ async def stage_registration(
         )
     ).scalar_one()
     if remaining < 0:
-        await _record_event(session, digest=digest, domain=domain, outcome="throttled")
+        await _record_refusal(digest=digest, domain=domain, outcome="throttled")
         raise TooManyRegistrations("Too many attempts for this address. Please try again later.")
 
     # `known_account=True` unconditionally: a registrant needs the code, and branching on
@@ -444,9 +459,7 @@ async def complete_registration(
             )
     except IntegrityError as exc:
         if _is_domain_conflict(exc):
-            await _record_event(
-                session, digest=bytes(staged_digest), domain=domain, outcome="duplicate"
-            )
+            await _record_refusal(digest=bytes(staged_digest), domain=domain, outcome="duplicate")
             # Safe to say plainly: whoever is reading proved a mailbox at this exact
             # domain moments ago, so the existence of the organisation is not news to
             # them. No session and no membership — joining someone to a tenant they were

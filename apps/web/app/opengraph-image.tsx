@@ -99,7 +99,7 @@ export default function OpenGraphImage() {
             paddingTop: 26,
           }}
         >
-          One living memory of your organization — people, projects, decisions and skills.
+          One living memory of your organisation — people, projects, decisions and skills.
         </div>
       </div>
     ),

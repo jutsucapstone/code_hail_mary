@@ -72,9 +72,15 @@ class AuditPage:
 def _decode_audit_cursor(cursor: str) -> tuple[datetime, int]:
     try:
         ts, last_id = cursor.split("|", 1)
-        return datetime.fromisoformat(ts), int(last_id)
+        decoded_ts, decoded_id = datetime.fromisoformat(ts), int(last_id)
     except (ValueError, AttributeError) as exc:
         raise NotFound("That page does not exist.") from exc
+    # `int()` happily reads a number Postgres cannot hold: past int8 the driver raises
+    # at bind time and a crafted cursor becomes a 500. The trail's ids are positive
+    # bigints, so anything outside that range is the same missing page as garbage.
+    if not 0 <= decoded_id < 2**63:
+        raise NotFound("That page does not exist.")
+    return decoded_ts, decoded_id
 
 
 async def list_audit(

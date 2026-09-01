@@ -39,6 +39,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -180,10 +181,19 @@ class SourceIdentity(Base):
             ondelete="CASCADE",
             name="fk_source_identities_user_id_org_id",
         ),
-        # Scoped to the organisation, not global: two tenants may legitimately connect the
-        # same Slack workspace, and a global constraint would make the second one fail.
-        UniqueConstraint(
-            "org_id", "source_system", "subject", name="uq_source_identities_org_system_subject"
+        # One ACTIVE holder per subject (migration 0016). Partial on purpose: revocation
+        # is a flag, so an unconditional constraint would make every revoked row a
+        # permanent claim and the explicit revoke-then-link transfer a guaranteed
+        # conflict. Scoped to the organisation, not global: two tenants may legitimately
+        # connect the same Slack workspace, and a global constraint would make the
+        # second one fail.
+        Index(
+            "uq_source_identities_active_org_system_subject",
+            "org_id",
+            "source_system",
+            "subject",
+            unique=True,
+            postgresql_where=text("is_active"),
         ),
         Index("ix_source_identities_org_id_user_id", "org_id", "user_id"),
         Index(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,8 +36,26 @@ OWNER_EMAIL = "ada@example.com"
 
 @pytest.fixture
 async def client(
-    db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    db_session: AsyncSession,
+    settings: Settings,
+    mailbox: RecordingEmailSender,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[AsyncClient]:
+    """The app, with the denied-open audit writer's own engine repointed.
+
+    Denied opens commit on their own session through `jutsu_db.engine`, exactly like
+    the search limiter — so this fixture owns the same two consequences the search
+    suite documents: `DATABASE_URL` must point at the application role (the `db_session`
+    fixture leaves it on the privileged migration URL, under which every RLS assertion
+    would pass vacuously), and the cached engine must be disposed around every test or
+    a later test inherits a pool bound to a closed event loop.
+    """
+    from jutsu_db.engine import dispose_engine
+
+    await dispose_engine()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
     app = create_app()
 
     async def _db() -> AsyncIterator[AsyncSession]:
@@ -50,6 +69,8 @@ async def client(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="https://testserver") as http:
         yield http
+
+    await dispose_engine()
 
 
 def csrf(client: AsyncClient) -> dict[str, str]:
@@ -369,6 +390,147 @@ class TestOpening:
         trail = (
             await client.get("/v1/audit", params={"action": "kt.open", "outcome": "denied"})
         ).json()
+        assert len(trail["items"]) == 1
+
+    async def test_a_denied_open_survives_the_request_rollback(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """The trail the module docstring promises, against what production does.
+
+        In production `get_db` rolls the whole request back on the 404, so a denial
+        written on the request session recorded nothing — the test client's lenient
+        teardown was what made it look recorded. Roll the request transaction back the
+        way production does, and the row must still be there.
+        """
+        await register_owner(client, mailbox)
+        denied = await client.post(
+            "/v1/kt/claim", json={"kt_code": "KT-JUTSU-00000000"}, headers=csrf(client)
+        )
+        assert denied.status_code == 404
+        await db_session.rollback()
+
+        rows = (
+            await inspector.execute(text("SELECT outcome FROM audit_log WHERE action = 'kt.open'"))
+        ).all()
+        assert [r.outcome for r in rows] == ["denied"]
+
+
+class _BindingRace:
+    """Simulates the concurrent winner: the moment the loser's `_open_for` has read the
+    package as unbound, this binds it to somebody else — so the conditional claim
+    UPDATE matches nothing, deterministically, without needing two real connections."""
+
+    def __init__(self, session: AsyncSession, package_id: str, winner_id: str) -> None:
+        self._session = session
+        self._package_id = package_id
+        self._winner_id = winner_id
+        self._armed = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._session, name)
+
+    async def execute(self, statement: Any, params: Any = None) -> Any:
+        result = await self._session.execute(statement, params)
+        if self._armed and "FROM kt_packages p," in str(statement):
+            self._armed = False
+            await self._session.execute(
+                text(
+                    "UPDATE kt_packages SET recipient_user_id = :winner, claimed_at = now() "
+                    "WHERE id = :id"
+                ),
+                {"winner": self._winner_id, "id": self._package_id},
+            )
+        return result
+
+
+class TestClaimRace:
+    async def test_the_loser_of_the_first_claim_race_is_refused(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """Two first opens race; only one may bind, and the loser must get exactly the
+        refusal a wrong recipient gets — never the contents plus a `kt.claimed` success
+        row for a claim that bound nothing."""
+        from uuid import UUID as _UUID
+
+        from jutsu_api.kt import claim_or_open
+        from jutsu_core.errors import NotFound
+
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        winner = await user_id_of(client, "leaver@example.com")
+        subject = winner
+        package = await create_kt(client, subject_user_id=subject)
+
+        await invite_and_accept(client, mailbox, email="loser@example.com")
+        loser = (await client.get("/v1/me")).json()["user_id"]
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        racing = _BindingRace(db_session, package_id=str(package["id"]), winner_id=winner)
+        with pytest.raises(NotFound):
+            await claim_or_open(
+                racing,  # type: ignore[arg-type]
+                org_id=_UUID(org_id),
+                user_id=_UUID(loser),
+                kt_code=str(package["kt_code"]),
+            )
+        await db_session.rollback()
+
+        claimed = (
+            await inspector.execute(
+                text("SELECT actor_id FROM audit_log WHERE action = 'kt.claimed'")
+            )
+        ).all()
+        assert claimed == [], "the loser recorded a success for a claim that bound nothing"
+
+
+class TestTerminalTransitions:
+    async def test_completing_a_revoked_package_is_a_conflict_not_a_success(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """A guarded UPDATE that matched nothing is not a completed handover, and it
+        must not audit as one."""
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject)
+        await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
+
+        completed = await client.post(f"/v1/kt/{package['id']}/complete", headers=csrf(client))
+        assert completed.status_code == 409
+        assert "revoked" in completed.json()["error"]["message"]
+
+        trail = (await client.get("/v1/audit", params={"action": "kt.completed"})).json()
+        assert trail["items"] == []
+
+    async def test_revoking_twice_is_a_conflict_and_audits_once(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject)
+
+        assert (
+            await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
+        ).status_code == 200
+        again = await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
+        assert again.status_code == 409
+
+        trail = (await client.get("/v1/audit", params={"action": "kt.revoked"})).json()
         assert len(trail["items"]) == 1
 
 
@@ -701,10 +863,18 @@ class ScriptedAnswers:
 
 @pytest.fixture
 async def handover(
-    db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+    db_session: AsyncSession,
+    settings: Settings,
+    mailbox: RecordingEmailSender,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[AsyncClient, ScriptedAnswers]]:
     """The standard client plus a scripted answer transport behind the ask seam."""
     from jutsu_api.routers.search import get_answer_transport
+    from jutsu_db.engine import dispose_engine
+
+    await dispose_engine()
+    monkeypatch.setenv("DATABASE_URL", database_url)
 
     app = create_app()
 
@@ -721,6 +891,8 @@ async def handover(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="https://testserver") as http:
         yield http, scripted
+
+    await dispose_engine()
 
 
 class TestKtHandoverSummary:

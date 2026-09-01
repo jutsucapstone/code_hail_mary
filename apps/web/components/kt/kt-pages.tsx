@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { LoadMore, Pill, When } from "@/components/admin/page-scaffold";
 import { EmptyState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
@@ -150,6 +151,9 @@ export function KtDocuments() {
   const { code, pkg } = useKtPackage();
   const [older, setOlder] = useState<KtDocumentPage["items"]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  // Distinct from `cursor === null`, which is also the state before any walk: without
+  // it the null cursor falls back to the head page's cursor and the walk restarts.
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const inScope = pkg.scope.includes("documents");
@@ -175,13 +179,16 @@ export function KtDocuments() {
       const page = await api.ktDocuments(code, { cursor: next });
       setOlder((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
+      if (page.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
     } finally {
       setLoadingMore(false);
     }
   }
 
   const rows = [...(head.data?.items ?? []), ...older];
-  const more = cursor ?? head.data?.next_cursor;
+  const more = !exhausted && (cursor ?? head.data?.next_cursor);
 
   return (
     <div className="flex flex-col gap-6">

@@ -1,16 +1,17 @@
-# The arq worker, for Cloud Run.
+# The worker image, for Cloud Run.
 #
 # Deliberately the same build as api.Dockerfile with a different command. The worker
 # imports `jutsu_db` and shares the whole dependency set, so a second base image would be
 # two things to patch, two things to pin and two chances for them to drift apart on a
 # security update.
 #
-# Runs as a Cloud Run *service* rather than a job, because arq's cron scheduler lives in
-# the process: it has to stay up to fire `reap_expired_registrations` every five minutes.
-# A job would run once and exit, and the reaper would never fire at all — which is the
-# same failure as having no reaper, in a different costume. Deploy it with
-# `--no-cpu-throttling` and `--min-instances=1`, or Cloud Run idles the container between
-# requests and the scheduler stops with it.
+# Nothing deploys this as a long-running service today. It exists for two callers: the
+# `jutsu-reap` Cloud Run *job*, which deploy.yml points at this image on every push and
+# Cloud Scheduler invokes every five minutes with its own `--command` (so nothing runs
+# or bills at idle), and the future ingestion-worker slice (S8). An always-on arq
+# service means `--min-instances=1 --no-cpu-throttling` plus Redis — a standing cost
+# that is that slice's own decision, not a default smuggled in from a Dockerfile
+# header. The CMD below is what that service will run when it lands.
 
 # ---------------------------------------------------------------- build
 FROM python:3.12-slim AS build

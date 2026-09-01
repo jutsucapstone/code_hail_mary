@@ -133,6 +133,11 @@ jobs:
       - name: Typecheck (web)
         run: pnpm --filter web typecheck
 
+      # Component tests for the surfaces that call the API. jsdom, scripted `fetch`,
+      # no network and no provider — a frontend test that reached Vertex would bill CI.
+      - name: Test (web)
+        run: pnpm --filter web test
+
       - name: Test (commit hook)
         run: node scripts/hooks/preflight-on-commit.test.mjs
 
@@ -165,6 +170,17 @@ jobs:
       # policy layer underneath to fail closed.
       - name: Assert graph tests were not skipped
         run: uv run pytest packages/graph -q --no-header -p no:randomly | tee /tmp/graph.txt && ! grep -q 'skipped' /tmp/graph.txt
+
+      # §4.13 — the generated client must be in step with the app. Mirrors
+      # `make api-types-check`: regenerate into scratch files and diff against what is
+      # checked in, because a stale client type-checks against a contract the server no
+      # longer honours. No cleanup line here — the runner is thrown away.
+      - name: Generated API client in step (api-types-check)
+        run: |
+          uv run python scripts/emit-openapi.py > apps/web/lib/.openapi.check.json
+          pnpm exec openapi-typescript apps/web/lib/.openapi.check.json -o apps/web/lib/.api-schema.check.d.ts
+          git --no-pager diff --no-index --exit-code apps/web/lib/openapi.json apps/web/lib/.openapi.check.json
+          git --no-pager diff --no-index --exit-code apps/web/lib/api-schema.d.ts apps/web/lib/.api-schema.check.d.ts
 
       # The build is the real gate for the web app — lint and tsc both pass on things
       # that fail to compile under Turbopack.

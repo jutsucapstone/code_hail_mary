@@ -15,7 +15,7 @@ import { api } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
 /**
- * My Knowledge — what the caller's authorized context actually contains.
+ * My Knowledge — what the caller's authorised context actually contains.
  *
  * Every number is an ACL-filtered count from `GET /v1/me/knowledge`, computed with the
  * same predicate retrieval uses, so this page cannot promise more than a search would
@@ -36,7 +36,7 @@ export default function MyKnowledgePage() {
           <span aria-hidden="true" className="h-1 w-1 rounded-full bg-brand" />
           My knowledge
         </p>
-        <h1 className="display mt-4 text-3xl font-semibold">Your authorized context</h1>
+        <h1 className="display mt-4 text-3xl font-semibold">Your authorised context</h1>
         <p className="mt-3 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
           What your linked accounts make readable to you inside JUTSU. These are the
           documents Ask JUTSU answers from — nothing more, and nothing anyone else has
@@ -51,7 +51,7 @@ export default function MyKnowledgePage() {
           deniedWhat="reading your knowledge summary"
         />
       ) : knowledge.isPending ? (
-        <LoadingRegion label="Counting your authorized documents.">
+        <LoadingRegion label="Counting your authorised documents.">
           <div className="flex flex-col gap-3">
             <Skeleton className="h-28" />
             <Skeleton className="h-40" />

@@ -20,7 +20,7 @@ from alembic import command
 from alembic.config import Config
 from jutsu_db.engine import dispose_engine, org_session
 from jutsu_worker.extraction import extract_document
-from jutsu_worker.runner import process_extraction
+from jutsu_worker.runner import JOB_FAILED, process_extraction
 from sqlalchemy import text
 
 TEST_DB_ENV = "JUTSU_TEST_DATABASE_URL"
@@ -257,6 +257,56 @@ class TestRunSemantics:
 
 
 class TestQueueIntegration:
+    async def test_a_rate_limited_model_lands_retry_scheduled_with_its_kind(self) -> None:
+        """The work transaction dies with the provider error inside it; the classified
+        failure must still land on the row — runner discipline, a NEW transaction —
+        or the job sits in a working state until its lease expires, kindless, and the
+        429 reads as a crash instead of a provider saying "not now"."""
+        import anthropic
+        import httpx2
+
+        org_id = uuid.uuid4()
+        document_id = await seed_document(org_id)
+        job_id = uuid.uuid4()
+        async with org_session(org_id) as session:
+            await session.execute(
+                text(
+                    "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, payload_json) "
+                    "VALUES (:id, :org, 'extract.document', 'pending', :key, "
+                    "cast(:payload AS jsonb))"
+                ),
+                {
+                    "id": job_id,
+                    "org": str(org_id),
+                    "key": f"extract.document:{org_id}:{document_id}",
+                    "payload": f'{{"document_id": "{document_id}"}}',
+                },
+            )
+
+        class RateLimited:
+            async def complete(self, *, system: str, prompt: str) -> str:
+                request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+                response = httpx2.Response(429, request=request)
+                raise anthropic.RateLimitError("status 429", response=response, body=None)
+
+        outcome = await process_extraction(org_id, job_id=job_id, transport=RateLimited())
+        assert outcome is JOB_FAILED
+
+        async with org_session(org_id) as session:
+            job = (
+                await session.execute(
+                    text("SELECT state, failure_kind, attempts FROM jobs WHERE id = :id"),
+                    {"id": job_id},
+                )
+            ).one()
+            runs = (
+                await session.execute(text("SELECT count(*) FROM extraction_runs"))
+            ).scalar_one()
+        assert job.state == "retry_scheduled"
+        assert job.failure_kind == "provider_transient"
+        assert job.attempts == 1, "the claim's increment survived the failure"
+        assert runs == 0, "the work transaction rolled back; the failure write did not ride it"
+
     async def test_a_queued_extraction_runs_and_completes(self) -> None:
         org_id = uuid.uuid4()
         document_id = await seed_document(org_id)

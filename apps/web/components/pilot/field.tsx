@@ -51,7 +51,7 @@ export function Field({
         aria-describedby={describedBy}
         className={cn(
           "h-11 rounded-xl border bg-surface/40 px-3.5 text-sm text-foreground",
-          "placeholder:text-muted-foreground/70",
+          "placeholder:text-muted-foreground/80",
           "transition-colors duration-200",
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
           error ? "border-destructive" : "border-hairline-strong hover:border-hairline",

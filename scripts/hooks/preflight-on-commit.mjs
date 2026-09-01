@@ -61,14 +61,33 @@ export function isGitCommit(command) {
   return false;
 }
 
-/** First runner that actually exists on this machine. */
+/**
+ * The command sequence for the first runner that actually exists on this machine.
+ *
+ * With any make present this is one command: `make preflight`, the target §4.15 names.
+ * Without one, the fallback used to be `pnpm run preflight` alone — which covers only
+ * the Node half, so on a machine with no make a commit could pass the gate having never
+ * run ruff, mypy or pytest. The Python half is therefore mirrored here command by
+ * command from the Makefile's lint-py / format-check-py / typecheck-py / test-py
+ * targets (--no-cache for the same stale-verdict reason lint-py documents; three mypy
+ * invocations because one sees several modules named "conftest" and checks nothing).
+ * `api-types-check` is the one preflight stage not mirrored — it needs shell
+ * redirection this runner deliberately avoids — and CI runs it on every pull request.
+ */
 function resolveRunner() {
   for (const bin of ["make", "mingw32-make", "gmake"]) {
     const probe = spawnSync(bin, ["--version"], { stdio: "ignore", shell: false });
-    if (probe.status === 0) return { bin, args: ["preflight"] };
+    if (probe.status === 0) return [{ bin, args: ["preflight"] }];
   }
-  // No make anywhere — fall back to the mirrored pnpm script.
-  return { bin: "pnpm", args: ["run", "preflight"] };
+  return [
+    { bin: "pnpm", args: ["run", "preflight"] },
+    { bin: "uv", args: ["run", "ruff", "check", "--no-cache", "."] },
+    { bin: "uv", args: ["run", "ruff", "format", "--check", "."] },
+    { bin: "uv", args: ["run", "mypy", "packages"] },
+    { bin: "uv", args: ["run", "mypy", "apps"] },
+    { bin: "uv", args: ["run", "mypy", "conftest.py"] },
+    { bin: "uv", args: ["run", "pytest", "-x", "-q"] },
+  ];
 }
 
 function main() {
@@ -77,19 +96,19 @@ function main() {
 
   if (!isGitCommit(command)) process.exit(0);
 
-  const { bin, args } = resolveRunner();
-
-  try {
-    execFileSync(bin, args, { stdio: "inherit", shell: process.platform === "win32" });
-    process.exit(0);
-  } catch {
-    process.stderr.write(
-      `\nCommit blocked: \`${bin} ${args.join(" ")}\` failed.\n\n` +
-        `Spec §4.15 requires preflight (lint, typecheck, tests, migration drift) to pass\n` +
-        `before any commit. Fix the failures above and commit again.\n`,
-    );
-    process.exit(BLOCK);
+  for (const { bin, args } of resolveRunner()) {
+    try {
+      execFileSync(bin, args, { stdio: "inherit", shell: process.platform === "win32" });
+    } catch {
+      process.stderr.write(
+        `\nCommit blocked: \`${bin} ${args.join(" ")}\` failed.\n\n` +
+          `Spec §4.15 requires preflight (lint, typecheck, tests, migration drift) to pass\n` +
+          `before any commit. Fix the failures above and commit again.\n`,
+      );
+      process.exit(BLOCK);
+    }
   }
+  process.exit(0);
 }
 
 // Only run as a hook, never on import — the test module imports isGitCommit.

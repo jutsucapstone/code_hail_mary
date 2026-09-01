@@ -77,21 +77,25 @@ async def link_verified_email(
     field** — both call sites pass the same value they wrote to `users.email`, which is
     the address an OTP or a single-use token actually reached.
 
-    Idempotent. `ON CONFLICT DO NOTHING` on `(org_id, source_system, subject)` means
-    re-running creates nothing, which matters because these two flows are the ones a
-    retry or a double-submit is most likely to repeat.
+    Idempotent. `ON CONFLICT DO NOTHING` against the one-ACTIVE-holder index means
+    re-running creates nothing while the link stands, which matters because these two
+    flows are the ones a retry or a double-submit is most likely to repeat.
 
-    The conflict also covers a case worth naming: if that address is already linked to a
-    *different* user in the same organisation, this silently links nothing and the new
+    The conflict also covers a case worth naming: if that address is actively linked to
+    a *different* user in the same organisation, this silently links nothing and the new
     user holds no local principal. That is the correct outcome — one subject is one
     person per tenant — and it fails closed rather than moving somebody else's access.
+
+    A *revoked* row does not conflict (migration 0016): re-proving the mailbox after a
+    revocation mints a fresh active link beside the history row, which is how a
+    disconnected employee reconnects without an administrator touching anything.
     """
     await session.execute(
         text(
             "INSERT INTO source_identities "
             "(org_id, user_id, source_system, subject, linked_by) "
             "VALUES (:org, :user, CAST(:system AS source_system), :subject, :by) "
-            "ON CONFLICT (org_id, source_system, subject) DO NOTHING"
+            "ON CONFLICT (org_id, source_system, subject) WHERE is_active DO NOTHING"
         ),
         {
             "org": str(org_id),
@@ -119,17 +123,19 @@ async def link_verified_subject(
     distinguishes this from the admin self-link refusal: the refusal exists because an
     admin *asserts* a subject; here the provider *proved* it.
 
-    Fail-closed on conflict exactly like the email path: a subject already held by a
+    Fail-closed on conflict exactly like the email path: a subject actively held by a
     different user in this tenant links nothing, and nobody's access moves. The person
     keeps a working connection (content still syncs under their token) but gains no
-    document visibility until an administrator resolves who the subject belongs to.
+    document visibility until an administrator resolves who the subject belongs to. A
+    *revoked* link does not block — reconnecting after a revocation mints a fresh
+    active row beside the history (migration 0016).
     """
     await session.execute(
         text(
             "INSERT INTO source_identities "
             "(org_id, user_id, source_system, subject, linked_by) "
             "VALUES (:org, :user, CAST(:system AS source_system), :subject, :by) "
-            "ON CONFLICT (org_id, source_system, subject) DO NOTHING"
+            "ON CONFLICT (org_id, source_system, subject) WHERE is_active DO NOTHING"
         ),
         {
             "org": str(org_id),
@@ -243,8 +249,10 @@ async def link_identity(
        ceiling that stops an invitation conferring a higher role stops this too.
     3. **Tenant.** The target is resolved under row-level security, so a user in another
        organisation is simply absent and the answer is `NotFound`.
-    4. **Duplicate.** The unique constraint on `(org_id, source_system, subject)` means a
-       subject already claimed in this tenant raises rather than moving silently.
+    4. **Duplicate.** One ACTIVE holder per `(org_id, source_system, subject)` — the
+       partial unique index from migration 0016 — so a subject actively claimed in this
+       tenant raises rather than moving silently. A revoked row does not block, which
+       is what makes the explicit revoke-then-link transfer possible at all.
 
     The caller's permission (`integration:connect`) is enforced by the route declaration,
     which `get_principal` checks per request.
@@ -270,7 +278,7 @@ async def link_identity(
                 "INSERT INTO source_identities "
                 "(org_id, user_id, source_system, subject, linked_by) "
                 "VALUES (:org, :user, CAST(:system AS source_system), :subject, :by) "
-                "ON CONFLICT (org_id, source_system, subject) DO NOTHING "
+                "ON CONFLICT (org_id, source_system, subject) WHERE is_active DO NOTHING "
                 "RETURNING id, source_system, subject, is_active, linked_at, revoked_at, "
                 "linked_by"
             ),
@@ -285,7 +293,7 @@ async def link_identity(
     ).first()
 
     if row is None:
-        # `DO NOTHING` returns no row when the subject is already claimed in this tenant.
+        # `DO NOTHING` returns no row when the subject is actively claimed in this tenant.
         # Reported rather than silently re-pointed: moving a subject from one person to
         # another is a transfer of access and must be an explicit revoke-then-link.
         raise Conflict("That subject is already linked in this organisation.")

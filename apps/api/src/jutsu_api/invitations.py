@@ -47,6 +47,10 @@ __all__ = ["AcceptedInvitation", "IssuedInvitation", "accept_invitation", "invit
 #: in an inbox is not a standing key to the organisation.
 INVITATION_TTL_HOURS = 72
 
+#: One sentence for both ends of the same refusal — issuing an invitation for an active
+#: member, and accepting one for an address that became a member in the meantime.
+_ALREADY_A_MEMBER = "That person is already a member of this organisation."
+
 
 @dataclass(frozen=True, slots=True)
 class IssuedInvitation:
@@ -75,7 +79,11 @@ class AcceptedInvitation:
 
 
 def _hash(value: str) -> bytes:
-    return hashlib.sha256(value.encode("ascii")).digest()
+    # UTF-8, not ASCII: the accept path hashes a token the request body supplied, and a
+    # non-ASCII byte in it must be an ordinary unknown-token refusal, never an encode
+    # crash. Every token this module mints is URL-safe ASCII, so the digests are
+    # unchanged for anything that could ever match.
+    return hashlib.sha256(value.encode("utf-8")).digest()
 
 
 async def invite_employee(
@@ -101,6 +109,23 @@ async def invite_employee(
         raise PermissionDenied("You cannot invite someone at that level of access.")
 
     normalised = email.strip().lower()
+
+    # Refused before anything is written. An invitation for an address that already
+    # belongs to an active member would, at acceptance, create a second `users` row for
+    # the same person — and `auth.record_membership` upserts on (identity, org), so the
+    # duplicate would silently repoint sign-in at the new row and orphan the original
+    # user's role, profile and identities. Row-level security scopes the lookup to the
+    # actor's organisation; disclosing membership to a holder of `member:invite` is not
+    # an oracle — the members list is already theirs to read.
+    member = (
+        await session.execute(
+            text("SELECT 1 FROM users WHERE lower(email) = :email AND status = 'active'"),
+            {"email": normalised},
+        )
+    ).scalar_one_or_none()
+    if member is not None:
+        raise Conflict(_ALREADY_A_MEMBER)
+
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + timedelta(hours=INVITATION_TTL_HOURS)
 
@@ -234,6 +259,21 @@ async def accept_invitation(
         raise Unauthenticated("That invitation is no longer valid.")
 
     email, role_key, role_title = consumed
+
+    # The invite side refuses to issue for an active member, but an invitation is a
+    # standing token: the address can become a member between issue and acceptance.
+    # Re-checked here, inside the transaction that would create the duplicate, so the
+    # second `users` row — and the membership upsert that would repoint sign-in at it,
+    # orphaning the original role, profile and identities — is unrepresentable. The
+    # raise rolls the consuming UPDATE back with everything else.
+    already = (
+        await session.execute(
+            text("SELECT 1 FROM users WHERE lower(email) = :email AND status = 'active'"),
+            {"email": str(email).lower()},
+        )
+    ).scalar_one_or_none()
+    if already is not None:
+        raise Conflict(_ALREADY_A_MEMBER)
 
     identity_id = (
         await session.execute(

@@ -6,6 +6,7 @@ import { Fragment } from "react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { EmployeeConnections } from "@/components/admin/employee-connections";
+import { LoadMore } from "@/components/admin/page-scaffold";
 import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/states";
 import { Field } from "@/components/pilot/field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
@@ -75,6 +76,14 @@ export default function EmployeesPage() {
     null,
   );
   const [query, setQuery] = useState("");
+  // Older pages accumulate under the head page as the reader walks back. `exhausted`
+  // is distinct from `cursor === null`, which is also the state before any walk:
+  // without it the null cursor falls back to the head page's cursor and the walk
+  // restarts, re-appending page two under a resurrected button.
+  const [older, setOlder] = useState<Employee[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [exhausted, setExhausted] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invited, setInvited] = useState<string | null>(null);
@@ -93,6 +102,11 @@ export default function EmployeesPage() {
         .employees({ q: search || null })
         .then((result) => {
           setPage(result);
+          // A fresh head page starts a fresh walk; stale older pages belong to the
+          // previous search.
+          setOlder([]);
+          setCursor(null);
+          setExhausted(false);
           setFailure(null);
         })
         .catch((error: unknown) => {
@@ -143,6 +157,22 @@ export default function EmployeesPage() {
     }
   }
 
+  async function loadOlder() {
+    const next = cursor ?? page?.next_cursor;
+    if (!next) return;
+    setLoadingMore(true);
+    try {
+      const result = await api.employees({ q: query || null, cursor: next });
+      setOlder((current) => [...current, ...result.items]);
+      setCursor(result.next_cursor);
+      if (result.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   async function onChangeRole(person: Employee, role: Role) {
     setChangingRole(person.id);
     try {
@@ -170,6 +200,9 @@ export default function EmployeesPage() {
   const grantable = (Object.keys(ROLE_RANKS) as Role[]).filter(
     (role) => ROLE_RANKS[role] < actorRank,
   );
+
+  const rows = page ? [...page.items, ...older] : [];
+  const more = !exhausted && (cursor ?? page?.next_cursor);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-10 [@media(max-height:820px)]:gap-6">
@@ -305,6 +338,7 @@ export default function EmployeesPage() {
 
              `relative` is load-bearing: a static scroll box is not a containing block, so
              the table's min-width escapes and stretches the page sideways. */
+          <>
           <div className="relative min-h-0 flex-1 overflow-auto rounded-2xl border border-hairline-strong">
             <table className="w-full min-w-[44rem] border-collapse text-sm">
               <caption className="sr-only">
@@ -335,7 +369,7 @@ export default function EmployeesPage() {
                 </tr>
               </thead>
               <tbody>
-                {page.items.map((person) => (
+                {rows.map((person) => (
                   <Fragment key={person.id}>
                   <tr className="border-b border-hairline last:border-b-0">
                     <th scope="row" className="px-5 py-4 text-left font-normal">
@@ -360,6 +394,7 @@ export default function EmployeesPage() {
                         <button
                           type="button"
                           aria-expanded={openConnections === person.id}
+                          aria-controls={`employee-connections-${person.id}`}
                           onClick={() =>
                             setOpenConnections((current) =>
                               current === person.id ? null : person.id,
@@ -368,6 +403,12 @@ export default function EmployeesPage() {
                           className="rounded-lg border border-hairline-strong px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-brand/40 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                         >
                           {openConnections === person.id ? "Hide" : "View"}
+                          {/* Named like the role control above: a column of bare
+                              "View" buttons is unreadable off a screen-reader rotor. */}
+                          <span className="sr-only">
+                            {" "}
+                            integrations for {person.display_name ?? person.email}
+                          </span>
                         </button>
                       </td>
                     ) : null}
@@ -412,7 +453,10 @@ export default function EmployeesPage() {
                     ) : null}
                   </tr>
                   {mayReadConnections && openConnections === person.id ? (
-                    <tr className="border-b border-hairline last:border-b-0">
+                    <tr
+                      id={`employee-connections-${person.id}`}
+                      className="border-b border-hairline last:border-b-0"
+                    >
                       <td
                         colSpan={4 + (mayReadConnections ? 1 : 0) + (mayAssign ? 1 : 0)}
                         className="bg-surface/30 px-5 py-4"
@@ -429,6 +473,8 @@ export default function EmployeesPage() {
               </tbody>
             </table>
           </div>
+          {more ? <LoadMore onClick={() => void loadOlder()} pending={loadingMore} /> : null}
+          </>
         )}
       </section>
     </div>

@@ -187,6 +187,16 @@ class TestAuditTrail:
         response = await client.get("/v1/audit", params={"cursor": "not|acursor"})
         assert response.status_code == 404
 
+    async def test_a_cursor_id_beyond_int8_is_a_404_not_a_500(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """`int()` reads numbers Postgres cannot hold; past int8 the driver raises at
+        bind time. A crafted cursor must get the same missing page as garbage."""
+        await register_owner(client, mailbox)
+        crafted = f"2026-01-01T00:00:00+00:00|{2**64}"
+        response = await client.get("/v1/audit", params={"cursor": crafted})
+        assert response.status_code == 404
+
 
 # --------------------------------------------------------------------------------------
 # Jobs and sources
@@ -279,6 +289,59 @@ class TestSourcesEndpoint:
         assert body["items"][0]["system"] == "local"
         assert body["items"][0]["document_count"] == 0
         assert "enron-secret-path" not in response.text
+
+    async def test_job_counters_match_the_workers_key_format(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        """The per-source counters LIKE-match keys the worker builds; pin both halves.
+
+        The key here comes from `document_job_key` itself, not a copied string, so a
+        change to either the worker's format or the query's prefix fails this test
+        instead of silently zeroing every counter on the sources page.
+        """
+        from jutsu_worker.ingest import document_job_key
+
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        source_id = uuid.uuid4()
+        other_source_id = uuid.uuid4()
+        for sid in (source_id, other_source_id):
+            await db_session.execute(
+                text(
+                    "INSERT INTO sources (id, org_id, system, config_json, status) "
+                    "VALUES (:id, :org, 'local', '{}'::jsonb, 'idle')"
+                ),
+                {"id": sid, "org": org_id},
+            )
+        await db_session.execute(
+            text(
+                "INSERT INTO jobs (id, org_id, kind, state, idempotency_key) VALUES "
+                "(gen_random_uuid(), :org, 'ingest.document', 'pending', :key)"
+            ),
+            {"org": org_id, "key": document_job_key(uuid.UUID(org_id), source_id, "msg-001")},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO jobs (id, org_id, kind, state, idempotency_key) VALUES "
+                "(gen_random_uuid(), :org, 'ingest.document', 'completed', :key)"
+            ),
+            {"org": org_id, "key": document_job_key(uuid.UUID(org_id), source_id, "msg-002")},
+        )
+
+        body = (await client.get("/v1/sources")).json()
+        by_id = {item["id"]: item for item in body["items"]}
+        counted = by_id[str(source_id)]
+        assert counted["jobs_pending"] == 1
+        assert counted["jobs_completed"] == 1
+        assert counted["jobs_failed"] == 0
+
+        other = by_id[str(other_source_id)]
+        assert other["jobs_pending"] == 0, "keys are source-scoped; nothing bleeds across"
+        assert other["jobs_completed"] == 0
 
 
 # --------------------------------------------------------------------------------------

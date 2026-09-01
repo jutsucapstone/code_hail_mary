@@ -61,7 +61,7 @@ export default function NotFound() {
             {nav.map((item) => (
               <li key={item.href}>
                 <Link
-                  href={`/${item.href}`}
+                  href={item.href}
                   className="rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 >
                   {item.label}

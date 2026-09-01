@@ -157,7 +157,7 @@ export function AskExperience() {
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Ask anything about your organisation's memory…"
           maxLength={4000}
-          className="h-12 flex-1 rounded-xl border border-hairline-strong bg-surface/40 px-4 text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          className="h-12 flex-1 rounded-xl border border-hairline-strong bg-surface/40 px-4 text-sm text-foreground placeholder:text-muted-foreground/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         />
         <button
           type="submit"

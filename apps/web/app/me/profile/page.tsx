@@ -277,7 +277,7 @@ export default function ProfilePage() {
                 rows={4}
                 value={draft.responsibilities}
                 onChange={(e) => set("responsibilities", e.target.value)}
-                className="rounded-xl border border-hairline-strong bg-surface/40 px-3.5 py-3 text-sm text-foreground transition-colors duration-200 placeholder:text-muted-foreground/70 hover:border-hairline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                className="rounded-xl border border-hairline-strong bg-surface/40 px-3.5 py-3 text-sm text-foreground transition-colors duration-200 placeholder:text-muted-foreground/80 hover:border-hairline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               />
             </div>
 

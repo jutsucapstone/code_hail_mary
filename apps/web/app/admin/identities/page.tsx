@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { SourceIdentities } from "@/components/admin/source-identities";
 import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/states";
+import { Field } from "@/components/pilot/field";
 import { ApiError, api } from "@/lib/api";
 import type { components } from "@/lib/api-schema";
 import { ROLE_LABELS, can } from "@/lib/permissions";
@@ -28,6 +29,7 @@ export default function IdentitiesPage() {
   const capabilities = useCapabilities();
   const [employees, setEmployees] = useState<Employee[] | null>(null);
   const [selected, setSelected] = useState<Employee | null>(null);
+  const [query, setQuery] = useState("");
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(null);
 
   const mayRead = can(capabilities, "member:read");
@@ -35,9 +37,12 @@ export default function IdentitiesPage() {
   // State is set inside `.then`/`.catch`, never synchronously in the effect below:
   // a synchronous setState there triggers a cascading render, which is what
   // `react-hooks/set-state-in-effect` is about. Same shape the employees page uses.
-  const load = useCallback(() => {
+  // Search is server-side for the same reason it is on the employees page: one fetched
+  // page of 25 is not the organisation, and a client-side filter over it would say
+  // "nobody" while the person sat on page two.
+  const load = useCallback((search: string) => {
     api
-      .employees()
+      .employees({ q: search || null })
       .then((page) => {
         setEmployees(page.items);
         setSelected((current) => current ?? page.items[0] ?? null);
@@ -53,8 +58,8 @@ export default function IdentitiesPage() {
   }, []);
 
   useEffect(() => {
-    if (mayRead) load();
-  }, [load, mayRead]);
+    if (mayRead) load(query);
+  }, [load, mayRead, query]);
 
   if (!mayRead) return <PermissionDenied what="the people in this organisation" />;
 
@@ -66,6 +71,20 @@ export default function IdentitiesPage() {
         where you say which accounts a person is known by — and therefore which documents
         they can retrieve.
       </p>
+
+      {/* Outside the branches below on purpose: a search that matches nobody must
+          leave the field on screen, or there is no way to clear it. */}
+      <div className="mt-8">
+        <Field
+          id="identity-search"
+          name="q"
+          label="Search"
+          placeholder="Name or email"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="w-full sm:w-64"
+        />
+      </div>
 
       {employees === null ? (
         <LoadingRegion label="Loading people">
@@ -80,14 +99,16 @@ export default function IdentitiesPage() {
           <ErrorState
             message={failure.message}
             requestId={failure.requestId}
-            onRetry={load}
+            onRetry={() => load(query)}
           />
         </div>
       ) : employees.length === 0 ? (
         <div className="mt-8 rounded-2xl border border-hairline bg-surface/40 p-6">
           <p className="eyebrow text-muted-foreground/80">Nobody to show</p>
           <p className="mt-3 text-pretty text-sm leading-relaxed text-muted-foreground">
-            Invite someone from the Employees section first.
+            {query
+              ? "Nobody matches that search."
+              : "Invite someone from the Employees section first."}
           </p>
         </div>
       ) : (

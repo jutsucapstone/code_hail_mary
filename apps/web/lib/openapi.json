@@ -364,6 +364,18 @@
             "format": "email",
             "title": "Email",
             "type": "string"
+          },
+          "jutsu_id": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jutsu Id"
           }
         },
         "required": [

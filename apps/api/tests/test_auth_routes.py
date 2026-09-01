@@ -11,15 +11,18 @@ would fail for a reason that has nothing to do with the code under test.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from jutsu_api.auth_service import SIGN_IN_BUDGET_LIMIT
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.deps import get_db, get_email_sender
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.main import create_app
 from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 REGISTRATION = {
@@ -113,6 +116,88 @@ class TestChallengeEndpoint:
         assert known.status_code == unknown.status_code == 202
         assert known.content == unknown.content
 
+    async def test_a_flood_of_requests_for_one_address_is_refused(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Each request mails an address the caller names and writes auth-schema rows,
+        so without a ceiling this endpoint is an open relay — staging's exact hole."""
+        for _ in range(SIGN_IN_BUDGET_LIMIT):
+            granted = await client.post("/v1/auth/request", json={"email": "ada@example.com"})
+            assert granted.status_code == 202
+
+        refused = await client.post("/v1/auth/request", json={"email": "ada@example.com"})
+
+        assert refused.status_code == 429
+        assert refused.json()["error"]["code"] == "rate_limited"
+        assert len(mailbox.messages) == SIGN_IN_BUDGET_LIMIT, "a refused request still mailed"
+
+    async def test_the_throttle_is_per_address(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        for _ in range(SIGN_IN_BUDGET_LIMIT):
+            await client.post("/v1/auth/request", json={"email": "ada@example.com"})
+        assert (
+            await client.post("/v1/auth/request", json={"email": "ada@example.com"})
+        ).status_code == 429
+
+        other = await client.post("/v1/auth/request", json={"email": "grace@example.com"})
+        assert other.status_code == 202, "one flooded address locked out a different one"
+
+
+class TestChallengeWithJutsuId:
+    """The optional cross-check: id and address must resolve to the same membership.
+
+    The response is the identical 202 either way — the only observable difference is
+    whether anything lands in the inbox, which the requester would have to control
+    anyway. Anything else is an oracle over the id space.
+    """
+
+    async def test_a_matched_pair_delivers_the_code(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await complete_registration(client, mailbox)
+        jutsu_id = (await client.get("/v1/me")).json()["jutsu_id"]
+        before = len(mailbox.messages)
+
+        response = await client.post(
+            "/v1/auth/request", json={"email": "ada@example.com", "jutsu_id": jutsu_id}
+        )
+
+        assert response.status_code == 202
+        assert len(mailbox.messages) == before + 1
+        assert set(mailbox.last.secrets) == {"code", "token"}
+
+    async def test_a_hand_typed_id_is_forgiven_its_crockford_confusables(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await complete_registration(client, mailbox)
+        jutsu_id = (await client.get("/v1/me")).json()["jutsu_id"]
+        mangled = jutsu_id.lower().replace("0", "o").replace("1", "i")
+        before = len(mailbox.messages)
+
+        response = await client.post(
+            "/v1/auth/request", json={"email": "ada@example.com", "jutsu_id": mangled}
+        )
+
+        assert response.status_code == 202
+        assert len(mailbox.messages) == before + 1
+
+    async def test_a_mismatched_pair_is_202_and_delivers_nothing(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await complete_registration(client, mailbox)
+        plain = await client.post("/v1/auth/request", json={"email": "ada@example.com"})
+        before = len(mailbox.messages)
+
+        mismatched = await client.post(
+            "/v1/auth/request",
+            json={"email": "ada@example.com", "jutsu_id": "JUTSU-EMP-00000000"},
+        )
+
+        assert mismatched.status_code == 202
+        assert mismatched.content == plain.content, "the body must not say the pair mismatched"
+        assert len(mailbox.messages) == before, "a mismatched pair delivered a credential"
+
 
 class TestVerifyEndpoint:
     """The sign-in verify endpoint. Registration completes elsewhere now."""
@@ -145,6 +230,18 @@ class TestVerifyEndpoint:
         assert "request_id" in body
         # No hint about which half was wrong.
         assert "expired" not in body["error"]["message"].lower()
+
+    async def test_a_non_ascii_token_gets_the_same_refusal_not_a_crash(
+        self, client: AsyncClient
+    ) -> None:
+        """The token is caller-controlled text. Hashing used to encode it as ASCII, so
+        one accented character was a 500 — a crash where the uniform 401 belongs."""
+        response = await client.post(
+            "/v1/auth/verify", json={"token": "jetons-privé-" + "é" * 8, "code": "000000"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthenticated"
 
     async def test_a_correct_code_issues_both_cookies(
         self, client: AsyncClient, mailbox: RecordingEmailSender
@@ -424,6 +521,96 @@ class TestInvitationLifecycle:
 
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "unauthenticated"
+
+    async def test_a_non_ascii_token_is_refused_identically_not_a_crash(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.post(
+            "/v1/invitations/accept",
+            json={"token": "ø" * 20, "full_name": "Nobody"},
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthenticated"
+
+    async def test_inviting_an_existing_member_is_refused(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """An invitation for an active member would, at acceptance, mint a second
+        `users` row for the same person and repoint sign-in at it — orphaning the
+        original role, profile and identities. Refused at issue."""
+        await self._owner(client, mailbox)
+        await self._invite_and_accept(client, mailbox)
+
+        # Back to the owner: the helper leaves the client signed in as the invitee.
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+        delivered = mailbox.last.secrets
+        await client.post(
+            "/v1/auth/verify", json={"token": delivered["token"], "code": delivered["code"]}
+        )
+
+        refused = await client.post(
+            "/v1/employees/invitations",
+            json={"email": "charles@example.com", "role": "member"},
+            headers=csrf_headers(client),
+        )
+
+        assert refused.status_code == 409, refused.text
+        assert "already a member" in refused.json()["error"]["message"]
+        rows = (
+            await inspector.execute(
+                text("SELECT count(*) FROM users WHERE email = 'charles@example.com'")
+            )
+        ).scalar_one()
+        assert rows == 1
+
+    async def test_accepting_after_becoming_a_member_is_refused(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """The standing-token race: invited while not a member, a member by the time
+        the link is clicked. The accept path re-checks inside the same transaction, so
+        the duplicate row and the membership repoint are unrepresentable."""
+        await self._owner(client, mailbox)
+        await client.post(
+            "/v1/employees/invitations",
+            json={"email": "carol@example.com", "role": "member"},
+            headers=csrf_headers(client),
+        )
+        token = mailbox.last.secrets["token"]
+
+        # Carol becomes an active member before the invitation is redeemed.
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        )
+        await db_session.execute(
+            text("INSERT INTO users (id, org_id, email, status) VALUES (:i, :o, :e, 'active')"),
+            {"i": uuid.uuid4(), "o": org_id, "e": "carol@example.com"},
+        )
+        await db_session.commit()
+
+        refused = await client.post(
+            "/v1/invitations/accept",
+            json={"token": token, "full_name": "Carol Clone"},
+        )
+        await db_session.rollback()
+
+        assert refused.status_code == 409, refused.text
+        assert "already a member" in refused.json()["error"]["message"]
+        rows = (
+            await inspector.execute(
+                text("SELECT count(*) FROM users WHERE email = 'carol@example.com'")
+            )
+        ).scalar_one()
+        assert rows == 1
 
     async def test_nobody_can_invite_above_their_own_rank(
         self, client: AsyncClient, mailbox: RecordingEmailSender

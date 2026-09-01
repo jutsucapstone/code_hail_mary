@@ -45,6 +45,11 @@ def _configure_logging() -> None:
     §4.9 forbids PII in logs. The formatter emits only the fields listed here, so a
     stray `logger.info(document.body)` cannot leak text through an unexpected attribute
     — the message itself is the caller's responsibility, but nothing is auto-attached.
+
+    The threshold comes from `LOG_LEVEL` (deploy.yml sets it; `.env.example` documents
+    it), matched case-insensitively against logging's own level names. Unset or
+    unrecognised falls back to INFO rather than raising — a typo in an env var must not
+    take the service down, and must not silence it either.
     """
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
@@ -52,7 +57,8 @@ def _configure_logging() -> None:
     )
     root = logging.getLogger()
     root.handlers = [handler]
-    root.setLevel(logging.INFO)
+    requested = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+    root.setLevel(logging.getLevelNamesMapping().get(requested, logging.INFO))
 
 
 def create_app() -> FastAPI:

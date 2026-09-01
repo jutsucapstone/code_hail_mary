@@ -40,17 +40,22 @@ function Item({ item, current }: { item: ConsoleNavItem; current: boolean }) {
   if (item.status === "pending") {
     return (
       <li className="shrink-0">
-        <span
+        <div
           // Not `aria-disabled` on a non-interactive element: there is no control
           // here to disable. It is a list entry that says what is coming.
-          className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-muted-foreground/55"
-          title={`${item.description} Arrives in ${item.slice}.`}
+          className="rounded-lg border border-transparent px-3 py-2"
         >
-          {item.name}
-          <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/45">
-            {item.slice}
+          <span className="flex items-center justify-between gap-2 text-sm text-muted-foreground/70">
+            {item.name}
+            <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/60">
+              {item.slice}
+            </span>
           </span>
-        </span>
+          {/* On screen, not a `title` tooltip: touch and keyboard never see one. */}
+          <p className="mt-0.5 max-w-56 text-xs leading-relaxed text-muted-foreground/60">
+            {item.description} Arrives in {item.slice}.
+          </p>
+        </div>
       </li>
     );
   }

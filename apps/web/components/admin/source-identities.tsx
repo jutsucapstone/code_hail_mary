@@ -286,7 +286,7 @@ export function SourceIdentities({
                   onChange={(event) => setSubject(event.target.value)}
                   maxLength={255}
                   placeholder="the subject this system issues"
-                  className="flex-1 rounded-xl border border-hairline bg-background px-3 py-2.5 text-sm placeholder:text-muted-foreground/70 focus-visible:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                  className="flex-1 rounded-xl border border-hairline bg-background px-3 py-2.5 text-sm placeholder:text-muted-foreground/80 focus-visible:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
 
                 <button

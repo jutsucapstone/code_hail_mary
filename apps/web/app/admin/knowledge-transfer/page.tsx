@@ -23,7 +23,10 @@ import { Field } from "@/components/pilot/field";
 import { FormError } from "@/components/pilot/submit-button";
 import { api, type KtAdmin, type KtAdminPage } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
+import type { components } from "@/lib/api-schema";
 import { can } from "@/lib/permissions";
+
+type Employee = components["schemas"]["Employee"];
 
 /**
  * Knowledge Transfer — the admin lifecycle.
@@ -50,7 +53,7 @@ const PERIOD_CHOICES = [
   { label: "Last 3 months", days: 92 },
   { label: "Last 6 months", days: 183 },
   { label: "Last 12 months", days: 366 },
-  { label: "Everything", days: null },
+  { label: "Full history", days: null },
 ] as const;
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -65,7 +68,10 @@ const SCOPE_LABELS: Record<string, string> = {
 
 function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   const [subjectQuery, setSubjectQuery] = useState("");
-  const [subjectId, setSubjectId] = useState<string | null>(null);
+  // The whole person, not just an id: narrowing the search can filter the chosen
+  // subject out of the current result page, and the review sentence must keep naming
+  // them rather than reverting to "choose an employee".
+  const [subject, setSubject] = useState<Employee | null>(null);
   const [scope, setScope] = useState<string[]>(["documents", "profile"]);
   const [periodDays, setPeriodDays] = useState<number | null>(null);
   const [validityDays, setValidityDays] = useState<number>(30);
@@ -81,7 +87,7 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   const create = useMutation({
     mutationFn: () =>
       api.ktCreate({
-        subject_user_id: subjectId!,
+        subject_user_id: subject!.id,
         scope,
         validity_days: validityDays,
         period_days: periodDays,
@@ -98,8 +104,6 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
         : [...current, category],
     );
   }
-
-  const subject = employees.data?.items.find((person) => person.id === subjectId);
 
   return (
     <section
@@ -122,17 +126,22 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
           onChange={(event) => setSubjectQuery(event.target.value)}
           className="sm:w-80"
         />
-        {employees.data ? (
-          <ul className="flex max-h-44 flex-col gap-1 overflow-y-auto" role="listbox" aria-label="Employees">
+        {employees.error ? (
+          <FailureState
+            failure={classifyApiError(employees.error)}
+            onRetry={() => void employees.refetch()}
+            deniedWhat="searching the people in this organisation"
+          />
+        ) : employees.data ? (
+          <ul className="flex max-h-44 flex-col gap-1 overflow-y-auto" aria-label="Employees">
             {employees.data.items.map((person) => (
               <li key={person.id}>
                 <button
                   type="button"
-                  role="option"
-                  aria-selected={subjectId === person.id}
-                  onClick={() => setSubjectId(person.id)}
+                  aria-pressed={subject?.id === person.id}
+                  onClick={() => setSubject(person)}
                   className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${
-                    subjectId === person.id
+                    subject?.id === person.id
                       ? "border-brand/40 bg-brand/8 text-foreground"
                       : "border-hairline text-muted-foreground hover:text-foreground"
                   }`}
@@ -149,6 +158,13 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
       {/* Step 2 — scope, from the backend's own list, nothing invented. */}
       <fieldset className="flex flex-col gap-3">
         <legend className="text-sm font-medium text-foreground">2 · Knowledge scope</legend>
+        {scopes.error ? (
+          <FailureState
+            failure={classifyApiError(scopes.error)}
+            onRetry={() => void scopes.refetch()}
+            deniedWhat="reading the supported knowledge scopes"
+          />
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {(scopes.data?.supported ?? []).map((category) => (
             <label
@@ -229,15 +245,17 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
             ? `Package ${subject.display_name ?? subject.email}'s ${scope
                 .map((c) => (SCOPE_LABELS[c] ?? c).toLowerCase())
                 .join(" and ")} from ${
-                periodDays === null ? "their whole history" : `the last ${periodDays} days`
+                periodDays === null ? "their full history" : `the last ${periodDays} days`
               }, openable for ${validityDays} days${
                 recipient.trim() ? ` by ${recipient.trim()}` : " by the first invited recipient"
               }.`
             : "Choose an employee to see the summary."}
         </p>
+        {/* Also gated on the scope list having arrived: submitting categories the
+            backend never offered is exactly what the wizard exists to prevent. */}
         <button
           type="button"
-          disabled={create.isPending || !subjectId || scope.length === 0}
+          disabled={create.isPending || !subject || scope.length === 0 || !scopes.data}
           aria-busy={create.isPending}
           onClick={() => {
             setError(null);
@@ -317,6 +335,9 @@ export default function KnowledgeTransferPage() {
   const [created, setCreated] = useState<KtAdmin | null>(null);
   const [older, setOlder] = useState<KtAdminPage["items"]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  // Distinct from `cursor === null`, which is also the state before any walk: without
+  // it the null cursor falls back to the head page's cursor and the walk restarts.
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mayManage = can(capabilities, "kt:manage");
@@ -333,6 +354,7 @@ export default function KnowledgeTransferPage() {
       toast.success("Package revoked. Its workspace stops answering immediately.");
       setOlder([]);
       setCursor(null);
+      setExhausted(false);
       void queryClient.invalidateQueries({ queryKey: ["kt", "list"] });
     },
     onError: (error: unknown) => toast.error(classifyApiError(error).message),
@@ -350,13 +372,16 @@ export default function KnowledgeTransferPage() {
       const page = await api.ktList({ cursor: next });
       setOlder((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
+      if (page.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
     } finally {
       setLoadingMore(false);
     }
   }
 
   const rows = [...(head.data?.items ?? []), ...older];
-  const more = cursor ?? head.data?.next_cursor;
+  const more = !exhausted && (cursor ?? head.data?.next_cursor);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 [@media(max-height:820px)]:gap-6">
@@ -381,7 +406,7 @@ export default function KnowledgeTransferPage() {
           <button
             type="button"
             onClick={() => setMode("list")}
-            className="self-start text-sm text-muted-foreground underline-offset-4 hover:underline"
+            className="self-start rounded text-sm text-muted-foreground underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             Cancel
           </button>

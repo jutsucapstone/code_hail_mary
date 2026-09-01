@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import {
@@ -46,6 +47,9 @@ export default function InvitationsPage() {
   const capabilities = useCapabilities();
   const [older, setOlder] = useState<InvitationPage["items"]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  // Distinct from `cursor === null`, which is also the state before any walk: without
+  // it the null cursor falls back to the head page's cursor and the walk restarts.
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mayRead = can(capabilities, "member:invite");
@@ -68,13 +72,16 @@ export default function InvitationsPage() {
       const page = await api.invitations({ cursor: next });
       setOlder((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
+      if (page.next_cursor === null) setExhausted(true);
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
     } finally {
       setLoadingMore(false);
     }
   }
 
   const rows = [...(head.data?.items ?? []), ...older];
-  const more = cursor ?? head.data?.next_cursor;
+  const more = !exhausted && (cursor ?? head.data?.next_cursor);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-8 [@media(max-height:820px)]:gap-6">

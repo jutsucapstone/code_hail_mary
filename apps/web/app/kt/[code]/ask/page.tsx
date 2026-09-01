@@ -17,7 +17,7 @@ export default function Page() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="display text-xl font-semibold">Knowledge Transfer Assistant</h2>
+        <h2 className="display text-xl font-semibold">Ask KT</h2>
         <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
           Ask anything about {pkg.subject.display_name ?? "this package"}&apos;s context.
           Every passage returned is real evidence your account is authorised to read.

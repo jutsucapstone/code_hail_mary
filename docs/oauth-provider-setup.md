@@ -88,8 +88,22 @@ misleading, requesting fewer breaks the flow.
 
 ## Production notes (Cloud Run)
 
-Store every secret in Secret Manager and mount via `--set-secrets` (deploy.yml
-carries the list): `jutsu-anthropic-api-key`, `jutsu-connection-key`, and one pair
-per provider (`jutsu-oauth-github-client-id` / `...-secret`, etc). `GOOGLE_CLOUD_PROJECT`
-and `VERTEX_LOCATION` are plain env vars; Vertex auth is the attached service account
-(`roles/aiplatform.user`), no key files.
+Every secret lives in Secret Manager, and there are two ways one gets mounted.
+`deploy.yml` carries the deployment-wide set (`jutsu-anthropic-api-key`,
+`jutsu-connection-key`, database URL, pepper, SMTP) and re-asserts it on every push.
+The per-provider pairs are **not** in the pipeline — an operator mounts each one once,
+and the pipeline preserves it:
+
+```bash
+printf '%s' 'the-client-id'     | gcloud secrets create jutsu-oauth-github-client-id --data-file=-
+printf '%s' 'the-client-secret' | gcloud secrets create jutsu-oauth-github-client-secret --data-file=-
+
+gcloud run services update jutsu-api --region=asia-south1 \
+  --update-secrets "JUTSU_OAUTH_GITHUB_CLIENT_ID=jutsu-oauth-github-client-id:latest,JUTSU_OAUTH_GITHUB_CLIENT_SECRET=jutsu-oauth-github-client-secret:latest"
+```
+
+This works because the deploy uses `--update-secrets`, which merges with the previous
+revision's secret set rather than replacing it — a hand-mounted pair survives every
+push. Rotation is a `gcloud secrets versions add`; the mount reads `latest`.
+`GOOGLE_CLOUD_PROJECT` and `VERTEX_LOCATION` are plain env vars; Vertex auth is the
+attached service account (`roles/aiplatform.user`), no key files.

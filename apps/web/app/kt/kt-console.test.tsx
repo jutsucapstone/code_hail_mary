@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import KnowledgeTransferEntryPage from "@/app/(product)/handover/page";
+import { KtDocuments } from "@/components/kt/kt-pages";
 import { KtShell } from "@/components/kt/kt-shell";
 import {
   calledMethod,
@@ -169,5 +170,50 @@ describe("the KT console shell", () => {
       await screen.findByText("This Knowledge Transfer package has been revoked."),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the KT documents tab", () => {
+  function ktDocument(overrides: Json = {}): Json {
+    return {
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "Handover plan",
+      source_system: "gmail",
+      created_at: "2026-08-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("retires Load more after the final page instead of restarting the walk", async () => {
+    // Call 0 is the shell's claim; 1 and 2 are the two document pages.
+    const fetchMock = scriptFetch(
+      { status: 200, body: recipientPackage() },
+      { status: 200, body: { items: [ktDocument()], next_cursor: "cursor-2" } },
+      {
+        status: 200,
+        body: {
+          items: [
+            ktDocument({ id: "22222222-2222-4222-8222-222222222222", title: "Q3 retro notes" }),
+          ],
+          next_cursor: null,
+        },
+      },
+    );
+    renderWithQuery(
+      <KtShell code="KT-JUTSU-AAAA0001">
+        <KtDocuments />
+      </KtShell>,
+    );
+    await screen.findByText("Handover plan");
+
+    await userEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    // The walk ends when a page comes back with no cursor. Before the exhausted flag,
+    // the null cursor fell back to the HEAD page's cursor — the button came back and
+    // clicking it re-appended page two as duplicates.
+    expect(await screen.findByText("Q3 retro notes")).toBeInTheDocument();
+    expect(screen.getByText("Handover plan")).toBeInTheDocument();
+    expect(calledUrl(fetchMock, 2)).toContain("cursor=cursor-2");
+    expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
   });
 });

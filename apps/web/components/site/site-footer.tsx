@@ -40,8 +40,9 @@ export function SiteFooter() {
               </h2>
               <ul className="mt-5 flex flex-col gap-3">
                 {group.links.map((link) => {
-                  // Route changes go through the router; in-page hashes and mailto:
-                  // must stay plain anchors.
+                  // Everything rooted — routes and `/#hash` section links — goes
+                  // through the router, so it works from /privacy and /terms too;
+                  // mailto: must stay a plain anchor.
                   const isRoute = link.href.startsWith("/");
                   const cls =
                     "rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";

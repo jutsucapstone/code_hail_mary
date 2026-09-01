@@ -37,6 +37,8 @@ import base64
 import hashlib
 import os
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -55,7 +57,9 @@ from jutsu_core.providers import (
     oauth_client_for,
 )
 from jutsu_core.rbac import Role, outranks
+from jutsu_db.engine import org_session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.config import Settings
@@ -72,6 +76,7 @@ __all__ = [
     "OAuthTransport",
     "Provider",
     "TokenGrant",
+    "abandon_callback",
     "complete_callback",
     "connection_summary",
     "disconnect_own",
@@ -158,7 +163,25 @@ class OAuthTransport(Protocol):
 
 
 class HttpOAuthTransport:
-    """The real exchange, over HTTPS, with the provider named by the registry."""
+    """The real exchange, over HTTPS, with the provider named by the registry.
+
+    An injected `httpx.AsyncClient` is the test seam, the same shape as
+    `VertexTransport`: hand one built on `httpx.MockTransport` and every branch below
+    runs deterministically without a provider. Absent, each call opens and closes its
+    own short-lived client — this transport is constructed per request by a dependency
+    with no shutdown hook, so a long-lived owned client would have nowhere to close.
+    """
+
+    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+        self._client = client
+
+    @asynccontextmanager
+    async def _http(self, owned_timeout: float) -> AsyncIterator[httpx.AsyncClient]:
+        if self._client is not None:
+            yield self._client
+        else:
+            async with httpx.AsyncClient(timeout=owned_timeout) as owned:
+                yield owned
 
     async def exchange_code(
         self,
@@ -178,7 +201,7 @@ class HttpOAuthTransport:
         }
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
-        async with httpx.AsyncClient(timeout=20.0) as http:
+        async with self._http(20.0) as http:
             response = await http.post(
                 provider.token_url, data=data, headers={"Accept": "application/json"}
             )
@@ -206,7 +229,7 @@ class HttpOAuthTransport:
         )
 
     async def fetch_identity(self, provider: Provider, access_token: str) -> AccountIdentity:
-        async with httpx.AsyncClient(timeout=20.0) as http:
+        async with self._http(20.0) as http:
             response = await http.get(
                 provider.userinfo_url,
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -248,7 +271,7 @@ class HttpOAuthTransport:
         if provider.revoke_url is None or provider.revoke_style is None:
             return
         try:
-            async with httpx.AsyncClient(timeout=10.0) as http:
+            async with self._http(10.0) as http:
                 if provider.revoke_style == "post_token":
                     await http.post(provider.revoke_url, data={"token": access_token})
                 elif provider.revoke_style == "bearer_post":
@@ -489,24 +512,32 @@ async def start_connection(
         )
     else:
         connection_id = uuid4()
-        await session.execute(
-            text(
-                "INSERT INTO connections (id, org_id, user_id, provider, status, oauth_state, "
-                "oauth_code_verifier, oauth_state_expires_at, scopes) "
-                "VALUES (:id, :org, :user, :provider, 'connecting', :state, :verifier, "
-                ":expires, cast(:scopes AS jsonb))"
-            ),
-            {
-                "id": connection_id,
-                "org": str(org_id),
-                "user": user_id,
-                "provider": provider_id,
-                "state": state,
-                "verifier": code_verifier,
-                "expires": expires_at,
-                "scopes": '["' + '", "'.join(provider.scopes) + '"]',
-            },
-        )
+        try:
+            await session.execute(
+                text(
+                    "INSERT INTO connections (id, org_id, user_id, provider, status, oauth_state, "
+                    "oauth_code_verifier, oauth_state_expires_at, scopes) "
+                    "VALUES (:id, :org, :user, :provider, 'connecting', :state, :verifier, "
+                    ":expires, cast(:scopes AS jsonb))"
+                ),
+                {
+                    "id": connection_id,
+                    "org": str(org_id),
+                    "user": user_id,
+                    "provider": provider_id,
+                    "state": state,
+                    "verifier": code_verifier,
+                    "expires": expires_at,
+                    "scopes": '["' + '", "'.join(provider.scopes) + '"]',
+                },
+            )
+        except IntegrityError as error:
+            # Two tabs racing the same Connect click: both pre-checks saw no row, and
+            # uq_connections_live refused the loser. The same sentence as the pre-check,
+            # because from the caller's side it is the same fact.
+            if "uq_connections_live" not in str(error.orig):
+                raise
+            raise Conflict(f"{provider.name} is already connected.") from error
 
     params: list[tuple[str, str]] = [
         ("response_type", "code"),
@@ -545,38 +576,47 @@ async def complete_callback(
 
     The state parameter is the CSRF defence for the one state-changing GET in the
     product (the provider redirects with GET; there is no header to demand). It is
-    single-use — cleared before the exchange — so a replayed callback finds nothing.
+    single-use — spent before the exchange, **on a session that commits independently
+    of the request** (the same design as `spend_search_budget`): the request rolls back
+    as one transaction, so a spend taken on it would be undone by exactly the failures
+    that matter — a provider 503 during the exchange would hand the state back its
+    life, replayable until it expires. A replayed callback must find nothing whatever
+    happened to the first one.
     """
-    row = (
-        await session.execute(
+    async with org_session(org_id) as spend:
+        row = (
+            await spend.execute(
+                text(
+                    "SELECT id, provider, user_id, oauth_code_verifier FROM connections "
+                    "WHERE oauth_state = :state AND status = 'connecting' "
+                    "AND (oauth_state_expires_at IS NULL OR oauth_state_expires_at > now()) "
+                    "FOR UPDATE"
+                ),
+                {"state": state},
+            )
+        ).first()
+        if row is None or row.user_id != user_id:
+            # Not the owner, or a stale, expired or forged state: identical answer,
+            # nothing to probe. Raising rolls the spend session back — a refusal that
+            # never reached a provider leaves the owner's attempt intact.
+            raise NotFound("That connection attempt was not found. Start again from Integrations.")
+
+        provider = PROVIDERS[row.provider]
+        client = oauth_client_for(row.provider)
+        fernet = _fernet()
+        if client is None or fernet is None:
+            raise ServiceUnavailable("This integration is no longer configured.")
+
+        # Spend the state — and the PKCE verifier with it. The row lock above makes
+        # two concurrent callbacks serialize: the loser re-evaluates the predicate
+        # after this commits, matches nothing, and answers 404.
+        await spend.execute(
             text(
-                "SELECT id, provider, user_id, oauth_code_verifier FROM connections "
-                "WHERE oauth_state = :state AND status = 'connecting' "
-                "AND (oauth_state_expires_at IS NULL OR oauth_state_expires_at > now())"
+                "UPDATE connections SET oauth_state = NULL, oauth_code_verifier = NULL, "
+                "oauth_state_expires_at = NULL, updated_at = now() WHERE id = :id"
             ),
-            {"state": state},
+            {"id": row.id},
         )
-    ).first()
-    if row is None or row.user_id != user_id:
-        # Not the owner, or a stale, expired or forged state: identical answer,
-        # nothing to probe.
-        raise NotFound("That connection attempt was not found. Start again from Integrations.")
-
-    provider = PROVIDERS[row.provider]
-    client = oauth_client_for(row.provider)
-    fernet = _fernet()
-    if client is None or fernet is None:
-        raise ServiceUnavailable("This integration is no longer configured.")
-
-    # Spend the state — and the PKCE verifier with it — before the exchange: a second
-    # callback with the same state must find nothing, whatever happens next.
-    await session.execute(
-        text(
-            "UPDATE connections SET oauth_state = NULL, oauth_code_verifier = NULL, "
-            "oauth_state_expires_at = NULL, updated_at = now() WHERE id = :id"
-        ),
-        {"id": row.id},
-    )
 
     grant = await transport.exchange_code(
         provider,
@@ -644,6 +684,36 @@ async def complete_callback(
     return _view(updated)
 
 
+async def abandon_callback(session: AsyncSession, *, user_id: UUID, state: str) -> str | None:
+    """A provider denial ends the attempt: spend the state and mark the row honestly.
+
+    The person clicked Deny (or the provider refused the grant), so no code arrives —
+    only an error. The state is spent exactly as a completed callback spends it, because
+    a denied attempt must be as unreplayable as a finished one, and the row goes to
+    `error` so the catalogue says what happened instead of showing "connecting" for
+    ever. Restarting is one click: `start_connection` reuses an `error` row.
+
+    Fail-closed on the caller: only the owner's own connecting row matches, so a state
+    carried into someone else's session clears nothing. Returns the provider id when a
+    row was spent, for the redirect to name — and None when nothing matched, which is
+    deliberately not an error: the browser is mid-redirect and a refusal page would
+    strand it.
+    """
+    row = (
+        await session.execute(
+            text(
+                "UPDATE connections SET oauth_state = NULL, oauth_code_verifier = NULL, "
+                "oauth_state_expires_at = NULL, status = 'error', "
+                "last_error_kind = 'authorization_denied', updated_at = now() "
+                "WHERE oauth_state = :state AND user_id = :user AND status = 'connecting' "
+                "RETURNING provider"
+            ),
+            {"state": state, "user": user_id},
+        )
+    ).first()
+    return str(row.provider) if row is not None else None
+
+
 async def _revoke_upstream_best_effort(
     session: AsyncSession, transport: OAuthTransport, *, connection_id: UUID, provider_id: str
 ) -> None:
@@ -673,7 +743,13 @@ async def _revoke_upstream_best_effort(
         # A rotated Fernet key cannot decrypt old ciphertext; local deletion still
         # proceeds and the provider-side grant dies at its own expiry.
         return
-    await transport.revoke_upstream(provider, client, access_token=access_token)
+    try:
+        await transport.revoke_upstream(provider, client, access_token=access_token)
+    except Exception:
+        # Swallowed HERE, not trusted to the transport: "best effort" is this
+        # function's contract, and whatever the provider call throws, the local
+        # deletion that follows is the authority.
+        return
 
 
 async def disconnect_own(

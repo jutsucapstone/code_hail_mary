@@ -1279,6 +1279,8 @@ export interface components {
              * Format: email
              */
             email: string;
+            /** Jutsu Id */
+            jutsu_id?: string | null;
         };
         /** CitationView */
         CitationView: {

@@ -22,11 +22,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from jutsu_core.errors import Unauthenticated
+from jutsu_core.errors import RateLimited, Unauthenticated
+from jutsu_core.ids import normalise_jutsu_id
 from jutsu_core.rbac import Permission, Role, permissions_for
 from jutsu_db.acl import resolve_acl_principals
 from sqlalchemy import text
@@ -45,6 +48,8 @@ from jutsu_api.emails import no_account, organisation_verification, sign_in_code
 from jutsu_api.security import Principal
 
 __all__ = [
+    "SIGN_IN_BUDGET_LIMIT",
+    "SIGN_IN_BUDGET_WINDOW_SECONDS",
     "ChallengePurpose",
     "IssuedChallenge",
     "RedeemedChallenge",
@@ -55,9 +60,18 @@ __all__ = [
     "open_session",
     "resolve_principal",
     "revoke_session",
+    "spend_sign_in_budget",
     "token_digest",
     "verify_challenge",
 ]
+
+#: The ceiling on sign-in mail per address, same reasoning as staging's budget: each
+#: request delivers a message to an address the caller names and writes an identity row
+#: and a challenge, so without one `/v1/auth/request` is an open relay. Ten in an hour
+#: covers a person who mistypes, loses the tab and asks for a few resends, and sits far
+#: below what makes bulk mailing worthwhile.
+SIGN_IN_BUDGET_LIMIT = 10
+SIGN_IN_BUDGET_WINDOW_SECONDS = 60 * 60
 
 
 class ChallengePurpose:
@@ -125,8 +139,14 @@ def _hash(value: str) -> bytes:
     nothing. The OTP is the exception in principle — six digits is a tiny space — but it
     is only reachable through a definer function with a transactional attempt budget, so
     the guessing bound is enforced by the database rather than by hashing cost.
+
+    UTF-8, not ASCII: tokens, codes and cookies arrive from request bodies and browsers,
+    and a non-ASCII byte in one must hash to something that matches nothing — the same
+    uniform refusal as any wrong value — never crash the request. Every value this
+    service mints is URL-safe ASCII, so the digests are unchanged for anything that
+    could ever match a stored hash.
     """
-    return hashlib.sha256(value.encode("ascii")).digest()
+    return hashlib.sha256(value.encode("utf-8")).digest()
 
 
 def token_digest(token: str) -> bytes:
@@ -206,6 +226,33 @@ def _challenge_message(
     return no_account(to=address, app_url=settings.app_url), False
 
 
+async def spend_sign_in_budget(session: AsyncSession, *, address: str, settings: Settings) -> None:
+    """Charge one sign-in request to this address; refuse when nothing is left.
+
+    The same ledger and the same atomic statement as staging's budget — one
+    `INSERT … ON CONFLICT … RETURNING`, so concurrent requests cannot all read the old
+    count — but a domain-separated subject. Sharing the row would let five staged
+    registrations naming a victim's address lock that victim out of signing in; the
+    prefix keeps the two allowances independent while the ledger stays one table of
+    non-reversible digests.
+    """
+    subject = hashlib.sha256(b"auth.sign_in:" + email_hmac(address, settings)).digest()
+    remaining = (
+        await session.execute(
+            text("SELECT auth.spend_registration_budget(:s, :w, :l)"),
+            {
+                "s": subject,
+                "w": timedelta(seconds=SIGN_IN_BUDGET_WINDOW_SECONDS),
+                "l": SIGN_IN_BUDGET_LIMIT,
+            },
+        )
+    ).scalar_one()
+    if remaining < 0:
+        # The same sentence as staging's refusal: two differently worded 429s would say
+        # which flow the address has been busy in.
+        raise RateLimited("Too many attempts for this address. Please try again later.")
+
+
 async def issue_challenge(
     session: AsyncSession,
     *,
@@ -215,6 +262,7 @@ async def issue_challenge(
     sender: EmailSender,
     known_account: bool | None = None,
     organisation: tuple[str, str] | None = None,
+    jutsu_id: str | None = None,
 ) -> IssuedChallenge:
     """Create a challenge and deliver it. Always does the same work.
 
@@ -225,6 +273,12 @@ async def issue_challenge(
     registration challenge, where it is echoed back so a typo in either is caught before
     a tenant is built around it. It is the values the caller just typed, not a lookup:
     nothing has been created yet for there to be a lookup of.
+
+    `jutsu_id` is an optional cross-check, never an authorisation input: when supplied,
+    the message is delivered only if the id and the address resolve to the same
+    membership. The challenge is still created and the caller still sees the identical
+    202, so nothing observable over HTTP says whether the pair matched — the only
+    difference lands in an inbox the requester would have to control anyway.
     """
     digest = email_hmac(address, settings)
     identity_id = (
@@ -253,13 +307,30 @@ async def issue_challenge(
         )
     ).scalar_one()
 
-    if known_account is None:
+    memberships: Sequence[Any] = []
+    if known_account is None or jutsu_id is not None:
         memberships = (
             await session.execute(
-                text("SELECT org_id FROM auth.resolve_memberships(:i)"), {"i": identity_id}
+                text("SELECT org_id, user_id FROM auth.resolve_memberships(:i)"),
+                {"i": identity_id},
             )
         ).all()
+    if known_account is None:
         known_account = bool(memberships)
+
+    deliver = True
+    if jutsu_id is not None:
+        # Normalised the way the console normalises before display, so a hand-typed
+        # Crockford confusable is transcription, not a mismatch.
+        bound = (
+            await session.execute(
+                text("SELECT org_id, user_id FROM auth.resolve_jutsu_id(CAST(:j AS text))"),
+                {"j": normalise_jutsu_id(jutsu_id)},
+            )
+        ).first()
+        deliver = bound is not None and any(
+            (m.org_id, m.user_id) == (bound.org_id, bound.user_id) for m in memberships
+        )
 
     message, carries_credential = _challenge_message(
         address=address,
@@ -274,9 +345,10 @@ async def issue_challenge(
     # template, so a message with placeholders cannot be sent with nothing to fill them —
     # and the "no account" message, which has no placeholders, is sent with an empty
     # mapping so there is nothing that could leak into one.
-    await sender.send(
-        replace(message, secrets={"code": code, "token": token} if carries_credential else {})
-    )
+    if deliver:
+        await sender.send(
+            replace(message, secrets={"code": code, "token": token} if carries_credential else {})
+        )
 
     return IssuedChallenge(challenge_id=challenge_id, token=token, code=code)
 

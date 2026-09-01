@@ -17,6 +17,7 @@ now happens after the proof, and keeps happening after it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 from jutsu_api.auth_service import (
@@ -51,6 +52,26 @@ from jutsu_core.ids import is_valid_jutsu_id
 from jutsu_core.rbac import Permission, Role, role_label
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@pytest.fixture
+async def app_role_engine(
+    db_session: AsyncSession, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[None]:
+    """For tests that reach the independently committed refusal events.
+
+    Those open their own session through `jutsu_db.engine`, so two things this fixture
+    owns (the same pair the search suite documents): `DATABASE_URL` must point at the
+    application role rather than the migration owner `db_session` leaves it on, and the
+    cached engine must be disposed around the test or a later test inherits a pool
+    bound to a closed event loop.
+    """
+    from jutsu_db.engine import dispose_engine
+
+    await dispose_engine()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    yield
+    await dispose_engine()
 
 
 def _request(
@@ -226,7 +247,11 @@ class TestStaging:
         assert pending.token
 
     async def test_the_budget_refuses_a_flood(
-        self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender
+        self,
+        app_role_engine: None,
+        db_session: AsyncSession,
+        settings: Settings,
+        mailbox: RecordingEmailSender,
     ) -> None:
         """Staging mails an address the caller names, so it needs a ceiling.
 
@@ -241,6 +266,32 @@ class TestStaging:
             await stage_registration(db_session, _request(), settings=settings, sender=mailbox)
 
         assert len(mailbox.messages) == REGISTRATION_BUDGET_LIMIT
+
+    async def test_the_throttled_event_survives_the_rollback_that_follows_it(
+        self,
+        app_role_engine: None,
+        inspector: AsyncSession,
+        db_session: AsyncSession,
+        settings: Settings,
+        mailbox: RecordingEmailSender,
+    ) -> None:
+        """`get_db` rolls the refused request back with its exception, and the throttled
+        event used to roll back with it — a flood left no trace. It commits on its own
+        session now, so the trail survives what production does next."""
+        for _ in range(REGISTRATION_BUDGET_LIMIT):
+            await stage_registration(db_session, _request(), settings=settings, sender=mailbox)
+        await db_session.commit()
+
+        with pytest.raises(TooManyRegistrations):
+            await stage_registration(db_session, _request(), settings=settings, sender=mailbox)
+        await db_session.rollback()
+
+        outcomes = (
+            await inspector.execute(
+                text("SELECT count(*) FROM auth.registration_events WHERE outcome = 'throttled'")
+            )
+        ).scalar_one()
+        assert outcomes == 1, "the refusal left no trail"
 
     async def test_staging_says_the_same_thing_for_a_taken_domain(
         self,
@@ -431,6 +482,7 @@ class TestCompletion:
 
     async def test_a_second_registration_for_one_domain_is_refused_after_proof(
         self,
+        app_role_engine: None,
         inspector: AsyncSession,
         db_session: AsyncSession,
         settings: Settings,
@@ -469,6 +521,15 @@ class TestCompletion:
             )
         await db_session.rollback()
         assert await _count_orgs(inspector, "example.com") == 1
+
+        # The duplicate event commits on its own session, so the rollback that just
+        # unwound the refused registration cannot also erase the trail of it.
+        duplicates = (
+            await inspector.execute(
+                text("SELECT count(*) FROM auth.registration_events WHERE outcome = 'duplicate'")
+            )
+        ).scalar_one()
+        assert duplicates == 1
 
     async def test_the_jutsu_id_is_bound_to_the_user_in_the_ledger(
         self, db_session: AsyncSession, settings: Settings, mailbox: RecordingEmailSender

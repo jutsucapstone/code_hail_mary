@@ -33,6 +33,12 @@ logger = logging.getLogger("jutsu.api.queue")
 
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 
+#: The worker function the doorbell rings. arq dispatches on the string, so this is a
+#: cross-service contract with `WorkerSettings.functions` — and the worker cannot
+#: import this module to compare (apps do not depend on each other), so its test reads
+#: the constant out of this file's text. Keep the assignment on one line.
+DRAIN_JOB_NAME = "drain_org_jobs"
+
 #: How long past the handler the worker should wait before draining. The request
 #: transaction commits in dependency teardown; two seconds is comfortably past it and
 #: invisible next to a provider sync.
@@ -71,7 +77,7 @@ async def ring_doorbell(org_id: UUID) -> bool:
     """
     try:
         pool = await asyncio.wait_for(_get_pool(), timeout=_CONNECT_TIMEOUT_S)
-        await pool.enqueue_job("drain_org_jobs", str(org_id), _defer_by=_DEFER)
+        await pool.enqueue_job(DRAIN_JOB_NAME, str(org_id), _defer_by=_DEFER)
     except TimeoutError:
         logger.info("%s", {"event": "doorbell_skipped", "reason": "redis_timeout"})
         return False

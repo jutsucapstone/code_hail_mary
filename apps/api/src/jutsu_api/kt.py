@@ -30,6 +30,7 @@ from uuid import UUID, uuid4
 
 from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ValidationFailed
 from jutsu_core.ids import ALPHABET, normalise_jutsu_id
+from jutsu_db.engine import org_session
 from jutsu_retrieval.search import ACL_PREDICATE
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -311,8 +312,11 @@ async def revoke_package(
         )
     ).scalar_one_or_none()
     if updated is None:
-        # Either absent or already revoked; the detail read below answers which.
-        pass
+        # Absent is a 404 from the read; present means it was already revoked. Neither
+        # is a success, and a success audit row for a revocation that changed nothing
+        # would put a second actor on a transition the first one made.
+        view = await get_package(session, package_id=package_id)
+        raise Conflict(f"That package is already {view.status}.")
     await session.execute(
         text(
             "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
@@ -328,13 +332,21 @@ async def complete_package(
     session: AsyncSession, *, org_id: UUID, actor_id: UUID, package_id: UUID
 ) -> KtAdminView:
     """Mark a handover finished. Completion also ends access: complete is terminal."""
-    await session.execute(
-        text(
-            "UPDATE kt_packages SET status = 'completed', completed_at = now() "
-            "WHERE id = :id AND revoked_at IS NULL AND completed_at IS NULL"
-        ),
-        {"id": package_id},
-    )
+    updated = (
+        await session.execute(
+            text(
+                "UPDATE kt_packages SET status = 'completed', completed_at = now() "
+                "WHERE id = :id AND revoked_at IS NULL AND completed_at IS NULL "
+                "RETURNING id"
+            ),
+            {"id": package_id},
+        )
+    ).scalar_one_or_none()
+    if updated is None:
+        # A revoked or already-completed package cannot be completed again. Auditing it
+        # as a success anyway would record a transition that never ran.
+        view = await get_package(session, package_id=package_id)
+        raise Conflict(f"That package is already {view.status}.")
     await session.execute(
         text(
             "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
@@ -349,29 +361,26 @@ async def complete_package(
 # ---------------------------------------------------------------------- recipient
 
 
-async def _audit_open(
-    session: AsyncSession,
-    *,
-    org_id: UUID,
-    actor_id: UUID,
-    action: str,
-    resource_id: str,
-    outcome: str,
-) -> None:
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
-            "resource_id, outcome) "
-            "VALUES (:org, :actor, 'user', :action, 'kt_package', :rid, :outcome)"
-        ),
-        {
-            "org": str(org_id),
-            "actor": str(actor_id),
-            "action": action,
-            "rid": resource_id,
-            "outcome": outcome,
-        },
-    )
+async def _audit_denied_open(*, org_id: UUID, actor_id: UUID, resource_id: str) -> None:
+    """A denied open, committed so it outlives the refusal that follows it.
+
+    Every caller raises immediately after this, and `get_db` rolls the request
+    transaction back with the exception — a denial written on the request session
+    recorded nothing, and the probe trail the module docstring promises never existed.
+    So the row goes on its own org-scoped session and commits before the refusal
+    unwinds, the same shape as the search limiter's spend (rate_limit.py). The claimed
+    *success* row stays on the request session deliberately: it must commit or roll
+    back with the claim it describes.
+    """
+    async with org_session(org_id) as audit:
+        await audit.execute(
+            text(
+                "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+                "resource_id, outcome) "
+                "VALUES (:org, :actor, 'user', 'kt.open', 'kt_package', :rid, 'denied')"
+            ),
+            {"org": str(org_id), "actor": str(actor_id), "rid": resource_id},
+        )
 
 
 async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str) -> object:
@@ -383,86 +392,64 @@ async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_co
     """
     code = normalise_jutsu_id(kt_code)
 
-    row = (
-        await session.execute(
-            text(
-                "SELECT p.*, u.email AS caller_email, now() AS now FROM kt_packages p, "
-                "users u WHERE p.kt_code = :code AND u.id = :user"
-            ),
-            {"code": code, "user": user_id},
-        )
-    ).first()
+    lookup = text(
+        "SELECT p.*, u.email AS caller_email, now() AS now FROM kt_packages p, "
+        "users u WHERE p.kt_code = :code AND u.id = :user"
+    )
+    row = (await session.execute(lookup, {"code": code, "user": user_id})).first()
     if row is None:
-        await _audit_open(
-            session,
-            org_id=org_id,
-            actor_id=user_id,
-            action="kt.open",
-            resource_id=code[:64],
-            outcome="denied",
-        )
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=code[:64])
         raise NotFound("No package matches that ID. Check it with your administrator.")
 
     if row.revoked_at is not None:
-        await _audit_open(
-            session,
-            org_id=org_id,
-            actor_id=user_id,
-            action="kt.open",
-            resource_id=str(row.id),
-            outcome="denied",
-        )
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
         raise PermissionDenied(_REVOKED_MESSAGE)
     if row.completed_at is not None or row.expires_at <= row.now:
-        await _audit_open(
-            session,
-            org_id=org_id,
-            actor_id=user_id,
-            action="kt.open",
-            resource_id=str(row.id),
-            outcome="denied",
-        )
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
         raise PermissionDenied(_EXPIRED_MESSAGE)
 
     if row.recipient_user_id is not None:
         if row.recipient_user_id != user_id:
-            await _audit_open(
-                session,
-                org_id=org_id,
-                actor_id=user_id,
-                action="kt.open",
-                resource_id=str(row.id),
-                outcome="denied",
-            )
+            await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
             raise NotFound("No package matches that ID. Check it with your administrator.")
         return row
 
     if row.recipient_email is not None and row.recipient_email != row.caller_email.lower():
-        await _audit_open(
-            session,
-            org_id=org_id,
-            actor_id=user_id,
-            action="kt.open",
-            resource_id=str(row.id),
-            outcome="denied",
-        )
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
         raise NotFound("No package matches that ID. Check it with your administrator.")
 
-    # First eligible opener claims it. From here on, everyone else is a 404.
+    # First eligible opener claims it. From here on, everyone else is a 404. The
+    # rowcount is the race detector: two concurrent first opens both read the package
+    # unbound, but only one UPDATE binds — and the loser must get the same refusal a
+    # wrong recipient gets, not the contents plus a success row for a claim that never
+    # happened.
+    claimed = (
+        await session.execute(
+            text(
+                "UPDATE kt_packages SET recipient_user_id = :user, claimed_at = now() "
+                "WHERE id = :id AND recipient_user_id IS NULL RETURNING id"
+            ),
+            {"user": user_id, "id": row.id},
+        )
+    ).scalar_one_or_none()
+    if claimed is None:
+        row = (await session.execute(lookup, {"code": code, "user": user_id})).first()
+        if row is None or row.recipient_user_id != user_id:
+            await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=code[:64])
+            raise NotFound("No package matches that ID. Check it with your administrator.")
+        # The same caller won through a parallel request; that request wrote the
+        # success row, so this one records nothing twice.
+        return row
+
+    # On the request session deliberately: the success row must commit or roll back
+    # with the binding it describes, unlike the denials above.
     await session.execute(
         text(
-            "UPDATE kt_packages SET recipient_user_id = :user, claimed_at = now() "
-            "WHERE id = :id AND recipient_user_id IS NULL"
+            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+            "resource_id, outcome) "
+            "VALUES (:org, :actor, 'user', 'kt.claimed', 'kt_package', :rid, 'success')"
         ),
-        {"user": user_id, "id": row.id},
-    )
-    await _audit_open(
-        session,
-        org_id=org_id,
-        actor_id=user_id,
-        action="kt.claimed",
-        resource_id=str(row.id),
-        outcome="success",
+        {"org": str(org_id), "actor": str(user_id), "rid": str(row.id)},
     )
     return row
 
