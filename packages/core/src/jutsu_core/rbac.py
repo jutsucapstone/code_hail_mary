@@ -48,6 +48,17 @@ class Permission(StrEnum):
     MEMBER_UPDATE = "member:update"
     MEMBER_ASSIGN_ROLE = "member:assign_role"
 
+    #: Assign an employee's role taxonomy (practice, title, normalized level) and their
+    #: JUTSU platform role code.
+    #:
+    #: Separate from `MEMBER_ASSIGN_ROLE` on purpose. That one moves a person between
+    #: `Role`s and therefore changes what they may *do*; this one records organisational
+    #: standing and changes what they may do not at all. Sharing a guard would be the
+    #: first step towards the confusion this whole feature is shaped to prevent — a role
+    #: code is not a role, and `HRA` is not `Role.HR_ADMIN`. The four privileged codes
+    #: need more than this permission; `jutsu_api.roles` adds the rank rule.
+    MEMBER_ASSIGN_ROLE_CODE = "member:assign_role_code"
+
     INTEGRATION_READ = "integration:read"
     INTEGRATION_CONNECT = "integration:connect"
     INTEGRATION_REVOKE = "integration:revoke"
@@ -171,6 +182,9 @@ ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = Mapping
                 Permission.MEMBER_INVITE,
                 Permission.MEMBER_UPDATE,
                 Permission.MEMBER_ASSIGN_ROLE,
+                # Personnel mapping and role data are HR's domain — which is also what
+                # the role-code source document says the HRA seat controls.
+                Permission.MEMBER_ASSIGN_ROLE_CODE,
                 Permission.AUDIT_READ,
                 # Knowledge transfer is a people-transition act — offboarding, role
                 # changes, onboarding — which is HR's domain, not IT's.

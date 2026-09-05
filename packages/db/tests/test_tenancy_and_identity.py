@@ -55,6 +55,19 @@ RLS_EXEMPT_NO_TENANT = frozenset(
         "permissions",
         "role_permissions",
         "eval_results",
+        # The role taxonomy (migration 0018). Global reference data in exactly the sense
+        # `roles`/`permissions` are: one row set for the deployment, no tenant column to
+        # scope by, and made read-only to the application instead — every tenant reads
+        # the same Deloitte ladder and the same eleven JUTSU codes. The per-tenant part
+        # of this feature is the assignment on `employee_profiles`, which has been
+        # RLS-forced since 0002.
+        "role_practices",
+        "role_disciplines",
+        "role_levels",
+        "role_titles",
+        "role_title_levels",
+        "role_codes",
+        "role_level_codes",
     }
 )
 
@@ -299,6 +312,45 @@ class TestAuditImmutability:
                 )
             )
         assert "permission denied" in str(excinfo.value).lower()
+        await conn.rollback()
+
+    @pytest.mark.parametrize(
+        ("statement", "what"),
+        [
+            (
+                "INSERT INTO role_codes (code, display_name, tier, category, description, "
+                "privileged) VALUES ('GOD', 'God', 8, 'executive', 'x', true)",
+                "mint a platform role code",
+            ),
+            (
+                "UPDATE role_codes SET privileged = false WHERE code = 'CHM'",
+                "declassify a governance seat",
+            ),
+            (
+                "INSERT INTO role_title_levels (title_key, level_key, is_default) "
+                "VALUES ('software_engineer', 'partner', false)",
+                "widen a title's admitted levels",
+            ),
+            (
+                "UPDATE role_levels SET rank = 999 WHERE key = 'analyst'",
+                "reorder the seniority ladder",
+            ),
+        ],
+    )
+    async def test_taxonomy_catalogue_is_read_only_to_the_application(
+        self, conn: AsyncConnection, statement: str, what: str
+    ) -> None:
+        """The same guarantee as the role catalogue, for migration 0018's tables.
+
+        Each of these would be an escalation if the application could do it: inventing a
+        `GOD` code, quietly unmarking `CHM` as privileged so the extra rank check stops
+        firing, widening which levels a title admits so the composite foreign key stops
+        refusing, or reordering the ladder that Expert Finder compares against. All four
+        are migration-only by grant, exactly like `roles`.
+        """
+        with pytest.raises(DBAPIError) as excinfo:
+            await conn.execute(text(statement))
+        assert "permission denied" in str(excinfo.value).lower(), what
         await conn.rollback()
 
 
