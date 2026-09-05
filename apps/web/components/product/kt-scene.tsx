@@ -3,35 +3,45 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useReducedMotion } from "framer-motion";
 
+import { SplineScene } from "@/components/ui/spline-scene";
+import { Spotlight } from "@/components/ui/spotlight";
+import { cn } from "@/lib/utils";
+
 /**
- * The decorative 3D scene beside the KT entry form.
+ * The decorative 3D stage beside the KT entry form.
  *
- * Delivery is the interesting decision. The scene file itself is ours and small, so
- * it is self-hosted (/public, 31KB). The renderer is Spline's official `spline-viewer`
- * web component, loaded as a module script pinned to the scene's exact authoring
- * version — the npm distribution of that same runtime is unpackagable (its 2.x line
- * depends on `@splinetool/animation-core`, which Spline never published, and the
- * builds reference decoder files absent from the tarball, which Turbopack rightly
- * refuses at build time). A pinned unpkg URL is immutable, and a runtime that fails
- * to arrive degrades this panel to an empty framed surface — decoration falls back to
- * nothing, never to an error a person has to read.
+ * The scene *content* is self-hosted (`/public/spline`, ~1.3MB) rather than streamed
+ * from Spline's CDN. That costs deploy weight — the same objection that keeps the
+ * full-res logo out of `public/` — and buys something an image never needs: a scene
+ * fetched from someone else's bucket can be re-published or withdrawn, changing what a
+ * shipped page renders with no deploy of ours. The file carries no external asset
+ * references, so hosting it here is complete rather than partial.
  *
- * Three gates before a byte of WebGL downloads, because decoration must never tax the
- * person who cannot see it: the script is injected only when this component decides to
- * render; it renders only at `lg` and up (on a phone the column does not exist); and
- * `prefers-reduced-motion` skips it entirely, since the scene's whole point is ambient
- * motion.
+ * The *viewer* is still a pinned third-party script (see `spline-scene.tsx` for why the
+ * npm package cannot be used), so this is not a claim that the panel survives an egress
+ * proxy — if unpkg is unreachable the scene never draws. It degrades to the lit empty
+ * stage, which is a designed state rather than a broken one, and nothing else on the
+ * page depends on it.
  *
- * A fourth gate exists because of what the runtime does with a zero-size host: it
- * boots WebGPU anyway and then fails to allocate a 0×0 swapchain texture on every
- * frame, for ever — hundreds of `GPUValidationError`s a minute that Next's dev overlay
- * dutifully counts as issues. Window width alone cannot rule that out (the panel can
- * be `display: none` or mid-layout while the window is wide), so the viewer element
- * itself mounts only while the panel's *measured* box is non-zero, and unmounts the
- * moment it collapses.
+ * Three gates stand before any of that downloads, because decoration must never tax the
+ * person who cannot see it:
+ *
+ * * it renders at `lg` and up only — below that the page has no second column, and the
+ *   query matches Tailwind's breakpoint exactly so the two cannot drift;
+ * * `prefers-reduced-motion` skips it entirely, since ambient motion is the whole point
+ *   of the scene and there is nothing left worth downloading once it is unwelcome;
+ * * the viewer mounts only while the panel's *measured* box is non-zero. Given a
+ *   zero-size host the runtime boots WebGPU anyway and then fails to allocate a 0×0
+ *   swapchain texture on every frame, for ever — hundreds of `GPUValidationError`s a
+ *   minute. Window width alone cannot rule that out, since the panel can be
+ *   `display: none` or mid-layout while the window is wide.
+ *
+ * The stage is deliberately dark in both themes. It is a lit surface for a 3D object
+ * rather than a themed panel, it carries no text, and it is `aria-hidden` — so there is
+ * no contrast pair to keep, and the light theme gets the same designed rendering.
  */
 
-const VIEWER_SRC = "https://unpkg.com/@splinetool/viewer@2.0.21/build/spline-viewer.js";
+const SCENE = "/spline/kt-robot.splinecode";
 
 const WIDE_QUERY = "(min-width: 1024px)";
 
@@ -54,29 +64,17 @@ const getWideServerSnapshot = () => false;
 export function KtScene({ className }: { className?: string }) {
   const wide = useSyncExternalStore(subscribeWide, getWideSnapshot, getWideServerSnapshot);
   const shouldReduceMotion = useReducedMotion();
-  const active = wide && !shouldReduceMotion;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Without ResizeObserver there is no way to measure and so no way to protect —
-  // start visible there (the plain mount) rather than silently never rendering.
+  // start visible there rather than silently never rendering.
   const [hasSize, setHasSize] = useState(() => typeof ResizeObserver !== "function");
 
-  useEffect(() => {
-    if (!active) return;
-    if (document.querySelector("script[data-spline-viewer]")) return;
-    const script = document.createElement("script");
-    script.type = "module";
-    script.src = VIEWER_SRC;
-    script.dataset.splineViewer = "";
-    document.head.appendChild(script);
-    // Deliberately never removed: a module script cannot be un-executed, and the
-    // custom element stays registered for the life of the page either way.
-  }, [active]);
+  const active = wide && !shouldReduceMotion;
 
   useEffect(() => {
     if (!active) return;
     const host = hostRef.current;
-    if (host === null) return;
-    if (typeof ResizeObserver !== "function") return;
+    if (host === null || typeof ResizeObserver !== "function") return;
     const observer = new ResizeObserver((entries) => {
       const box = entries[entries.length - 1]?.contentRect;
       setHasSize(box !== undefined && box.width >= 1 && box.height >= 1);
@@ -88,33 +86,9 @@ export function KtScene({ className }: { className?: string }) {
   if (!active) return null;
 
   return (
-    <div aria-hidden="true" className={className} ref={hostRef}>
-      {/* The custom element upgrades in place once the module registers it; until
-          then it is an inert block and the panel's own surface shows. The scene keeps
-          its own dark rendering deliberately: its glass is lit against the backdrop
-          the artist gave it, and removing that (canvas override or hiding the
-          backdrop mesh) collapses the material into an unlit blob — verified live.
-          The watermark is off in the scene file itself, via the same
-          publish.settings.web.logo flag the Spline editor writes on export. */}
-      {hasSize ? (
-        <spline-viewer
-          url="/spline/kt-orb.splinecode"
-          loading-anim-type="none"
-          style={{ width: "100%", height: "100%", display: "block" }}
-        />
-      ) : null}
+    <div aria-hidden="true" className={cn("isolate bg-black/[0.96]", className)} ref={hostRef}>
+      <Spotlight className="-top-24 left-8" size={360} />
+      {hasSize ? <SplineScene scene={SCENE} /> : null}
     </div>
   );
-}
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace React.JSX {
-    interface IntrinsicElements {
-      "spline-viewer": React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        url?: string;
-        "loading-anim-type"?: string;
-      };
-    }
-  }
 }
