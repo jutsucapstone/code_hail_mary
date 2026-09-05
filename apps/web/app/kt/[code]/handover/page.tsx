@@ -38,6 +38,19 @@ export default function Page() {
     .map(([type, count]) => count + " " + (TYPE_LABELS[type] ?? type))
     .join(" · ");
 
+  /* How to describe the person whose context this is.
+   *
+   * The assigned title is preferred over the free-text `designation` because it is the
+   * one the organisation stands behind, and the normalized level is appended because it
+   * is the part a recipient from another practice can actually interpret — "Audit
+   * Senior" means little to an engineer; "Audit Senior · Senior Consultant" places them.
+   * Both arrive only when the package's scope includes the profile, so an empty string
+   * here is a scope decision rather than missing data. */
+  const subjectRole =
+    [pkg.subject.role_title ?? pkg.subject.designation, pkg.subject.role_level]
+      .filter(Boolean)
+      .join(" · ") || null;
+
   return (
     <div className="flex flex-col gap-6">
       <h2 className="display text-xl font-semibold">Handover</h2>
@@ -47,8 +60,8 @@ export default function Page() {
           <strong className="text-foreground">
             {pkg.subject.display_name ?? "one colleague"}
           </strong>
-          {pkg.subject.designation ? ` (${pkg.subject.designation})` : ""} and stays open
-          until <When iso={pkg.expires_at} />. What you can act on now:
+          {subjectRole ? ` (${subjectRole})` : ""} and stays open until{" "}
+          <When iso={pkg.expires_at} />. What you can act on now:
         </p>
         {holdings ? (
           <p className="font-mono text-[0.6875rem] uppercase tracking-[0.14em] text-brand">

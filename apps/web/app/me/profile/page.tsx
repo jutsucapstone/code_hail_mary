@@ -69,6 +69,56 @@ function blankToNull(value: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+/**
+ * The role an administrator assigned, shown read-only.
+ *
+ * Deliberately outside the form. Everything below it is the employee's own to write;
+ * these four facts are not, and putting them in the same fieldset would suggest
+ * otherwise. `designation` on the form is what somebody calls themselves — this is what
+ * the organisation records, and what Expert Finder compares people by.
+ *
+ * The seniority is shown beside the title rather than instead of it: an Audit Senior is
+ * a Senior Consultant *for comparison*, and replacing one with the other on their own
+ * profile would tell them their job title had changed.
+ */
+function AssignedRole({ role }: { role: NonNullable<EmployeeProfile["role"]> }) {
+  const facts: Array<[string, string | null]> = [
+    ["Practice", role.discipline ? `${role.practice} · ${role.discipline}` : role.practice],
+    ["Role title", role.role_title],
+    ["Seniority", role.role_level],
+    [
+      "Platform role code",
+      role.role_code ? `${role.role_code}${role.role_code_name ? ` — ${role.role_code_name}` : ""}` : null,
+    ],
+  ];
+
+  return (
+    <section
+      aria-labelledby="assigned-role-heading"
+      className="rounded-2xl border border-hairline bg-surface/40 p-6"
+      data-testid="assigned-role"
+    >
+      <p className="eyebrow text-muted-foreground/80">Assigned by your organisation</p>
+      <h2 id="assigned-role-heading" className="mt-3 text-lg font-semibold">
+        Your role
+      </h2>
+      <dl className="mt-5 grid gap-4 sm:grid-cols-2">
+        {facts.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+            <dd className="mt-1 text-sm text-foreground">{value ?? "Not set"}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
+        {role.mapping_status === "unmapped"
+          ? "Your administrator has not recorded your role information yet."
+          : "Your administrator maintains this. It records where you sit in the organisation and does not change what you are able to read."}
+      </p>
+    </section>
+  );
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<EmployeeProfile | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY);
@@ -208,6 +258,7 @@ export default function ProfilePage() {
         />
       ) : (
         <>
+          {profile?.role ? <AssignedRole role={profile.role} /> : null}
           {missing ? (
             <div
               className="rounded-2xl border border-hairline bg-surface/40 p-6"

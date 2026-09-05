@@ -117,6 +117,74 @@
         "title": "AskResponse",
         "type": "object"
       },
+      "AssignmentPayload": {
+        "additionalProperties": false,
+        "description": "What an administrator is setting.\n\n`extra=\"forbid\"` is load-bearing here beyond tidiness: it is what stops a client\nsmuggling `org_id`, `user_id` or `role_mapping_status` into the write. The tenant and\nthe target come from the session and the path, and the status is derived from what\nwas actually assigned.\n\nEvery field is optional and `None` means *clear it* \u2014 the same PATCH semantics the\nprofile endpoint uses. Sending `{}` is a no-op rather than a wipe.",
+        "properties": {
+          "practice_key": {
+            "anyOf": [
+              {
+                "maxLength": 48,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice Key"
+          },
+          "role_code": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Code"
+          },
+          "role_level_key": {
+            "anyOf": [
+              {
+                "maxLength": 48,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level Key"
+          },
+          "role_title_custom": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title Custom"
+          },
+          "role_title_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title Key"
+          }
+        },
+        "title": "AssignmentPayload",
+        "type": "object"
+      },
       "AuditEntry": {
         "properties": {
           "action": {
@@ -275,6 +343,46 @@
         "title": "Capabilities",
         "type": "object"
       },
+      "Catalogue": {
+        "properties": {
+          "codes": {
+            "items": {
+              "$ref": "#/components/schemas/Code"
+            },
+            "title": "Codes",
+            "type": "array"
+          },
+          "levels": {
+            "items": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "title": "Levels",
+            "type": "array"
+          },
+          "practices": {
+            "items": {
+              "$ref": "#/components/schemas/Practice"
+            },
+            "title": "Practices",
+            "type": "array"
+          },
+          "titles": {
+            "items": {
+              "$ref": "#/components/schemas/Title"
+            },
+            "title": "Titles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "practices",
+          "levels",
+          "titles",
+          "codes"
+        ],
+        "title": "Catalogue",
+        "type": "object"
+      },
       "CatalogueEntryOut": {
         "properties": {
           "allowed": {
@@ -415,6 +523,44 @@
           "source_system"
         ],
         "title": "CitationView",
+        "type": "object"
+      },
+      "Code": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "privileged": {
+            "title": "Privileged",
+            "type": "boolean"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "display_name",
+          "tier",
+          "category",
+          "description",
+          "privileged"
+        ],
+        "title": "Code",
         "type": "object"
       },
       "ConnectStarted": {
@@ -562,6 +708,24 @@
         "title": "DepartmentsOut",
         "type": "object"
       },
+      "Discipline": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "display_name"
+        ],
+        "title": "Discipline",
+        "type": "object"
+      },
       "Employee": {
         "properties": {
           "created_at": {
@@ -611,6 +775,33 @@
             ],
             "title": "Last Activity At"
           },
+          "mapping_status": {
+            "default": "unmapped",
+            "title": "Mapping Status",
+            "type": "string"
+          },
+          "practice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice"
+          },
+          "practice_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice Key"
+          },
           "role": {
             "anyOf": [
               {
@@ -620,6 +811,61 @@
                 "type": "null"
               }
             ]
+          },
+          "role_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Code"
+          },
+          "role_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level"
+          },
+          "role_level_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level Key"
+          },
+          "role_level_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level Rank"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
           },
           "status": {
             "title": "Status",
@@ -1574,6 +1820,46 @@
         "title": "KtScopesOut",
         "type": "object"
       },
+      "Level": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "suggested_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Code"
+          }
+        },
+        "required": [
+          "key",
+          "display_name",
+          "rank",
+          "description",
+          "suggested_code"
+        ],
+        "title": "Level",
+        "type": "object"
+      },
       "LinkPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1808,6 +2094,7 @@
           "member:invite",
           "member:update",
           "member:assign_role",
+          "member:assign_role_code",
           "integration:read",
           "integration:connect",
           "integration:revoke",
@@ -1873,6 +2160,32 @@
           "allowed"
         ],
         "title": "PolicyPayload",
+        "type": "object"
+      },
+      "Practice": {
+        "properties": {
+          "disciplines": {
+            "items": {
+              "$ref": "#/components/schemas/Discipline"
+            },
+            "title": "Disciplines",
+            "type": "array"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "display_name",
+          "disciplines"
+        ],
+        "title": "Practice",
         "type": "object"
       },
       "ProfilePatch": {
@@ -2040,6 +2353,16 @@
             ],
             "title": "Responsibilities"
           },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Taxonomy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "skills": {
             "items": {
               "type": "string"
@@ -2061,7 +2384,8 @@
           "phone_e164",
           "skills",
           "responsibilities",
-          "updated_at"
+          "updated_at",
+          "role"
         ],
         "title": "ProfileView",
         "type": "object"
@@ -2712,6 +3036,39 @@
               }
             ],
             "title": "Display Name"
+          },
+          "practice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice"
+          },
+          "role_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
           }
         },
         "required": [
@@ -2755,6 +3112,200 @@
           "job_id"
         ],
         "title": "SyncQueued",
+        "type": "object"
+      },
+      "Taxonomy": {
+        "description": "One person's assignment, with the catalogue's names already resolved.",
+        "properties": {
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "mapping_status": {
+            "title": "Mapping Status",
+            "type": "string"
+          },
+          "practice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice"
+          },
+          "practice_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Practice Key"
+          },
+          "role_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Code"
+          },
+          "role_code_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Code Name"
+          },
+          "role_code_tier": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Code Tier"
+          },
+          "role_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level"
+          },
+          "role_level_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level Key"
+          },
+          "role_level_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Level Rank"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
+          },
+          "role_title_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title Key"
+          }
+        },
+        "required": [
+          "practice_key",
+          "practice",
+          "discipline",
+          "role_title_key",
+          "role_title",
+          "role_level_key",
+          "role_level",
+          "role_level_rank",
+          "role_code",
+          "role_code_name",
+          "role_code_tier",
+          "mapping_status"
+        ],
+        "title": "Taxonomy",
+        "type": "object"
+      },
+      "Title": {
+        "properties": {
+          "default_level_key": {
+            "title": "Default Level Key",
+            "type": "string"
+          },
+          "discipline_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline Key"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "level_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Level Keys",
+            "type": "array"
+          },
+          "practice_key": {
+            "title": "Practice Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "practice_key",
+          "discipline_key",
+          "display_name",
+          "level_keys",
+          "default_level_key"
+        ],
+        "title": "Title",
         "type": "object"
       },
       "ValidationError": {
@@ -3300,7 +3851,7 @@
     },
     "/v1/employees": {
       "get": {
-        "description": "Everyone in the caller's organisation.\n\nThe organisation is never a parameter. It comes from the session, and row-level\nsecurity scopes the query \u2014 so there is no combination of arguments that returns\nanother tenant's people.",
+        "description": "Everyone in the caller's organisation.\n\nThe organisation is never a parameter. It comes from the session, and row-level\nsecurity scopes the query \u2014 so there is no combination of arguments that returns\nanother tenant's people.\n\n`level` is the Expert Finder filter: it matches the NORMALIZED seniority, so asking\nfor `senior_consultant` returns the Senior Software Engineer, the Audit Senior and\nthe Senior Tax Consultant together even though no two of those titles share a word.\n`unmapped` is the other side of the same coin \u2014 the review queue of people nobody has\nplaced in the taxonomy yet, which migration 0018 deliberately left for an\nadministrator rather than guessing.",
         "operationId": "read_employees_v1_employees_get",
         "parameters": [
           {
@@ -3347,6 +3898,67 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "practice",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 48,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Practice"
+            }
+          },
+          {
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 48,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Level"
+            }
+          },
+          {
+            "in": "query",
+            "name": "role_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 3,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unmapped",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unmapped",
+              "type": "boolean"
             }
           }
         ],
@@ -3656,6 +4268,102 @@
         "summary": "Assign Role",
         "tags": [
           "employees"
+        ]
+      }
+    },
+    "/v1/employees/{user_id}/role-assignment": {
+      "get": {
+        "description": "One employee's assignment.\n\nRow-level security scopes the read, so a user id from another tenant is not found\nrather than refused \u2014 the two are indistinguishable to the caller, which is the point.",
+        "operationId": "read_employee_taxonomy_v1_employees__user_id__role_assignment_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Taxonomy"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Employee Taxonomy",
+        "tags": [
+          "roles"
+        ]
+      },
+      "patch": {
+        "description": "Set an employee's practice, title, normalized level and platform role code.\n\nThe permission is the first gate and the service adds the second: seating somebody in\none of the four governance codes needs Owner or Super Admin, and may never be done to\noneself. Every change writes an audit row carrying the before and after of each field\nthat actually moved.",
+        "operationId": "assign_employee_taxonomy_v1_employees__user_id__role_assignment_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Taxonomy"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign Employee Taxonomy",
+        "tags": [
+          "roles"
         ]
       }
     },
@@ -4888,6 +5596,28 @@
         "summary": "Register Verify",
         "tags": [
           "orgs"
+        ]
+      }
+    },
+    "/v1/role-catalogue": {
+      "get": {
+        "description": "The practices, levels, titles and platform codes this deployment knows.\n\nIdentical for every organisation \u2014 it is migration-seeded reference data, not tenant\ndata \u2014 so there is nothing here to scope and nothing a caller could widen.",
+        "operationId": "read_role_catalogue_v1_role_catalogue_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalogue"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Role Catalogue",
+        "tags": [
+          "roles"
         ]
       }
     },

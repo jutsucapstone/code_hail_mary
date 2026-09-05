@@ -107,6 +107,16 @@ class SubjectProfile:
     display_name: str | None
     designation: str | None
     department: str | None
+    #: The assigned taxonomy, resolved to names. Carried under the SAME `profile` scope
+    #: as the two fields above, never as a separate grant: a recipient who may not see
+    #: what somebody's job is may not see its normalized grade either.
+    #:
+    #: It answers the question a handover actually asks — "how senior was the person
+    #: whose context I am inheriting, in terms I can compare" — which free-text
+    #: `designation` cannot, because every practice spells it differently.
+    practice: str | None = None
+    role_title: str | None = None
+    role_level: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,8 +481,15 @@ async def claim_or_open(
         profile_row = (
             await session.execute(
                 text(
-                    "SELECT u.display_name, ep.designation, ep.department FROM users u "
+                    "SELECT u.display_name, ep.designation, ep.department, "
+                    "  p.display_name AS practice, "
+                    "  COALESCE(t.display_name, ep.role_title_custom) AS role_title, "
+                    "  l.display_name AS role_level "
+                    "FROM users u "
                     "LEFT JOIN employee_profiles ep ON ep.user_id = u.id "
+                    "LEFT JOIN role_practices p ON p.key = ep.practice_key "
+                    "LEFT JOIN role_titles t ON t.key = ep.role_title_key "
+                    "LEFT JOIN role_levels l ON l.key = ep.role_level_key "
                     "WHERE u.id = :subject"
                 ),
                 {"subject": row.subject_user_id},  # type: ignore[attr-defined]
@@ -482,7 +499,8 @@ async def claim_or_open(
         profile_row = (
             await session.execute(
                 text(
-                    "SELECT display_name, NULL AS designation, NULL AS department "
+                    "SELECT display_name, NULL AS designation, NULL AS department, "
+                    "  NULL AS practice, NULL AS role_title, NULL AS role_level "
                     "FROM users WHERE id = :subject"
                 ),
                 {"subject": row.subject_user_id},  # type: ignore[attr-defined]
@@ -501,6 +519,9 @@ async def claim_or_open(
             display_name=profile_row.display_name if profile_row else None,
             designation=profile_row.designation if profile_row else None,
             department=profile_row.department if profile_row else None,
+            practice=profile_row.practice if profile_row else None,
+            role_title=profile_row.role_title if profile_row else None,
+            role_level=profile_row.role_level if profile_row else None,
         ),
     )
 

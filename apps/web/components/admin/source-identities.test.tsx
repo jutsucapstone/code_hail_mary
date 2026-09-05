@@ -36,6 +36,9 @@ const EMPLOYEE = {
   jutsu_id: "JUTSU-MEM-1234ABCD",
   created_at: "2026-01-01T00:00:00Z",
   last_activity_at: null,
+  // Somebody the role taxonomy has not placed yet — the state migration 0018 leaves
+  // every pre-existing person in, and the one this component has to render regardless.
+  mapping_status: "unmapped",
 };
 
 function identity(overrides: Json = {}): Json {

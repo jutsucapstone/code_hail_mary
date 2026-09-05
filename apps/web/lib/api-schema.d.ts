@@ -288,6 +288,13 @@ export interface paths {
          *     The organisation is never a parameter. It comes from the session, and row-level
          *     security scopes the query — so there is no combination of arguments that returns
          *     another tenant's people.
+         *
+         *     `level` is the Expert Finder filter: it matches the NORMALIZED seniority, so asking
+         *     for `senior_consultant` returns the Senior Software Engineer, the Audit Senior and
+         *     the Senior Tax Consultant together even though no two of those titles share a word.
+         *     `unmapped` is the other side of the same coin — the review queue of people nobody has
+         *     placed in the taxonomy yet, which migration 0018 deliberately left for an
+         *     administrator rather than guessing.
          */
         get: operations["read_employees_v1_employees_get"];
         put?: never;
@@ -416,6 +423,38 @@ export interface paths {
          *     both roles.
          */
         patch: operations["assign_role_v1_employees__user_id__role_patch"];
+        trace?: never;
+    };
+    "/v1/employees/{user_id}/role-assignment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Employee Taxonomy
+         * @description One employee's assignment.
+         *
+         *     Row-level security scopes the read, so a user id from another tenant is not found
+         *     rather than refused — the two are indistinguishable to the caller, which is the point.
+         */
+        get: operations["read_employee_taxonomy_v1_employees__user_id__role_assignment_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Assign Employee Taxonomy
+         * @description Set an employee's practice, title, normalized level and platform role code.
+         *
+         *     The permission is the first gate and the service adds the second: seating somebody in
+         *     one of the four governance codes needs Owner or Super Admin, and may never be done to
+         *     oneself. Every change writes an audit row carrying the before and after of each field
+         *     that actually moved.
+         */
+        patch: operations["assign_employee_taxonomy_v1_employees__user_id__role_assignment_patch"];
         trace?: never;
     };
     "/v1/evidence/{chunk_id}": {
@@ -1051,6 +1090,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/role-catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Role Catalogue
+         * @description The practices, levels, titles and platform codes this deployment knows.
+         *
+         *     Identical for every organisation — it is migration-seeded reference data, not tenant
+         *     data — so there is nothing here to scope and nothing a caller could widen.
+         */
+        get: operations["read_role_catalogue_v1_role_catalogue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/roles": {
         parameters: {
             query?: never;
@@ -1185,6 +1247,30 @@ export interface components {
             /** Sources */
             sources: components["schemas"]["SearchResultView"][];
         };
+        /**
+         * AssignmentPayload
+         * @description What an administrator is setting.
+         *
+         *     `extra="forbid"` is load-bearing here beyond tidiness: it is what stops a client
+         *     smuggling `org_id`, `user_id` or `role_mapping_status` into the write. The tenant and
+         *     the target come from the session and the path, and the status is derived from what
+         *     was actually assigned.
+         *
+         *     Every field is optional and `None` means *clear it* — the same PATCH semantics the
+         *     profile endpoint uses. Sending `{}` is a no-op rather than a wipe.
+         */
+        AssignmentPayload: {
+            /** Practice Key */
+            practice_key?: string | null;
+            /** Role Code */
+            role_code?: string | null;
+            /** Role Level Key */
+            role_level_key?: string | null;
+            /** Role Title Custom */
+            role_title_custom?: string | null;
+            /** Role Title Key */
+            role_title_key?: string | null;
+        };
         /** AuditEntry */
         AuditEntry: {
             /** Action */
@@ -1237,6 +1323,17 @@ export interface components {
             role: components["schemas"]["Role"];
             /** User Id */
             user_id: string;
+        };
+        /** Catalogue */
+        Catalogue: {
+            /** Codes */
+            codes: components["schemas"]["Code"][];
+            /** Levels */
+            levels: components["schemas"]["Level"][];
+            /** Practices */
+            practices: components["schemas"]["Practice"][];
+            /** Titles */
+            titles: components["schemas"]["Title"][];
         };
         /** CatalogueEntryOut */
         CatalogueEntryOut: {
@@ -1295,6 +1392,21 @@ export interface components {
             /** Source System */
             source_system: string;
         };
+        /** Code */
+        Code: {
+            /** Category */
+            category: string;
+            /** Code */
+            code: string;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Privileged */
+            privileged: boolean;
+            /** Tier */
+            tier: number;
+        };
         /** ConnectStarted */
         ConnectStarted: {
             /** Authorize Url */
@@ -1343,6 +1455,13 @@ export interface components {
             /** Unassigned */
             unassigned: number;
         };
+        /** Discipline */
+        Discipline: {
+            /** Display Name */
+            display_name: string;
+            /** Key */
+            key: string;
+        };
         /** Employee */
         Employee: {
             /**
@@ -1360,7 +1479,26 @@ export interface components {
             jutsu_id: string | null;
             /** Last Activity At */
             last_activity_at: string | null;
+            /**
+             * Mapping Status
+             * @default unmapped
+             */
+            mapping_status: string;
+            /** Practice */
+            practice?: string | null;
+            /** Practice Key */
+            practice_key?: string | null;
             role: components["schemas"]["Role"] | null;
+            /** Role Code */
+            role_code?: string | null;
+            /** Role Level */
+            role_level?: string | null;
+            /** Role Level Key */
+            role_level_key?: string | null;
+            /** Role Level Rank */
+            role_level_rank?: number | null;
+            /** Role Title */
+            role_title?: string | null;
             /** Status */
             status: string;
         };
@@ -1722,6 +1860,19 @@ export interface components {
             /** Supported */
             supported: string[];
         };
+        /** Level */
+        Level: {
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Key */
+            key: string;
+            /** Rank */
+            rank: number;
+            /** Suggested Code */
+            suggested_code: string | null;
+        };
         /** LinkPayload */
         LinkPayload: {
             source_system: components["schemas"]["SourceSystem"];
@@ -1822,7 +1973,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
+        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
         /** PoliciesOut */
         PoliciesOut: {
             /** Items */
@@ -1841,6 +1992,15 @@ export interface components {
         PolicyPayload: {
             /** Allowed */
             allowed: boolean;
+        };
+        /** Practice */
+        Practice: {
+            /** Disciplines */
+            disciplines: components["schemas"]["Discipline"][];
+            /** Display Name */
+            display_name: string;
+            /** Key */
+            key: string;
         };
         /**
          * ProfilePatch
@@ -1893,6 +2053,7 @@ export interface components {
             phone_e164: string | null;
             /** Responsibilities */
             responsibilities: string | null;
+            role: components["schemas"]["Taxonomy"] | null;
             /** Skills */
             skills: string[];
             /**
@@ -2173,6 +2334,12 @@ export interface components {
             designation: string | null;
             /** Display Name */
             display_name: string | null;
+            /** Practice */
+            practice?: string | null;
+            /** Role Level */
+            role_level?: string | null;
+            /** Role Title */
+            role_title?: string | null;
         };
         /** SummaryOut */
         SummaryOut: {
@@ -2191,6 +2358,51 @@ export interface components {
              * @default queued
              */
             status: string;
+        };
+        /**
+         * Taxonomy
+         * @description One person's assignment, with the catalogue's names already resolved.
+         */
+        Taxonomy: {
+            /** Discipline */
+            discipline: string | null;
+            /** Mapping Status */
+            mapping_status: string;
+            /** Practice */
+            practice: string | null;
+            /** Practice Key */
+            practice_key: string | null;
+            /** Role Code */
+            role_code: string | null;
+            /** Role Code Name */
+            role_code_name: string | null;
+            /** Role Code Tier */
+            role_code_tier: number | null;
+            /** Role Level */
+            role_level: string | null;
+            /** Role Level Key */
+            role_level_key: string | null;
+            /** Role Level Rank */
+            role_level_rank: number | null;
+            /** Role Title */
+            role_title: string | null;
+            /** Role Title Key */
+            role_title_key: string | null;
+        };
+        /** Title */
+        Title: {
+            /** Default Level Key */
+            default_level_key: string;
+            /** Discipline Key */
+            discipline_key: string | null;
+            /** Display Name */
+            display_name: string;
+            /** Key */
+            key: string;
+            /** Level Keys */
+            level_keys: string[];
+            /** Practice Key */
+            practice_key: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -2552,6 +2764,10 @@ export interface operations {
                 limit?: number;
                 cursor?: string | null;
                 q?: string | null;
+                practice?: string | null;
+                level?: string | null;
+                role_code?: string | null;
+                unmapped?: boolean;
             };
             header?: never;
             path?: never;
@@ -2761,6 +2977,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RoleChanged"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_employee_taxonomy_v1_employees__user_id__role_assignment_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Taxonomy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_employee_taxonomy_v1_employees__user_id__role_assignment_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignmentPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Taxonomy"];
                 };
             };
             /** @description Validation Error */
@@ -3624,6 +3906,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_role_catalogue_v1_role_catalogue_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalogue"];
                 };
             };
         };

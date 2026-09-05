@@ -31,6 +31,7 @@ from jutsu_api.routers import kt as kt_router
 from jutsu_api.routers import me as me_router
 from jutsu_api.routers import operations as operations_router
 from jutsu_api.routers import orgs as orgs_router
+from jutsu_api.routers import roles as roles_router
 from jutsu_api.routers import search as search_router
 from jutsu_api.security import public
 
@@ -201,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(operations_router.router)
     app.include_router(connections_router.router)
     app.include_router(kt_router.router)
+    app.include_router(roles_router.router)
 
     return app
 

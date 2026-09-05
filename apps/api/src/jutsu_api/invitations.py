@@ -355,7 +355,15 @@ async def accept_invitation(
 
 
 async def list_employees(
-    session: AsyncSession, *, limit: int, cursor: str | None, query: str | None
+    session: AsyncSession,
+    *,
+    limit: int,
+    cursor: str | None,
+    query: str | None,
+    practice: str | None = None,
+    level: str | None = None,
+    code: str | None = None,
+    unmapped: bool = False,
 ) -> tuple[list[dict[str, object]], str | None]:
     """People in the caller's organisation.
 
@@ -367,6 +375,16 @@ async def list_employees(
     No `org_id` predicate appears anywhere below. That is deliberate: row-level security
     supplies it, and adding a redundant one as "defence in depth" would mask a broken
     policy — the isolation test would still pass while the policy sat inert.
+
+    The taxonomy filters (`practice`, `level`, `code`, `unmapped`) are what make this the
+    Expert Finder query as well as the admin roster. `level` is the one that earns the
+    join: it matches a NORMALIZED seniority across practices whose titles look nothing
+    alike, so filtering to `senior_consultant` returns the Senior Software Engineer, the
+    Audit Senior and the Senior Tax Consultant together — while each row still carries
+    its own real title, because the point is to compare people, not to rename them.
+
+    Every filter value is a bound parameter; only the fragment text is interpolated, and
+    each fragment is a literal written here.
     """
     bounded = max(1, min(limit, 100))
 
@@ -384,7 +402,27 @@ async def list_employees(
 
     if query:
         params["query"] = f"%{query.strip().lower()}%"
-        filters.append("(lower(u.email) LIKE :query OR lower(u.display_name) LIKE :query)")
+        filters.append(
+            "(lower(u.email) LIKE :query OR lower(u.display_name) LIKE :query "
+            "OR lower(coalesce(t.display_name, ep.role_title_custom, '')) LIKE :query)"
+        )
+
+    if practice:
+        params["practice"] = practice
+        filters.append("ep.practice_key = :practice")
+
+    if level:
+        params["level"] = level
+        filters.append("ep.role_level_key = :level")
+
+    if code:
+        params["code"] = code
+        filters.append("ep.role_code = :code")
+
+    if unmapped:
+        # The review queue: everybody migration 0018 left alone, plus anybody added
+        # since who has no profile row at all.
+        filters.append("coalesce(ep.role_mapping_status, 'unmapped') = 'unmapped'")
 
     # S608: every fragment joined into the WHERE clause is a literal defined above. The
     # caller's search text and cursor are bound parameters and never reach the SQL text.
@@ -394,8 +432,17 @@ async def list_employees(
         await session.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.jutsu_id, u.status, "  # noqa: S608
-                "u.created_at, u.last_activity_at, ur.role_key "
-                "FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id "
+                "u.created_at, u.last_activity_at, ur.role_key, "
+                "ep.practice_key, p.display_name AS practice, "
+                "coalesce(t.display_name, ep.role_title_custom) AS role_title, "
+                "ep.role_level_key, l.display_name AS role_level, l.rank AS role_level_rank, "
+                "ep.role_code, coalesce(ep.role_mapping_status, 'unmapped') AS mapping_status "
+                "FROM users u "
+                "LEFT JOIN user_roles ur ON ur.user_id = u.id "
+                "LEFT JOIN employee_profiles ep ON ep.user_id = u.id "
+                "LEFT JOIN role_practices p ON p.key = ep.practice_key "
+                "LEFT JOIN role_titles t ON t.key = ep.role_title_key "
+                "LEFT JOIN role_levels l ON l.key = ep.role_level_key "
                 f"WHERE {' AND '.join(filters)} "
                 "ORDER BY u.created_at, u.id LIMIT :limit"
             ),
@@ -418,6 +465,14 @@ async def list_employees(
                 "role": row.role_key,
                 "created_at": row.created_at,
                 "last_activity_at": row.last_activity_at,
+                "practice_key": row.practice_key,
+                "practice": row.practice,
+                "role_title": row.role_title,
+                "role_level_key": row.role_level_key,
+                "role_level": row.role_level,
+                "role_level_rank": row.role_level_rank,
+                "role_code": row.role_code,
+                "mapping_status": row.mapping_status,
             }
             for row in page
         ],

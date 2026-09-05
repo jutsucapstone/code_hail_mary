@@ -6,6 +6,7 @@ import { Fragment } from "react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { EmployeeConnections } from "@/components/admin/employee-connections";
+import { RoleAssignment } from "@/components/admin/role-assignment";
 import { LoadMore } from "@/components/admin/page-scaffold";
 import { ErrorState, LoadingRegion, PermissionDenied, Skeleton } from "@/components/states";
 import { Field } from "@/components/pilot/field";
@@ -19,6 +20,7 @@ import { ROLE_LABELS, can } from "@/lib/permissions";
 
 type Employee = components["schemas"]["Employee"];
 type Role = components["schemas"]["Role"];
+type Catalogue = components["schemas"]["Catalogue"];
 
 /**
  * The people in an organisation, and the form that adds one.
@@ -94,12 +96,28 @@ export default function EmployeesPage() {
   const mayReadConnections = can(capabilities, "integration:read");
   const [openConnections, setOpenConnections] = useState<string | null>(null);
   const [changingRole, setChangingRole] = useState<string | null>(null);
+  const mayAssignTaxonomy = can(capabilities, "member:assign_role_code");
+  // Only an Owner or Super Admin may seat somebody in CHM/CEO/ITA/HRA. Mirrored from
+  // the server's rule so the dropdown does not offer what the API would refuse; the
+  // API enforces it regardless of what this computes.
+  const canSeatGovernance =
+    capabilities.role === "owner" || capabilities.role === "super_admin";
+  const [openRole, setOpenRole] = useState<string | null>(null);
+  const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
+  const [practice, setPractice] = useState("");
+  const [level, setLevel] = useState("");
+  const [onlyUnmapped, setOnlyUnmapped] = useState(false);
 
   const load = useCallback(
     (search: string) => {
       if (!mayRead) return;
       api
-        .employees({ q: search || null })
+        .employees({
+          q: search || null,
+          practice: practice || null,
+          level: level || null,
+          unmapped: onlyUnmapped,
+        })
         .then((result) => {
           setPage(result);
           // A fresh head page starts a fresh walk; stale older pages belong to the
@@ -117,12 +135,32 @@ export default function EmployeesPage() {
           });
         });
     },
-    [mayRead],
+    [mayRead, practice, level, onlyUnmapped],
   );
 
   useEffect(() => {
     load(query);
   }, [load, query]);
+
+  // Global reference data, identical for every organisation and unchanged between
+  // deploys, so it is fetched once for the page rather than per row.
+  useEffect(() => {
+    if (!mayRead) return;
+    let cancelled = false;
+    api
+      .roleCatalogue()
+      .then((result) => {
+        if (!cancelled) setCatalogue(result);
+      })
+      .catch(() => {
+        // A missing catalogue disables the editor and leaves the roster readable. It is
+        // reference data for a control, not the page's reason to exist.
+        if (!cancelled) setCatalogue(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mayRead]);
 
   async function onInvite(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -162,7 +200,13 @@ export default function EmployeesPage() {
     if (!next) return;
     setLoadingMore(true);
     try {
-      const result = await api.employees({ q: query || null, cursor: next });
+      const result = await api.employees({
+        q: query || null,
+        cursor: next,
+        practice: practice || null,
+        level: level || null,
+        unmapped: onlyUnmapped,
+      });
       setOlder((current) => [...current, ...result.items]);
       setCursor(result.next_cursor);
       if (result.next_cursor === null) setExhausted(true);
@@ -191,6 +235,11 @@ export default function EmployeesPage() {
   if (!mayRead) {
     return <PermissionDenied what="permission to see the people in this organisation" />;
   }
+
+  // Derived rather than written twice: the expanding panels span the whole row, and a
+  // column added above without updating a hardcoded number leaves them visibly short.
+  const COLUMN_COUNT =
+    7 + (mayReadConnections ? 1 : 0) + (mayAssign ? 1 : 0) + (mayAssignTaxonomy ? 1 : 0);
 
   const actorRank = ROLE_RANKS[capabilities.role] ?? 0;
   // `Object.keys` is typed as `string[]` regardless of the record's key type — a
@@ -304,6 +353,51 @@ export default function EmployeesPage() {
             onChange={(event) => setQuery(event.target.value)}
             className="w-full sm:w-64"
           />
+
+          {/* The Expert Finder controls. `level` matches NORMALIZED seniority, so it
+              finds the Senior Software Engineer, the Audit Senior and the Senior Tax
+              Consultant together — people whose titles share no word. */}
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Practice</span>
+            <select
+              value={practice}
+              onChange={(event) => setPractice(event.target.value)}
+              className="h-11 rounded-xl border border-hairline-strong bg-surface/40 px-3.5 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand sm:w-52"
+            >
+              <option value="">Every practice</option>
+              {(catalogue?.practices ?? []).map((entry) => (
+                <option key={entry.key} value={entry.key}>
+                  {entry.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Seniority</span>
+            <select
+              value={level}
+              onChange={(event) => setLevel(event.target.value)}
+              className="h-11 rounded-xl border border-hairline-strong bg-surface/40 px-3.5 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand sm:w-52"
+            >
+              <option value="">Every level</option>
+              {(catalogue?.levels ?? []).map((entry) => (
+                <option key={entry.key} value={entry.key}>
+                  {entry.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-2 pb-2.5 text-sm text-muted-foreground sm:self-end">
+            <input
+              type="checkbox"
+              checked={onlyUnmapped}
+              onChange={(event) => setOnlyUnmapped(event.target.checked)}
+              className="size-4 rounded border-hairline-strong"
+            />
+            Needs mapping
+          </label>
         </div>
 
         {failure ? (
@@ -354,9 +448,13 @@ export default function EmployeesPage() {
                     "Person",
                     "JUTSU ID",
                     "Role",
+                    "Role title",
+                    "Seniority",
+                    "Code",
                     "Status",
                     ...(mayReadConnections ? ["Integrations"] : []),
                     ...(mayAssign ? ["Change role"] : []),
+                    ...(mayAssignTaxonomy ? ["Role info"] : []),
                   ].map((heading) => (
                     <th
                       key={heading}
@@ -385,6 +483,27 @@ export default function EmployeesPage() {
                     </td>
                     <td className="px-5 py-4 text-muted-foreground">
                       {person.role ? (ROLE_LABELS[person.role] ?? person.role) : "—"}
+                    </td>
+                    {/* The ACTUAL title, in the practice's own vocabulary. Shown beside
+                        the normalized level rather than replaced by it: comparing people
+                        must not rename them. */}
+                    <td className="px-5 py-4 text-muted-foreground">
+                      {person.role_title ?? "—"}
+                      {person.practice ? (
+                        <span className="block text-xs text-muted-foreground/70">
+                          {person.practice}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-5 py-4 text-muted-foreground">
+                      {person.role_level ?? (
+                        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground/70">
+                          Needs mapping
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4 font-mono text-xs text-muted-foreground">
+                      {person.role_code ?? "—"}
                     </td>
                     <td className="px-5 py-4">
                       <StatusPill status={person.status} />
@@ -451,16 +570,54 @@ export default function EmployeesPage() {
                         )}
                       </td>
                     ) : null}
+                    {mayAssignTaxonomy ? (
+                      <td className="px-5 py-4">
+                        <button
+                          type="button"
+                          aria-expanded={openRole === person.id}
+                          aria-controls={`employee-role-${person.id}`}
+                          onClick={() =>
+                            setOpenRole((open) => (open === person.id ? null : person.id))
+                          }
+                          className="rounded-lg border border-hairline-strong px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-brand/40 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                        >
+                          {openRole === person.id ? "Hide" : "Edit"}
+                          {/* A column of bare "Edit" buttons is unreadable off a
+                              screen-reader rotor. */}
+                          <span className="sr-only">
+                            {" "}
+                            role information for {person.display_name ?? person.email}
+                          </span>
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
+                  {mayAssignTaxonomy && openRole === person.id ? (
+                    <tr
+                      id={`employee-role-${person.id}`}
+                      className="border-b border-hairline last:border-b-0"
+                    >
+                      <td colSpan={COLUMN_COUNT} className="bg-surface/30 px-5 py-4">
+                        <RoleAssignment
+                          userId={person.id}
+                          personName={person.display_name ?? person.email}
+                          catalogue={catalogue}
+                          canSeatGovernance={canSeatGovernance}
+                          isSelf={person.id === capabilities.user_id}
+                          onSaved={() => {
+                            setOpenRole(null);
+                            load(query);
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
                   {mayReadConnections && openConnections === person.id ? (
                     <tr
                       id={`employee-connections-${person.id}`}
                       className="border-b border-hairline last:border-b-0"
                     >
-                      <td
-                        colSpan={4 + (mayReadConnections ? 1 : 0) + (mayAssign ? 1 : 0)}
-                        className="bg-surface/30 px-5 py-4"
-                      >
+                      <td colSpan={COLUMN_COUNT} className="bg-surface/30 px-5 py-4">
                         <EmployeeConnections
                           userId={person.id}
                           mayRevoke={can(capabilities, "integration:revoke")}

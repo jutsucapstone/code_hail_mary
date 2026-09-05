@@ -161,6 +161,22 @@ export type InvitationPage =
   paths["/v1/invitations"]["get"]["responses"][200]["content"]["application/json"];
 type RoleChangeBody =
   paths["/v1/employees/{user_id}/role"]["patch"]["requestBody"]["content"]["application/json"];
+
+/**
+ * The role TAXONOMY catalogue: practices, normalized levels, titles and platform codes.
+ *
+ * Not to be confused with `RoleCatalogue` below, which is the RBAC roles-and-permissions
+ * matrix behind `GET /v1/roles`. Two different catalogues describing two different
+ * things, and keeping their names apart is the same discipline the feature is built on.
+ */
+type RoleTaxonomyCatalogue =
+  paths["/v1/role-catalogue"]["get"]["responses"][200]["content"]["application/json"];
+
+type RoleAssignmentBody =
+  paths["/v1/employees/{user_id}/role-assignment"]["patch"]["requestBody"]["content"]["application/json"];
+
+type RoleAssignment =
+  paths["/v1/employees/{user_id}/role-assignment"]["get"]["responses"][200]["content"]["application/json"];
 type RoleChangeResponse =
   paths["/v1/employees/{user_id}/role"]["patch"]["responses"][200]["content"]["application/json"];
 type OrgRenameBody =
@@ -344,10 +360,31 @@ export const api = {
   currentOrganisation: () =>
     call<OrganisationResponse>("/v1/orgs/current", { method: "GET" }),
 
-  employees: (params: { cursor?: string | null; q?: string | null } = {}) => {
+  /**
+   * People in the organisation, optionally narrowed.
+   *
+   * `level` is the Expert Finder filter and the reason the taxonomy exists: it matches
+   * NORMALIZED seniority, so `senior_consultant` returns the Senior Software Engineer,
+   * the Audit Senior and the Senior Tax Consultant together. Each row still carries its
+   * own real title. `unmapped` is the review queue of people nobody has placed yet.
+   */
+  employees: (
+    params: {
+      cursor?: string | null;
+      q?: string | null;
+      practice?: string | null;
+      level?: string | null;
+      role_code?: string | null;
+      unmapped?: boolean;
+    } = {},
+  ) => {
     const search = new URLSearchParams();
     if (params.cursor) search.set("cursor", params.cursor);
     if (params.q) search.set("q", params.q);
+    if (params.practice) search.set("practice", params.practice);
+    if (params.level) search.set("level", params.level);
+    if (params.role_code) search.set("role_code", params.role_code);
+    if (params.unmapped) search.set("unmapped", "true");
     const suffix = search.size ? `?${search}` : "";
     return call<EmployeePage>(`/v1/employees${suffix}`, { method: "GET" });
   },
@@ -419,6 +456,37 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  /**
+   * The role taxonomy catalogue. Requires `profile:self_read`, which every role holds —
+   * an employee who cannot read it cannot be shown the NAME of their own seniority.
+   *
+   * Global reference data, identical for every organisation, so it is safe to cache for
+   * the life of the page.
+   */
+  roleCatalogue: () =>
+    call<RoleTaxonomyCatalogue>("/v1/role-catalogue", { method: "GET" }),
+
+  /** One employee's assignment. Requires `member:read`. */
+  roleAssignment: (userId: string) =>
+    call<RoleAssignment>(`/v1/employees/${encodeURIComponent(userId)}/role-assignment`, {
+      method: "GET",
+    }),
+
+  /**
+   * Set an employee's practice, title, normalized level and platform role code.
+   * Requires `member:assign_role_code`.
+   *
+   * Distinct from `assignRole` above, which moves somebody between RBAC roles and
+   * changes what they may DO. This changes only where they sit on the org chart. The
+   * server additionally refuses a governance seat (CHM/CEO/ITA/HRA) to anyone below
+   * Owner or Super Admin, and to oneself.
+   */
+  assignRoleTaxonomy: (userId: string, body: RoleAssignmentBody) =>
+    call<RoleAssignment>(
+      `/v1/employees/${encodeURIComponent(userId)}/role-assignment`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
 
   /** Rename the organisation. Requires `org:update`. The domain is immutable. */
   renameOrganisation: (body: OrgRenameBody) =>

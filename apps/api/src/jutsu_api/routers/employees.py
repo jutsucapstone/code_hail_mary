@@ -45,9 +45,25 @@ class Employee(BaseModel):
     display_name: str | None
     jutsu_id: str | None
     status: str
+    #: The RBAC role — what this person may DO. Not to be confused with `role_code`
+    #: below, which is where they sit on the org chart and confers nothing.
     role: Role | None
     created_at: datetime
     last_activity_at: datetime | None
+
+    #: The assigned taxonomy, flattened for a table. `role_title` is the person's ACTUAL
+    #: title in their practice's vocabulary and `role_level` the normalized seniority
+    #: that makes those titles comparable — both are shown, because a roster that
+    #: replaced "Audit Senior" with "Senior Consultant" would be lying to the reader
+    #: about what the person is called.
+    practice_key: str | None = None
+    practice: str | None = None
+    role_title: str | None = None
+    role_level_key: str | None = None
+    role_level: str | None = None
+    role_level_rank: int | None = None
+    role_code: str | None = None
+    mapping_status: str = "unmapped"
 
 
 class EmployeePage(BaseModel):
@@ -101,14 +117,34 @@ async def read_employees(
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     cursor: Annotated[str | None, Query(max_length=128)] = None,
     q: Annotated[str | None, Query(max_length=128)] = None,
+    practice: Annotated[str | None, Query(max_length=48)] = None,
+    level: Annotated[str | None, Query(max_length=48)] = None,
+    role_code: Annotated[str | None, Query(max_length=3)] = None,
+    unmapped: Annotated[bool, Query()] = False,
 ) -> EmployeePage:
     """Everyone in the caller's organisation.
 
     The organisation is never a parameter. It comes from the session, and row-level
     security scopes the query — so there is no combination of arguments that returns
     another tenant's people.
+
+    `level` is the Expert Finder filter: it matches the NORMALIZED seniority, so asking
+    for `senior_consultant` returns the Senior Software Engineer, the Audit Senior and
+    the Senior Tax Consultant together even though no two of those titles share a word.
+    `unmapped` is the other side of the same coin — the review queue of people nobody has
+    placed in the taxonomy yet, which migration 0018 deliberately left for an
+    administrator rather than guessing.
     """
-    rows, next_cursor = await list_employees(session, limit=limit, cursor=cursor, query=q)
+    rows, next_cursor = await list_employees(
+        session,
+        limit=limit,
+        cursor=cursor,
+        query=q,
+        practice=practice,
+        level=level,
+        code=role_code,
+        unmapped=unmapped,
+    )
     return EmployeePage(
         items=[Employee.model_validate(row) for row in rows], next_cursor=next_cursor
     )

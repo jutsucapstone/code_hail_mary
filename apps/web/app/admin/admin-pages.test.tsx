@@ -6,15 +6,7 @@ import AuditPage from "@/app/admin/audit/page";
 import EmployeesPage from "@/app/admin/employees/page";
 import HealthPage from "@/app/admin/health/page";
 import SettingsPage from "@/app/admin/settings/page";
-import {
-  calledMethod,
-  calledUrl,
-  capabilities,
-  envelope,
-  scriptFetch,
-  sentBody,
-  type Json,
-} from "@/test-support/api";
+import { calledMethod, calledUrl, callIndexFor, capabilities, envelope, scriptFetch, sentBody, type Json } from "@/test-support/api";
 import { renderWithQuery } from "@/test-support/render";
 
 /**
@@ -125,7 +117,9 @@ describe("audit page", () => {
     // the null cursor fell back to the HEAD page's cursor — the button came back and
     // clicking it re-appended page two as duplicates.
     expect(await screen.findByText("invitation.sent")).toBeInTheDocument();
-    expect(calledUrl(fetchMock, 1)).toContain("cursor=cursor-2");
+    expect(calledUrl(fetchMock, callIndexFor(fetchMock, "cursor=cursor-2"))).toContain(
+      "cursor=cursor-2",
+    );
     expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
   });
 });
@@ -228,11 +222,14 @@ describe("employees page role control", () => {
     await userEvent.selectOptions(select, "analyst");
 
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
-    expect(calledUrl(fetchMock, 1)).toBe(
+    // Found by URL: the page also fetches the role catalogue for its filters, so the
+    // PATCH is no longer at a fixed position in the call list.
+    const patch = callIndexFor(fetchMock, "999999999999/role");
+    expect(calledUrl(fetchMock, patch)).toBe(
       "/api/jutsu/v1/employees/99999999-9999-4999-8999-999999999999/role",
     );
-    expect(calledMethod(fetchMock, 1)).toBe("PATCH");
-    expect(sentBody(fetchMock, 1)).toEqual({ role: "analyst" });
+    expect(calledMethod(fetchMock, patch)).toBe("PATCH");
+    expect(sentBody(fetchMock, patch)).toEqual({ role: "analyst" });
   });
 
   it("offers no control on the caller's own row", async () => {
@@ -266,6 +263,8 @@ describe("employees page role control", () => {
   it("appends the next page under Load more and retires the button on the last one", async () => {
     const fetchMock = scriptFetch(
       { status: 200, body: { items: [employee()], next_cursor: "cursor-2" } },
+      // The page fetches the role catalogue for its practice and seniority filters.
+      { status: 200, body: { practices: [], levels: [], titles: [], codes: [] } },
       {
         status: 200,
         body: {
@@ -290,7 +289,9 @@ describe("employees page role control", () => {
     // server says there is nothing older.
     expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
     expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
-    expect(calledUrl(fetchMock, 1)).toContain("cursor=cursor-2");
+    expect(calledUrl(fetchMock, callIndexFor(fetchMock, "cursor=cursor-2"))).toContain(
+      "cursor=cursor-2",
+    );
     expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
   });
 

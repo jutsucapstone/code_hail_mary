@@ -12,6 +12,7 @@ under the tenant scope and belong to the organisation endpoint. This one answers
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date, datetime
 
 from fastapi import APIRouter
@@ -23,6 +24,8 @@ from sqlalchemy import text
 from jutsu_api.auth_service import scoped_acl_principals
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.profiles import EmployeeProfile, ProfileUpdate, read_profile, upsert_profile
+from jutsu_api.roles import read_taxonomy
+from jutsu_api.routers.roles import Taxonomy
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1/me", tags=["me"], route_class=GuardedAPIRoute)
@@ -92,6 +95,18 @@ class ProfileView(BaseModel):
     responsibilities: str | None
     updated_at: datetime
 
+    #: The role taxonomy an administrator assigned: practice, title, normalized level
+    #: and platform role code, with the catalogue's names already resolved.
+    #:
+    #: **Read-only here, and that asymmetry is the design.** Every field above is the
+    #: employee's own to write under `profile:self_update`, which every role holds. These
+    #: are not: `designation` is what somebody calls themselves, while a normalized level
+    #: is what Expert Finder compares people by and a role code is a seat on the org
+    #: chart. Both are assigned through `PATCH /v1/employees/{id}/role-assignment` under
+    #: `member:assign_role_code`. `ProfilePatch` does not carry these fields and
+    #: `extra="forbid"` refuses them, so self-promotion has no route in.
+    role: Taxonomy | None
+
 
 class ProfilePatch(BaseModel):
     """A partial update. Absent means "leave alone"; explicit `null` means "clear".
@@ -121,8 +136,9 @@ class ProfilePatch(BaseModel):
     responsibilities: str | None = None
 
 
-def _view(profile: EmployeeProfile) -> ProfileView:
+def _view(profile: EmployeeProfile, taxonomy: Taxonomy | None = None) -> ProfileView:
     return ProfileView(
+        role=taxonomy,
         employee_code=profile.employee_code,
         department=profile.department,
         designation=profile.designation,
@@ -145,7 +161,9 @@ async def read_my_profile(principal: CurrentPrincipal, session: Db) -> ProfileVi
     profile somebody saved empty", which are different things — the second has an
     `updated_at`.
     """
-    return _view(await read_profile(session, user_id=principal.user_id))
+    profile = await read_profile(session, user_id=principal.user_id)
+    view = await read_taxonomy(session, user_id=principal.user_id)
+    return _view(profile, Taxonomy(**asdict(view)) if view is not None else None)
 
 
 @router.patch("/profile")
@@ -172,7 +190,8 @@ async def update_my_profile(
             provided=frozenset(payload.model_fields_set),
         ),
     )
-    return _view(profile)
+    view = await read_taxonomy(session, user_id=principal.user_id)
+    return _view(profile, Taxonomy(**asdict(view)) if view is not None else None)
 
 
 class KnowledgeSourceCount(BaseModel):

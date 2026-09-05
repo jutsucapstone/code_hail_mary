@@ -69,6 +69,22 @@ export function calledMethod(fetchMock: FetchMock, index = 0): string | undefine
 }
 
 /**
+ * The index of the first call whose URL contains `fragment`.
+ *
+ * Positional assertions break the moment a page gains a request — a filter dropdown that
+ * needs a catalogue, say — and the breakage is unrelated to what the test is about. This
+ * finds the call by what it is rather than by when it happened.
+ */
+export function callIndexFor(fetchMock: FetchMock, fragment: string): number {
+  const index = fetchMock.mock.calls.findIndex((call) => String(call[0]).includes(fragment));
+  if (index < 0) {
+    const seen = fetchMock.mock.calls.map((call) => String(call[0])).join(", ");
+    throw new Error(`no fetch matching "${fragment}". Calls: ${seen || "(none)"}`);
+  }
+  return index;
+}
+
+/**
  * The parsed JSON body of the nth call.
  *
  * This is how "the browser never sends a tenant field" is checked rather than asserted

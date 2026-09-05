@@ -45,6 +45,12 @@ router = APIRouter(prefix="/v1", tags=["kt"], route_class=GuardedAPIRoute)
 class SubjectProfileOut(BaseModel):
     display_name: str | None
     designation: str | None
+    #: Under the same `profile` scope as `designation`. The normalized level is what
+    #: makes the subject's seniority comparable with anyone else's; the title is what
+    #: they were actually called.
+    practice: str | None = None
+    role_title: str | None = None
+    role_level: str | None = None
     department: str | None
 
 
