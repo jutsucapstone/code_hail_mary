@@ -431,9 +431,15 @@ export default function EmployeesPage() {
              the chrome stays put and only the rows move.
 
              `relative` is load-bearing: a static scroll box is not a containing block, so
-             the table's min-width escapes and stretches the page sideways. */
+             the table's min-width escapes and stretches the page sideways.
+
+             The height floor is load-bearing too. min-h-0 let this box collapse to
+             nineteen pixels on a short viewport, and the two expanding panels below
+             render INSIDE it — a 306px role editor inside a 19px scroller is not a
+             cramped screen, it is an unusable one. With a floor the box stops
+             shrinking and the main element scrolls instead. */
           <>
-          <div className="relative min-h-0 flex-1 overflow-auto rounded-2xl border border-hairline-strong">
+          <div className="relative min-h-[22rem] flex-1 overflow-auto rounded-2xl border border-hairline-strong">
             <table className="w-full min-w-[44rem] border-collapse text-sm">
               <caption className="sr-only">
                 People in your organisation, with their JUTSU ID, role and status.
@@ -459,7 +465,7 @@ export default function EmployeesPage() {
                     <th
                       key={heading}
                       scope="col"
-                      className="sticky top-0 z-10 border-b border-hairline bg-background px-5 py-3 font-medium text-muted-foreground"
+                      className="sticky top-0 z-10 border-b border-hairline bg-background px-3 py-3 font-medium text-muted-foreground"
                     >
                       {heading}
                     </th>
@@ -470,7 +476,7 @@ export default function EmployeesPage() {
                 {rows.map((person) => (
                   <Fragment key={person.id}>
                   <tr className="border-b border-hairline last:border-b-0">
-                    <th scope="row" className="px-5 py-4 text-left font-normal">
+                    <th scope="row" className="px-3 py-4 text-left font-normal">
                       <span className="block text-foreground">
                         {person.display_name ?? "Not yet set"}
                       </span>
@@ -478,16 +484,16 @@ export default function EmployeesPage() {
                         {person.email}
                       </span>
                     </th>
-                    <td className="px-5 py-4 font-mono text-xs text-muted-foreground">
+                    <td className="px-3 py-4 font-mono text-xs text-muted-foreground">
                       {person.jutsu_id ?? "—"}
                     </td>
-                    <td className="px-5 py-4 text-muted-foreground">
+                    <td className="px-3 py-4 text-muted-foreground">
                       {person.role ? (ROLE_LABELS[person.role] ?? person.role) : "—"}
                     </td>
                     {/* The ACTUAL title, in the practice's own vocabulary. Shown beside
                         the normalized level rather than replaced by it: comparing people
                         must not rename them. */}
-                    <td className="px-5 py-4 text-muted-foreground">
+                    <td className="px-3 py-4 text-muted-foreground">
                       {person.role_title ?? "—"}
                       {person.practice ? (
                         <span className="block text-xs text-muted-foreground/70">
@@ -495,21 +501,21 @@ export default function EmployeesPage() {
                         </span>
                       ) : null}
                     </td>
-                    <td className="px-5 py-4 text-muted-foreground">
+                    <td className="px-3 py-4 text-muted-foreground">
                       {person.role_level ?? (
                         <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground/70">
                           Needs mapping
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-4 font-mono text-xs text-muted-foreground">
+                    <td className="px-3 py-4 font-mono text-xs text-muted-foreground">
                       {person.role_code ?? "—"}
                     </td>
-                    <td className="px-5 py-4">
+                    <td className="px-3 py-4">
                       <StatusPill status={person.status} />
                     </td>
                     {mayReadConnections ? (
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-4">
                         <button
                           type="button"
                           aria-expanded={openConnections === person.id}
@@ -532,7 +538,7 @@ export default function EmployeesPage() {
                       </td>
                     ) : null}
                     {mayAssign ? (
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-4">
                         {person.id === capabilities.user_id ? (
                           /* The server refuses self-changes even for the owner; offering
                              the control would teach people to click a button that cannot
@@ -571,7 +577,7 @@ export default function EmployeesPage() {
                       </td>
                     ) : null}
                     {mayAssignTaxonomy ? (
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-4">
                         <button
                           type="button"
                           aria-expanded={openRole === person.id}
