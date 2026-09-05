@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useReducedMotion } from "framer-motion";
 
+import { Logo } from "@/components/site/logo";
 import { SplineScene } from "@/components/ui/spline-scene";
 import { cn } from "@/lib/utils";
 
@@ -60,9 +61,21 @@ const subscribeWide = (notify: () => void) => {
 const getWideSnapshot = () => canMatch() && getWideMq().matches;
 const getWideServerSnapshot = () => false;
 
+/**
+ * Where the JUTSU mark sits on the robot's chest, as a fraction of the panel.
+ *
+ * Measured against the rendered scene rather than guessed, and expressed in
+ * percentages so it holds at any panel size. The scene animates its arms and head but
+ * keeps the torso on the spot, which is the only reason a flat overlay can pass for a
+ * badge on the chest — if the figure ever starts walking, this stops being a
+ * positioning problem and becomes a texture that belongs in the scene itself.
+ */
+const CHEST = "left-[50%] top-[48%] w-9";
+
 export function KtScene({ className }: { className?: string }) {
   const wide = useSyncExternalStore(subscribeWide, getWideSnapshot, getWideServerSnapshot);
   const shouldReduceMotion = useReducedMotion();
+  const [sceneReady, setSceneReady] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Without ResizeObserver there is no way to measure and so no way to protect —
   // start visible there rather than silently never rendering.
@@ -86,7 +99,23 @@ export function KtScene({ className }: { className?: string }) {
 
   return (
     <div aria-hidden="true" className={cn("isolate", className)} ref={hostRef}>
-      {hasSize ? <SplineScene scene={SCENE} /> : null}
+      {hasSize ? (
+        <>
+          <SplineScene scene={SCENE} onReady={() => setSceneReady(true)} />
+          <Logo
+            className={cn(
+              "pointer-events-none absolute h-auto -translate-x-1/2 -translate-y-1/2",
+              CHEST,
+              // The mark's dark lobe merges into the black torso, so it reads as a lit
+              // emblem rather than a decal. The glow leans into that instead of
+              // fighting it; a light backplate to force the whole mark through would
+              // look like a sticker on the model.
+              "drop-shadow-[0_0_10px_rgba(122,193,66,0.45)] transition-opacity duration-700",
+              sceneReady ? "opacity-100" : "opacity-0",
+            )}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

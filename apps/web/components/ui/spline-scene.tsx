@@ -33,6 +33,12 @@ interface SplineSceneProps {
   className?: string;
   /** Canvas clear colour. Any CSS colour, or "transparent" to show the page through. */
   background?: string;
+  /**
+   * Fired once the scene has drawn. Anything positioned *against* the rendered
+   * object — a badge over a specific part of it — has to wait for this, or it
+   * hangs in empty space for the seconds the scene file takes to arrive.
+   */
+  onReady?: () => void;
 }
 
 // Pinned, and immutable at this URL. An unpinned "latest" would let a vendor publish
@@ -100,10 +106,33 @@ function useHiddenSplineBadge(hostRef: React.RefObject<HTMLElement | null>) {
   }, [hostRef]);
 }
 
-export function SplineScene({ scene, className, background = "transparent" }: SplineSceneProps) {
+/** Resolve once the element says it has drawn. `load-complete` is the viewer's own
+ *  event name; `rendered` backs it up, since either means there is something on the
+ *  canvas and both are idempotent behind the caller's own state. */
+function useSceneReady(hostRef: React.RefObject<HTMLElement | null>, onReady?: () => void) {
+  useEffect(() => {
+    const host = hostRef.current;
+    if (host === null || onReady === undefined) return;
+    const handle = () => onReady();
+    host.addEventListener("load-complete", handle);
+    host.addEventListener("rendered", handle);
+    return () => {
+      host.removeEventListener("load-complete", handle);
+      host.removeEventListener("rendered", handle);
+    };
+  }, [hostRef, onReady]);
+}
+
+export function SplineScene({
+  scene,
+  className,
+  background = "transparent",
+  onReady,
+}: SplineSceneProps) {
   const viewerRef = useRef<HTMLElement | null>(null);
   useSplineViewer();
   useHiddenSplineBadge(viewerRef);
+  useSceneReady(viewerRef, onReady);
 
   return (
     <spline-viewer
