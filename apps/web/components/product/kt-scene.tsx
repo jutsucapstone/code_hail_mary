@@ -4,11 +4,15 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useReducedMotion } from "framer-motion";
 
 import { SplineScene } from "@/components/ui/spline-scene";
-import { Spotlight } from "@/components/ui/spotlight";
 import { cn } from "@/lib/utils";
 
 /**
- * The decorative 3D stage beside the KT entry form.
+ * The decorative 3D figure beside the KT entry form.
+ *
+ * It is the object and nothing else: no card, no surface, no backdrop. The canvas is
+ * transparent and the panel draws no background of its own, so the robot sits directly
+ * on the page in both themes and there is no dark rectangle to keep in step with the
+ * palette.
  *
  * The scene *content* is self-hosted (`/public/spline`, ~1.3MB) rather than streamed
  * from Spline's CDN. That costs deploy weight — the same objection that keeps the
@@ -19,9 +23,8 @@ import { cn } from "@/lib/utils";
  *
  * The *viewer* is still a pinned third-party script (see `spline-scene.tsx` for why the
  * npm package cannot be used), so this is not a claim that the panel survives an egress
- * proxy — if unpkg is unreachable the scene never draws. It degrades to the lit empty
- * stage, which is a designed state rather than a broken one, and nothing else on the
- * page depends on it.
+ * proxy — if unpkg is unreachable the scene never draws. It degrades to empty space,
+ * and nothing else on the page depends on it.
  *
  * Three gates stand before any of that downloads, because decoration must never tax the
  * person who cannot see it:
@@ -35,10 +38,6 @@ import { cn } from "@/lib/utils";
  *   swapchain texture on every frame, for ever — hundreds of `GPUValidationError`s a
  *   minute. Window width alone cannot rule that out, since the panel can be
  *   `display: none` or mid-layout while the window is wide.
- *
- * The stage is deliberately dark in both themes. It is a lit surface for a 3D object
- * rather than a themed panel, it carries no text, and it is `aria-hidden` — so there is
- * no contrast pair to keep, and the light theme gets the same designed rendering.
  */
 
 const SCENE = "/spline/kt-robot.splinecode";
@@ -86,8 +85,7 @@ export function KtScene({ className }: { className?: string }) {
   if (!active) return null;
 
   return (
-    <div aria-hidden="true" className={cn("isolate bg-black/[0.96]", className)} ref={hostRef}>
-      <Spotlight className="-top-24 left-8" size={360} />
+    <div aria-hidden="true" className={cn("isolate", className)} ref={hostRef}>
       {hasSize ? <SplineScene scene={SCENE} /> : null}
     </div>
   );

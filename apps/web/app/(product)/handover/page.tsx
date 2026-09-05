@@ -100,8 +100,9 @@ export default function KnowledgeTransferEntryPage() {
         </p>
       </div>
 
-      {/* Desktop-only ambient scene; the component gates its own runtime download. */}
-      <KtScene className="relative hidden h-[32rem] overflow-clip rounded-3xl border border-hairline-strong shadow-[0_24px_80px_-32px] shadow-foreground/25 lg:block" />
+      {/* Desktop-only ambient scene; the component gates its own runtime download. No
+          frame and no surface — the figure stands on the page itself. */}
+      <KtScene className="relative hidden h-[32rem] lg:block" />
       </div>
     </Container>
   );
