@@ -5,9 +5,9 @@ import { useState } from "react";
 
 import { useQuery } from "@tanstack/react-query";
 
+import { KtFailure } from "@/components/kt/kt-failure";
 import { useKtPackage } from "@/components/kt/kt-shell";
 import { When } from "@/components/admin/page-scaffold";
-import { FailureState } from "@/components/states";
 import { api } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
@@ -130,10 +130,9 @@ function ExecutiveSummary({ code }: { code: string }) {
           </button>
         </>
       ) : composed.error ? (
-        <FailureState
+        <KtFailure
           failure={classifyApiError(composed.error)}
           onRetry={() => void composed.refetch()}
-          deniedWhat="composing the handover summary"
         />
       ) : composed.isPending ? (
         <p aria-live="polite" className="text-sm text-muted-foreground">

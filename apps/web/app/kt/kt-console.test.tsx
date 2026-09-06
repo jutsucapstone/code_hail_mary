@@ -92,14 +92,16 @@ describe("the KT console shell", () => {
     expect(screen.getByText("KT-JUTSU-AAAA0001")).toBeInTheDocument();
     for (const tab of [
       "Overview",
-      "Documents",
+      "Learning path",
       "Ask KT",
+      "Documents",
       "Projects",
       "Responsibilities",
       "People",
       "Decisions",
       "Meetings",
       "Timeline",
+      "Saved",
       "Handover",
     ]) {
       expect(screen.getByRole("link", { name: tab })).toBeInTheDocument();

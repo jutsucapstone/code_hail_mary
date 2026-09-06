@@ -9,8 +9,10 @@ import type { Permission } from "@/lib/permissions";
  *
  * `status` is what keeps this list from lying. My Integrations went live when the
  * connection lifecycle landed (migration 0012 + /v1/integrations); Knowledge Transfer
- * still needs a KT model that does not exist yet, so it stays listed as text with the
- * slice that delivers it rather than as a link onto a 404 (§4.11).
+ * went live with migration 0013's packages and the /kt/[code] console, and grew its
+ * copilot, learning path and saved items with migration 0019. A section that had no
+ * backend would stay listed as text with the slice that delivers it rather than as a
+ * link onto a 404 (§4.11) — none currently does.
  *
  * `permission` gates *rendering* only. Every endpoint behind these re-checks server-side,
  * so a caller who types a hidden URL gets a 403 from the API and not a page.

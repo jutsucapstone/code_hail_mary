@@ -232,6 +232,40 @@ export type KtHandoverSummary =
 type KtInsightSummary =
   paths["/v1/kt/{kt_code}/insights-summary"]["get"]["responses"][200]["content"]["application/json"];
 
+// The KT console (migration 0019): what a recipient asks, keeps and is shown next.
+export type KtCopilotTurn =
+  paths["/v1/kt/{kt_code}/ask"]["post"]["responses"][200]["content"]["application/json"];
+type KtCopilotAskPayload =
+  paths["/v1/kt/{kt_code}/ask"]["post"]["requestBody"]["content"]["application/json"];
+/** `k` has a server default, which the generator marks as required; the browser never
+ *  sets it — how much the copilot reads is the server's decision. Derived, not written. */
+type KtCopilotAskBody = Omit<KtCopilotAskPayload, "k"> & Partial<Pick<KtCopilotAskPayload, "k">>;
+type KtUpdateBody =
+  paths["/v1/kt/{package_id}"]["patch"]["requestBody"]["content"]["application/json"];
+export type KtConversationPage =
+  paths["/v1/kt/{kt_code}/conversations"]["get"]["responses"][200]["content"]["application/json"];
+export type KtConversation = KtConversationPage["items"][number];
+export type KtConversationDetail =
+  paths["/v1/kt/{kt_code}/conversations/{conversation_id}"]["get"]["responses"][200]["content"]["application/json"];
+export type KtMessage = KtConversationDetail["messages"][number];
+export type KtStoredCitation = KtMessage["citations"][number];
+export type KtBookmarks =
+  paths["/v1/kt/{kt_code}/bookmarks"]["get"]["responses"][200]["content"]["application/json"];
+export type KtBookmark = KtBookmarks["items"][number];
+type KtBookmarkBody =
+  paths["/v1/kt/{kt_code}/bookmarks"]["post"]["requestBody"]["content"]["application/json"];
+export type KtProgressList =
+  paths["/v1/kt/{kt_code}/progress"]["get"]["responses"][200]["content"]["application/json"];
+export type KtProgressItem = KtProgressList["items"][number];
+export type KtProgressState =
+  paths["/v1/kt/{kt_code}/progress/{item_key}"]["put"]["requestBody"]["content"]["application/json"]["state"];
+export type KtWorkspace =
+  paths["/v1/kt/{kt_code}/workspace"]["get"]["responses"][200]["content"]["application/json"];
+export type KtLearningStage = KtWorkspace["learning_path"][number];
+export type KtLearningItem = KtLearningStage["items"][number];
+export type KtRecommendation = KtWorkspace["recommendations"][number];
+export type KtGap = KtWorkspace["gaps"][number];
+
 export const api = {
   registerOrganisation: (body: RegisterBody) =>
     call<RegisterResponse>("/v1/orgs/register", {
@@ -412,6 +446,10 @@ export const api = {
       cursor?: string | null;
       action?: string | null;
       outcome?: string | null;
+      /** One kind of resource — `kt_package`, say. */
+      resource_type?: string | null;
+      /** One resource's own history. An opaque id, never a name or an address. */
+      resource_id?: string | null;
       limit?: number;
     } = {},
   ) => {
@@ -419,6 +457,8 @@ export const api = {
     if (params.cursor) search.set("cursor", params.cursor);
     if (params.action) search.set("action", params.action);
     if (params.outcome) search.set("outcome", params.outcome);
+    if (params.resource_type) search.set("resource_type", params.resource_type);
+    if (params.resource_id) search.set("resource_id", params.resource_id);
     if (params.limit) search.set("limit", String(params.limit));
     const suffix = search.size ? `?${search}` : "";
     return call<AuditPage>(`/v1/audit${suffix}`, { method: "GET" });
@@ -580,11 +620,24 @@ export const api = {
     return call<KtAdminPage>(`/v1/kt${suffix}`, { method: "GET" });
   },
 
+  /** One package, for the admin detail view. The route existed since 0013; the client
+   *  method did not, which is why nothing rendered `last_activity_at`. */
+  ktGet: (id: string) => call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}`, { method: "GET" }),
+
   ktRevoke: (id: string) =>
     call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}/revoke`, { method: "POST" }),
 
   ktComplete: (id: string) =>
     call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}/complete`, { method: "POST" }),
+
+  /** Extend the expiry (from the later of now and the current expiry, never past a year
+   *  out) or re-address a package nobody has opened yet. A revoked or completed package
+   *  answers 409, as does re-addressing one that is already bound to its recipient. */
+  ktUpdate: (id: string, body: KtUpdateBody) =>
+    call<KtAdmin>(`/v1/kt/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   /**
    * Open a package addressed to you, claiming it on first open. Every refusal is the
@@ -659,6 +712,91 @@ export const api = {
       `/v1/kt/${encodeURIComponent(ktCode)}/handover-summary`,
       { method: "GET" },
     ),
+
+  // ---------------------------------------------------------------- KT console
+  //
+  // Everything below is the recipient's own: the conversation, what they saved, how
+  // far they are. Every route re-runs the package's authorization server-side, so a
+  // revoked package answers 403 to all of these on the next request — keep `staleTime`
+  // short and never cache across packages.
+
+  /**
+   * One turn of the KT copilot. Same retrieval and the same grounding gate as Ask
+   * JUTSU, narrowed to the package window, with the conversation so far as context.
+   * POST because the question is user-authored text; nothing here names a model.
+   */
+  ktAsk: (ktCode: string, body: KtCopilotAskBody) =>
+    call<KtCopilotTurn>(`/v1/kt/${encodeURIComponent(ktCode)}/ask`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  ktConversations: (ktCode: string, params: { cursor?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtConversationPage>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/conversations${suffix}`,
+      { method: "GET" },
+    );
+  },
+
+  /** Search earlier conversations by what was said. POST: the words stay out of the URL. */
+  ktSearchConversations: (ktCode: string, q: string) =>
+    call<KtConversationPage>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/conversations/search`,
+      { method: "POST", body: JSON.stringify({ q }) },
+    ),
+
+  ktConversation: (ktCode: string, conversationId: string) =>
+    call<KtConversationDetail>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "GET" },
+    ),
+
+  ktArchiveConversation: (ktCode: string, conversationId: string) =>
+    call<void>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/conversations/${encodeURIComponent(conversationId)}/archive`,
+      { method: "POST" },
+    ),
+
+  ktBookmarks: (ktCode: string) =>
+    call<KtBookmarks>(`/v1/kt/${encodeURIComponent(ktCode)}/bookmarks`, { method: "GET" }),
+
+  /** Save a claim, document, message or free-text question. A second save of the same
+   *  referent updates its note rather than duplicating it. */
+  ktBookmark: (ktCode: string, body: KtBookmarkBody) =>
+    call<KtBookmark>(`/v1/kt/${encodeURIComponent(ktCode)}/bookmarks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  ktRemoveBookmark: (ktCode: string, bookmarkId: string) =>
+    call<void>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/bookmarks/${encodeURIComponent(bookmarkId)}`,
+      { method: "DELETE" },
+    ),
+
+  ktProgress: (ktCode: string) =>
+    call<KtProgressList>(`/v1/kt/${encodeURIComponent(ktCode)}/progress`, { method: "GET" }),
+
+  /** `seen | done | unclear` against `claim:{id}` | `document:{id}` | `step:{key}`. */
+  ktSetProgress: (ktCode: string, itemKey: string, state: KtProgressState) =>
+    call<KtProgressItem>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/progress/${encodeURIComponent(itemKey)}`,
+      { method: "PUT", body: JSON.stringify({ state }) },
+    ),
+
+  ktClearProgress: (ktCode: string, itemKey: string) =>
+    call<void>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/progress/${encodeURIComponent(itemKey)}`,
+      { method: "DELETE" },
+    ),
+
+  /** Coverage, learning path, recommendations, gaps and the resume card — one call,
+   *  all computed now from what this recipient may read. */
+  ktWorkspace: (ktCode: string) =>
+    call<KtWorkspace>(`/v1/kt/${encodeURIComponent(ktCode)}/workspace`, { method: "GET" }),
 
   logout: () => call<void>("/v1/auth/logout", { method: "POST" }),
 };

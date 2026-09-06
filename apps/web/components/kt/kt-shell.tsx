@@ -1,16 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useEffect } from "react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { LoadingRegion, Skeleton } from "@/components/states";
 import { api, type KtRecipient } from "@/lib/api";
-import { classifyApiError } from "@/lib/api-error";
+import { classifyApiError, needsSignIn } from "@/lib/api-error";
 import { MAIN_CONTENT_ID } from "@/lib/landmarks";
+import { SIGN_IN_PATH } from "@/lib/surfaces";
 import { cn } from "@/lib/utils";
 
 /**
@@ -41,14 +42,16 @@ export function useKtPackage(): { pkg: KtRecipient; code: string } {
  *  package's scope and the platform's capabilities, honestly, on its own page. */
 const TABS = [
   { slug: "", name: "Overview" },
-  { slug: "documents", name: "Documents" },
+  { slug: "learn", name: "Learning path" },
   { slug: "ask", name: "Ask KT" },
+  { slug: "documents", name: "Documents" },
   { slug: "projects", name: "Projects" },
   { slug: "responsibilities", name: "Responsibilities" },
   { slug: "people", name: "People" },
   { slug: "decisions", name: "Decisions" },
   { slug: "meetings", name: "Meetings" },
   { slug: "timeline", name: "Timeline" },
+  { slug: "saved", name: "Saved" },
   { slug: "handover", name: "Handover" },
 ] as const;
 
@@ -63,6 +66,17 @@ export function KtShell({ code, children }: { code: string; children: React.Reac
     gcTime: 0,
     retry: false,
   });
+
+  const router = useRouter();
+  const failure = claim.error ? classifyApiError(claim.error) : null;
+  const expired = failure !== null && needsSignIn(failure);
+  useEffect(() => {
+    // Only a 401 sends someone away — the same rule as the console shells. A revoked
+    // package is a 403 and renders its sentence in place; a 503 is a dependency being
+    // down, not a reason to doubt who somebody is. Before this, an expired session
+    // inside the workspace rendered a dead end titled "That did not load".
+    if (expired) router.replace(SIGN_IN_PATH);
+  }, [expired, router]);
 
   const base = `/kt/${encodeURIComponent(code)}`;
 
@@ -144,6 +158,10 @@ export function KtShell({ code, children }: { code: string; children: React.Reac
           <KtContext.Provider value={{ pkg: claim.data, code: claim.data.kt_code }}>
             {children}
           </KtContext.Provider>
+        ) : expired ? (
+          <LoadingRegion label="Your session has expired. Sending you to sign in.">
+            <Skeleton className="h-40" />
+          </LoadingRegion>
         ) : claim.error ? (
           <KtRefusal error={claim.error} />
         ) : (

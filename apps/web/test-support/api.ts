@@ -39,6 +39,46 @@ export function scriptFetch(...responses: ScriptedResponse[]) {
   return fetchMock;
 }
 
+/**
+ * One response for the first request whose URL contains `match`; consumed on use.
+ * `pending: true` never resolves — the loading state.
+ */
+export interface RoutedResponse {
+  match: string;
+  status: number;
+  body: Json | null;
+  pending?: boolean;
+}
+
+/**
+ * Replace `fetch` with a mock that answers by URL rather than by position.
+ *
+ * A page that fires two queries at mount reaches `fetch` in React's effect order, not the
+ * test's, and positional scripting hands the first body to whichever asked first. Routing
+ * by URL gives each request its own answer whatever the order. Unmatched requests get a
+ * 404 envelope, so a query the test did not script settles into a quiet error instead of
+ * an unresolved promise.
+ */
+export function routeFetch(...routes: RoutedResponse[]) {
+  const queue = [...routes];
+  const fetchMock = vi.fn((input: unknown) => {
+    const url = String(input);
+    const index = queue.findIndex((route) => url.includes(route.match));
+    const hit: RoutedResponse =
+      index >= 0
+        ? queue.splice(index, 1)[0]
+        : { match: "", status: 404, body: envelope("not_found", "Not found.") };
+    if (hit.pending) return new Promise<never>(() => {});
+    return Promise.resolve({
+      ok: hit.status >= 200 && hit.status < 300,
+      status: hit.status,
+      json: async () => hit.body,
+    });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 /** A `fetch` that never resolves, plus the handle that releases it. For loading states. */
 export function pendingFetch(resolveWith: ScriptedResponse) {
   let release: () => void = () => {};

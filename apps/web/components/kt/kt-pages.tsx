@@ -5,8 +5,17 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { LoadMore, Pill, When } from "@/components/admin/page-scaffold";
-import { EmptyState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
+import { EmptyState, LoadingRegion, Skeleton } from "@/components/states";
+import { KtFailure } from "@/components/kt/kt-failure";
 import { useKtPackage } from "@/components/kt/kt-shell";
+import {
+  CoveragePanel,
+  LearningPath,
+  Recommended,
+  ResumeCard,
+  StillUnclear,
+  WorkspaceRegion,
+} from "@/components/kt/kt-workspace";
 import { api, type KtDocumentPage } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
@@ -46,6 +55,18 @@ export function KtOverview() {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* The personalised region: one query, its states owned by WorkspaceRegion so the
+          package facts below still render from `pkg` whatever the workspace call did. */}
+      <WorkspaceRegion>
+        <ResumeCard />
+        <div className="grid gap-8 lg:grid-cols-2">
+          <Recommended />
+          <CoveragePanel />
+        </div>
+        <StillUnclear />
+        <LearningPath compact />
+      </WorkspaceRegion>
+
       <section aria-labelledby="kt-about-heading" className="flex flex-col gap-4">
         <h2 id="kt-about-heading" className="display text-xl font-semibold">
           About this package
@@ -194,10 +215,9 @@ export function KtDocuments() {
     <div className="flex flex-col gap-6">
       <h2 className="display text-xl font-semibold">Documents</h2>
       {head.error ? (
-        <FailureState
+        <KtFailure
           failure={classifyApiError(head.error)}
           onRetry={() => void head.refetch()}
-          deniedWhat="reading this package's documents"
         />
       ) : head.isPending ? (
         <LoadingRegion label="Loading documents.">

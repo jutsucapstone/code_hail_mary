@@ -300,6 +300,140 @@
         "title": "AuditPageOut",
         "type": "object"
       },
+      "BookmarkOut": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "ref_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Id"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tab"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "ref_id",
+          "note",
+          "label",
+          "available",
+          "tab",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BookmarkOut",
+        "type": "object"
+      },
+      "BookmarkPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "ref_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "BookmarkPayload",
+        "type": "object"
+      },
+      "BookmarksOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BookmarkOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BookmarksOut",
+        "type": "object"
+      },
       "Capabilities": {
         "description": "The caller's own identity and permission set.\n\n`org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they\ndescribe, and they are what the UI uses for its own routing \u2014 but they are never\naccepted back as an authorisation input, which is why no endpoint takes an org id\nfrom the client.",
         "properties": {
@@ -669,6 +803,333 @@
         "title": "ConnectionOut",
         "type": "object"
       },
+      "ConversationDetailOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at",
+          "messages"
+        ],
+        "title": "ConversationDetailOut",
+        "type": "object"
+      },
+      "ConversationOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at",
+          "message_count"
+        ],
+        "title": "ConversationOut",
+        "type": "object"
+      },
+      "ConversationPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ConversationPageOut",
+        "type": "object"
+      },
+      "ConversationSearchPayload": {
+        "additionalProperties": false,
+        "description": "A POST, because `q` is the recipient's own words.",
+        "properties": {
+          "limit": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "q": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Q",
+            "type": "string"
+          }
+        },
+        "required": [
+          "q"
+        ],
+        "title": "ConversationSearchPayload",
+        "type": "object"
+      },
+      "CopilotAskPayload": {
+        "additionalProperties": false,
+        "description": "What the copilot may be asked. A question, optionally which conversation it\ncontinues, and how many passages to read. Nothing that names a tenant, a person, a\nfilter, or a model.",
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "k": {
+            "default": 30,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "K",
+            "type": "integer"
+          },
+          "question": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "CopilotAskPayload",
+        "type": "object"
+      },
+      "CopilotTurnOut": {
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "answer_message_id": {
+            "format": "uuid",
+            "title": "Answer Message Id",
+            "type": "string"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/StoredCitationOut"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "insufficient_evidence": {
+            "title": "Insufficient Evidence",
+            "type": "boolean"
+          },
+          "query_tokens": {
+            "title": "Query Tokens",
+            "type": "integer"
+          },
+          "question_message_id": {
+            "format": "uuid",
+            "title": "Question Message Id",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultView"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "question_message_id",
+          "answer_message_id",
+          "answer",
+          "insufficient_evidence",
+          "citations",
+          "sources",
+          "attempts",
+          "query_tokens"
+        ],
+        "title": "CopilotTurnOut",
+        "type": "object"
+      },
+      "CoverageCategoryOut": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "claim_type": {
+            "title": "Claim Type",
+            "type": "string"
+          },
+          "claims_visible": {
+            "title": "Claims Visible",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "category",
+          "claim_type",
+          "claims_visible"
+        ],
+        "title": "CoverageCategoryOut",
+        "type": "object"
+      },
+      "CoverageOut": {
+        "properties": {
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CoverageCategoryOut"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "chunks_covered": {
+            "title": "Chunks Covered",
+            "type": "integer"
+          },
+          "chunks_total": {
+            "title": "Chunks Total",
+            "type": "integer"
+          },
+          "documents_extracted": {
+            "title": "Documents Extracted",
+            "type": "integer"
+          },
+          "documents_visible": {
+            "title": "Documents Visible",
+            "type": "integer"
+          },
+          "extraction_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Ratio"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reliable": {
+            "title": "Reliable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "categories",
+          "documents_visible",
+          "documents_extracted",
+          "chunks_covered",
+          "chunks_total",
+          "extraction_ratio",
+          "reliable",
+          "reason"
+        ],
+        "title": "CoverageOut",
+        "type": "object"
+      },
       "DepartmentRow": {
         "properties": {
           "members": {
@@ -978,6 +1439,59 @@
           "occurred_at"
         ],
         "title": "EvidenceView",
+        "type": "object"
+      },
+      "GapOut": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ref_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Id"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tab"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "why",
+          "source",
+          "tab",
+          "ref_id"
+        ],
+        "title": "GapOut",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1820,6 +2334,123 @@
         "title": "KtScopesOut",
         "type": "object"
       },
+      "KtUpdatePayload": {
+        "additionalProperties": false,
+        "description": "The two edits an administrator may make after creation.\n\n`extend_days` counts from the later of now and the current expiry, never past a year\nfrom today. `recipient_email` re-addresses a package nobody has claimed; a claimed\none refuses with 409. Neither field touches scope or period \u2014 those describe what\nthe package IS, and changing them under a recipient's feet would make the workspace\nthey were reading a different one.",
+        "properties": {
+          "extend_days": {
+            "anyOf": [
+              {
+                "maximum": 365.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extend Days"
+          },
+          "recipient_email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipient Email"
+          }
+        },
+        "title": "KtUpdatePayload",
+        "type": "object"
+      },
+      "LearningItemOut": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ref_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "tab": {
+            "title": "Tab",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label",
+          "why",
+          "tab",
+          "ref_id",
+          "state"
+        ],
+        "title": "LearningItemOut",
+        "type": "object"
+      },
+      "LearningStageOut": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LearningItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "title",
+          "items"
+        ],
+        "title": "LearningStageOut",
+        "type": "object"
+      },
       "Level": {
         "properties": {
           "description": {
@@ -1912,6 +2543,54 @@
           "admins"
         ],
         "title": "MemberCounts",
+        "type": "object"
+      },
+      "MessageOut": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/StoredCitationOut"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "insufficient_evidence": {
+            "title": "Insufficient Evidence",
+            "type": "boolean"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "content",
+          "citations",
+          "insufficient_evidence",
+          "attempts",
+          "created_at"
+        ],
+        "title": "MessageOut",
         "type": "object"
       },
       "MyKnowledge": {
@@ -2390,6 +3069,62 @@
         "title": "ProfileView",
         "type": "object"
       },
+      "ProgressListOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProgressOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ProgressListOut",
+        "type": "object"
+      },
+      "ProgressOut": {
+        "properties": {
+          "item_key": {
+            "title": "Item Key",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_key",
+          "state",
+          "updated_at"
+        ],
+        "title": "ProgressOut",
+        "type": "object"
+      },
+      "ProgressPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ProgressPayload",
+        "type": "object"
+      },
       "ProviderSummaryOut": {
         "properties": {
           "by_status": {
@@ -2448,6 +3183,52 @@
           "created_at"
         ],
         "title": "RecentDocument",
+        "type": "object"
+      },
+      "RecommendationOut": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "ref_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Id"
+          },
+          "tab": {
+            "title": "Tab",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label",
+          "why",
+          "tab",
+          "ref_id"
+        ],
+        "title": "RecommendationOut",
         "type": "object"
       },
       "RegisterPayload": {
@@ -2584,6 +3365,58 @@
           "destination"
         ],
         "title": "RegistrationComplete",
+        "type": "object"
+      },
+      "ResumeOut": {
+        "properties": {
+          "bookmarks": {
+            "title": "Bookmarks",
+            "type": "integer"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
+          },
+          "last_conversation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path_done": {
+            "title": "Path Done",
+            "type": "integer"
+          },
+          "path_total": {
+            "title": "Path Total",
+            "type": "integer"
+          },
+          "unclear": {
+            "title": "Unclear",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "last_conversation",
+          "last_activity_at",
+          "bookmarks",
+          "unclear",
+          "path_done",
+          "path_total"
+        ],
+        "title": "ResumeOut",
         "type": "object"
       },
       "Role": {
@@ -3002,6 +3835,46 @@
         "title": "SourceSystem",
         "type": "string"
       },
+      "StoredCitationOut": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "marker": {
+            "title": "Marker",
+            "type": "integer"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "marker",
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "available"
+        ],
+        "title": "StoredCitationOut",
+        "type": "object"
+      },
       "SubjectProfileOut": {
         "properties": {
           "department": {
@@ -3383,6 +4256,46 @@
         ],
         "title": "VerifyResult",
         "type": "object"
+      },
+      "WorkspaceOut": {
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/CoverageOut"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/GapOut"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "learning_path": {
+            "items": {
+              "$ref": "#/components/schemas/LearningStageOut"
+            },
+            "title": "Learning Path",
+            "type": "array"
+          },
+          "recommendations": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendationOut"
+            },
+            "title": "Recommendations",
+            "type": "array"
+          },
+          "resume": {
+            "$ref": "#/components/schemas/ResumeOut"
+          }
+        },
+        "required": [
+          "coverage",
+          "learning_path",
+          "recommendations",
+          "gaps",
+          "resume"
+        ],
+        "title": "WorkspaceOut",
+        "type": "object"
       }
     }
   },
@@ -3485,7 +4398,7 @@
     },
     "/v1/audit": {
       "get": {
-        "description": "The organisation's immutable trail, newest first.\n\nRead-only is not a convention here \u2014 migration 0002 revoked UPDATE and DELETE on\n`audit_log` from the application role, so this endpoint could not tamper with the\ntrail even if it were wrong.",
+        "description": "The organisation's immutable trail, newest first.\n\nRead-only is not a convention here \u2014 migration 0002 revoked UPDATE and DELETE on\n`audit_log` from the application role, so this endpoint could not tamper with the\ntrail even if it were wrong.\n\n`resource_id` is an opaque id (a package id, say), never a name or an address \u2014 the\ntrail's own columns hold nothing else, so nothing else can be asked of it.",
         "operationId": "read_audit_v1_audit_get",
         "parameters": [
           {
@@ -3566,6 +4479,23 @@
                 }
               ],
               "title": "Resource Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource Id"
             }
           }
         ],
@@ -4760,7 +5690,7 @@
     },
     "/v1/kt/claim": {
       "post": {
-        "description": "Open a package addressed to you, claiming it on first open.\n\nEvery refusal is server-side and specific where it is safe to be (revoked, expired)\nand deliberately uniform where it is not: a foreign tenant's code, a typo and a\npackage bound to someone else all answer with the same 404.",
+        "description": "Open a package addressed to you, claiming it on first open.\n\nEvery refusal is server-side and specific where it is safe to be (revoked, expired)\nand deliberately uniform where it is not: a foreign tenant's code, a typo and a\npackage bound to someone else all answer with the same 404.\n\nThe budget is spent BEFORE the lookup, on its own committed session, so a refused\nguess costs the caller quota \u2014 that is what turns a 40-bit code space from \"probe as\nfast as the API answers\" into a wall. The denied-open audit rows remain the evidence\nof a probe; this is what stops one.",
         "operationId": "claim_v1_kt_claim_post",
         "requestBody": {
           "content": {
@@ -4816,6 +5746,419 @@
           }
         },
         "summary": "Read Supported Scopes",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/ask": {
+      "post": {
+        "description": "One turn of the KT copilot: a question answered from evidence inside the package\nwindow, with the conversation so far as context, and both turns kept.\n\nThe ordering is the cost control, the same as `/v1/ask`: the free configuration gate\nfirst, then the budget on its own committed session, then the paid embedding, then\nretrieval and synthesis. A refused caller costs nothing and learns nothing.",
+        "operationId": "ask_v1_kt__kt_code__ask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopilotAskPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopilotTurnOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/bookmarks": {
+      "get": {
+        "operationId": "read_bookmarks_v1_kt__kt_code__bookmarks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookmarksOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Bookmarks",
+        "tags": [
+          "kt"
+        ]
+      },
+      "post": {
+        "description": "Save a claim, document, message or question. A claim or document must be visible\nto the caller under the package's gates before it is saved \u2014 the refusal is the same\n404 as for an id that never existed.",
+        "operationId": "create_bookmark_v1_kt__kt_code__bookmarks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookmarkPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookmarkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Bookmark",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/bookmarks/{bookmark_id}": {
+      "delete": {
+        "operationId": "delete_bookmark_v1_kt__kt_code__bookmarks__bookmark_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bookmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bookmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Bookmark",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/conversations": {
+      "get": {
+        "operationId": "read_conversations_v1_kt__kt_code__conversations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Conversations",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/conversations/search": {
+      "post": {
+        "description": "Find earlier conversations by what was said in them. POST, so the words stay\nout of the URL.",
+        "operationId": "search_conversations_v1_kt__kt_code__conversations_search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationSearchPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Conversations",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/conversations/{conversation_id}": {
+      "get": {
+        "description": "A conversation with its turns. Citations are re-checked against the caller's\nACL as of now; a cited document they can no longer read renders unavailable.",
+        "operationId": "read_one_conversation_v1_kt__kt_code__conversations__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read One Conversation",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/conversations/{conversation_id}/archive": {
+      "post": {
+        "operationId": "archive_one_conversation_v1_kt__kt_code__conversations__conversation_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive One Conversation",
         "tags": [
           "kt"
         ]
@@ -5050,6 +6393,194 @@
         ]
       }
     },
+    "/v1/kt/{kt_code}/progress": {
+      "get": {
+        "operationId": "read_progress_v1_kt__kt_code__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgressListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Progress",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/progress/{item_key}": {
+      "delete": {
+        "operationId": "delete_progress_v1_kt__kt_code__progress__item_key__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_key",
+            "required": true,
+            "schema": {
+              "title": "Item Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Progress",
+        "tags": [
+          "kt"
+        ]
+      },
+      "put": {
+        "operationId": "write_progress_v1_kt__kt_code__progress__item_key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_key",
+            "required": true,
+            "schema": {
+              "title": "Item Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgressPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgressOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Progress",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/workspace": {
+      "get": {
+        "description": "Coverage, the learning path, recommendations, gaps and the resume card in one\nround trip \u2014 all computed now, from the caller's visible evidence, none of it\nstored except their own progress markers.",
+        "operationId": "read_kt_workspace_v1_kt__kt_code__workspace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Workspace",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
     "/v1/kt/{package_id}": {
       "get": {
         "operationId": "read_package_v1_kt__package_id__get",
@@ -5088,6 +6619,58 @@
           }
         },
         "summary": "Read Package",
+        "tags": [
+          "kt"
+        ]
+      },
+      "patch": {
+        "description": "Extend a package's expiry, or re-address one nobody has claimed yet. Every change\nis its own audit row; a revoked or completed package refuses both.",
+        "operationId": "update_v1_kt__package_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KtUpdatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtAdminOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update",
         "tags": [
           "kt"
         ]

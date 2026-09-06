@@ -62,11 +62,16 @@ export const SURFACES: readonly Surface[] = [
   },
   {
     slug: "handover",
-    name: "Handover Studio",
+    // Named for what the page does. "Handover Studio" promised a one-click cited
+    // leaver pack; what is live is the entry to a knowledge-transfer package — a
+    // scoped, cited workspace with a copilot, a learning path and the recipient's own
+    // saved items — plus an on-demand executive summary inside it. The generator the
+    // old name described does not exist, and §4.11 does not let a label pretend it does.
+    name: "Knowledge Transfer",
     purpose:
-      "One click to a cited leaver pack: open items, key decisions, stakeholders and gotchas, in under sixty seconds.",
+      "Open a knowledge-transfer package with its KT ID: a scoped, cited workspace over one colleague's context, with a copilot that answers from its evidence and a learning path built from it.",
     kind: "differentiator",
-    slice: "S26–S27",
+    slice: "S26–S28",
     status: "live",
   },
   {

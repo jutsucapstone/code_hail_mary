@@ -97,6 +97,9 @@ export interface paths {
          *     Read-only is not a convention here — migration 0002 revoked UPDATE and DELETE on
          *     `audit_log` from the application role, so this endpoint could not tamper with the
          *     trail even if it were wrong.
+         *
+         *     `resource_id` is an opaque id (a package id, say), never a name or an address — the
+         *     trail's own columns hold nothing else, so nothing else can be asked of it.
          */
         get: operations["read_audit_v1_audit_get"];
         put?: never;
@@ -638,6 +641,11 @@ export interface paths {
          *     Every refusal is server-side and specific where it is safe to be (revoked, expired)
          *     and deliberately uniform where it is not: a foreign tenant's code, a typo and a
          *     package bound to someone else all answer with the same 404.
+         *
+         *     The budget is spent BEFORE the lookup, on its own committed session, so a refused
+         *     guess costs the caller quota — that is what turns a 40-bit code space from "probe as
+         *     fast as the API answers" into a wall. The denied-open audit rows remain the evidence
+         *     of a probe; this is what stops one.
          */
         post: operations["claim_v1_kt_claim_post"];
         delete?: never;
@@ -657,6 +665,147 @@ export interface paths {
         get: operations["read_supported_scopes_v1_kt_scopes_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask
+         * @description One turn of the KT copilot: a question answered from evidence inside the package
+         *     window, with the conversation so far as context, and both turns kept.
+         *
+         *     The ordering is the cost control, the same as `/v1/ask`: the free configuration gate
+         *     first, then the budget on its own committed session, then the paid embedding, then
+         *     retrieval and synthesis. A refused caller costs nothing and learns nothing.
+         */
+        post: operations["ask_v1_kt__kt_code__ask_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/bookmarks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Bookmarks */
+        get: operations["read_bookmarks_v1_kt__kt_code__bookmarks_get"];
+        put?: never;
+        /**
+         * Create Bookmark
+         * @description Save a claim, document, message or question. A claim or document must be visible
+         *     to the caller under the package's gates before it is saved — the refusal is the same
+         *     404 as for an id that never existed.
+         */
+        post: operations["create_bookmark_v1_kt__kt_code__bookmarks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/bookmarks/{bookmark_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Bookmark */
+        delete: operations["delete_bookmark_v1_kt__kt_code__bookmarks__bookmark_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Conversations */
+        get: operations["read_conversations_v1_kt__kt_code__conversations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/conversations/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Conversations
+         * @description Find earlier conversations by what was said in them. POST, so the words stay
+         *     out of the URL.
+         */
+        post: operations["search_conversations_v1_kt__kt_code__conversations_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read One Conversation
+         * @description A conversation with its turns. Citations are re-checked against the caller's
+         *     ACL as of now; a cited document they can no longer read renders unavailable.
+         */
+        get: operations["read_one_conversation_v1_kt__kt_code__conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/conversations/{conversation_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive One Conversation */
+        post: operations["archive_one_conversation_v1_kt__kt_code__conversations__conversation_id__archive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -752,6 +901,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Progress */
+        get: operations["read_progress_v1_kt__kt_code__progress_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/progress/{item_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Write Progress */
+        put: operations["write_progress_v1_kt__kt_code__progress__item_key__put"];
+        post?: never;
+        /** Delete Progress */
+        delete: operations["delete_progress_v1_kt__kt_code__progress__item_key__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Workspace
+         * @description Coverage, the learning path, recommendations, gaps and the resume card in one
+         *     round trip — all computed now, from the caller's visible evidence, none of it
+         *     stored except their own progress markers.
+         */
+        get: operations["read_kt_workspace_v1_kt__kt_code__workspace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{package_id}": {
         parameters: {
             query?: never;
@@ -766,7 +972,12 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update
+         * @description Extend a package's expiry, or re-address one nobody has claimed yet. Every change
+         *     is its own audit row; a revoked or completed package refuses both.
+         */
+        patch: operations["update_v1_kt__package_id__patch"];
         trace?: never;
     };
     "/v1/kt/{package_id}/complete": {
@@ -1304,6 +1515,50 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** BookmarkOut */
+        BookmarkOut: {
+            /** Available */
+            available: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Note */
+            note: string | null;
+            /** Ref Id */
+            ref_id: string | null;
+            /** Tab */
+            tab: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** BookmarkPayload */
+        BookmarkPayload: {
+            /** Kind */
+            kind: string;
+            /** Note */
+            note?: string | null;
+            /** Ref Id */
+            ref_id?: string | null;
+        };
+        /** BookmarksOut */
+        BookmarksOut: {
+            /** Items */
+            items: components["schemas"]["BookmarkOut"][];
+        };
         /**
          * Capabilities
          * @description The caller's own identity and permission set.
@@ -1441,6 +1696,145 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** ConversationDetailOut */
+        ConversationDetailOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Messages */
+            messages: components["schemas"]["MessageOut"][];
+            /** Title */
+            title: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ConversationOut */
+        ConversationOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Message Count */
+            message_count: number;
+            /** Title */
+            title: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ConversationPageOut */
+        ConversationPageOut: {
+            /** Items */
+            items: components["schemas"]["ConversationOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * ConversationSearchPayload
+         * @description A POST, because `q` is the recipient's own words.
+         */
+        ConversationSearchPayload: {
+            /**
+             * Limit
+             * @default 20
+             */
+            limit: number;
+            /** Q */
+            q: string;
+        };
+        /**
+         * CopilotAskPayload
+         * @description What the copilot may be asked. A question, optionally which conversation it
+         *     continues, and how many passages to read. Nothing that names a tenant, a person, a
+         *     filter, or a model.
+         */
+        CopilotAskPayload: {
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /**
+             * K
+             * @default 30
+             */
+            k: number;
+            /** Question */
+            question: string;
+        };
+        /** CopilotTurnOut */
+        CopilotTurnOut: {
+            /** Answer */
+            answer: string | null;
+            /**
+             * Answer Message Id
+             * Format: uuid
+             */
+            answer_message_id: string;
+            /** Attempts */
+            attempts: number;
+            /** Citations */
+            citations: components["schemas"]["StoredCitationOut"][];
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Insufficient Evidence */
+            insufficient_evidence: boolean;
+            /** Query Tokens */
+            query_tokens: number;
+            /**
+             * Question Message Id
+             * Format: uuid
+             */
+            question_message_id: string;
+            /** Sources */
+            sources: components["schemas"]["SearchResultView"][];
+        };
+        /** CoverageCategoryOut */
+        CoverageCategoryOut: {
+            /** Category */
+            category: string;
+            /** Claim Type */
+            claim_type: string;
+            /** Claims Visible */
+            claims_visible: number;
+        };
+        /** CoverageOut */
+        CoverageOut: {
+            /** Categories */
+            categories: components["schemas"]["CoverageCategoryOut"][];
+            /** Chunks Covered */
+            chunks_covered: number;
+            /** Chunks Total */
+            chunks_total: number;
+            /** Documents Extracted */
+            documents_extracted: number;
+            /** Documents Visible */
+            documents_visible: number;
+            /** Extraction Ratio */
+            extraction_ratio: number | null;
+            /** Reason */
+            reason: string;
+            /** Reliable */
+            reliable: boolean;
+        };
         /** DepartmentRow */
         DepartmentRow: {
             /** Members */
@@ -1550,6 +1944,21 @@ export interface components {
             source_system: string;
             /** Text */
             text: string;
+        };
+        /** GapOut */
+        GapOut: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Ref Id */
+            ref_id: string | null;
+            /** Source */
+            source: string;
+            /** Tab */
+            tab: string | null;
+            /** Why */
+            why: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1860,6 +2269,48 @@ export interface components {
             /** Supported */
             supported: string[];
         };
+        /**
+         * KtUpdatePayload
+         * @description The two edits an administrator may make after creation.
+         *
+         *     `extend_days` counts from the later of now and the current expiry, never past a year
+         *     from today. `recipient_email` re-addresses a package nobody has claimed; a claimed
+         *     one refuses with 409. Neither field touches scope or period — those describe what
+         *     the package IS, and changing them under a recipient's feet would make the workspace
+         *     they were reading a different one.
+         */
+        KtUpdatePayload: {
+            /** Extend Days */
+            extend_days?: number | null;
+            /** Recipient Email */
+            recipient_email?: string | null;
+        };
+        /** LearningItemOut */
+        LearningItemOut: {
+            /** Key */
+            key: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Ref Id */
+            ref_id: string | null;
+            /** State */
+            state: string | null;
+            /** Tab */
+            tab: string;
+            /** Why */
+            why: string;
+        };
+        /** LearningStageOut */
+        LearningStageOut: {
+            /** Day */
+            day: number;
+            /** Items */
+            items: components["schemas"]["LearningItemOut"][];
+            /** Title */
+            title: string;
+        };
         /** Level */
         Level: {
             /** Description */
@@ -1898,6 +2349,29 @@ export interface components {
             invited: number;
             /** Total */
             total: number;
+        };
+        /** MessageOut */
+        MessageOut: {
+            /** Attempts */
+            attempts: number;
+            /** Citations */
+            citations: components["schemas"]["StoredCitationOut"][];
+            /** Content */
+            content: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Insufficient Evidence */
+            insufficient_evidence: boolean;
+            /** Role */
+            role: string;
         };
         /**
          * MyKnowledge
@@ -2062,6 +2536,28 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ProgressListOut */
+        ProgressListOut: {
+            /** Items */
+            items: components["schemas"]["ProgressOut"][];
+        };
+        /** ProgressOut */
+        ProgressOut: {
+            /** Item Key */
+            item_key: string;
+            /** State */
+            state: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ProgressPayload */
+        ProgressPayload: {
+            /** State */
+            state: string;
+        };
         /** ProviderSummaryOut */
         ProviderSummaryOut: {
             /** By Status */
@@ -2088,6 +2584,21 @@ export interface components {
             source_system: string;
             /** Title */
             title: string;
+        };
+        /** RecommendationOut */
+        RecommendationOut: {
+            /** Key */
+            key: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Ref Id */
+            ref_id: string | null;
+            /** Tab */
+            tab: string;
+            /** Why */
+            why: string;
         };
         /** RegisterPayload */
         RegisterPayload: {
@@ -2141,6 +2652,20 @@ export interface components {
         RegistrationComplete: {
             /** Destination */
             destination: string;
+        };
+        /** ResumeOut */
+        ResumeOut: {
+            /** Bookmarks */
+            bookmarks: number;
+            /** Last Activity At */
+            last_activity_at: string | null;
+            last_conversation: components["schemas"]["ConversationOut"] | null;
+            /** Path Done */
+            path_done: number;
+            /** Path Total */
+            path_total: number;
+            /** Unclear */
+            unclear: number;
         };
         /**
          * Role
@@ -2326,6 +2851,27 @@ export interface components {
          * @enum {string}
          */
         SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom";
+        /** StoredCitationOut */
+        StoredCitationOut: {
+            /** Available */
+            available: boolean;
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Marker */
+            marker: number;
+            /** Source System */
+            source_system: string;
+        };
         /** SubjectProfileOut */
         SubjectProfileOut: {
             /** Department */
@@ -2429,6 +2975,17 @@ export interface components {
             /** Destination */
             destination: string;
         };
+        /** WorkspaceOut */
+        WorkspaceOut: {
+            coverage: components["schemas"]["CoverageOut"];
+            /** Gaps */
+            gaps: components["schemas"]["GapOut"][];
+            /** Learning Path */
+            learning_path: components["schemas"]["LearningStageOut"][];
+            /** Recommendations */
+            recommendations: components["schemas"]["RecommendationOut"][];
+            resume: components["schemas"]["ResumeOut"];
+        };
     };
     responses: never;
     parameters: never;
@@ -2523,6 +3080,7 @@ export interface operations {
                 action?: string | null;
                 outcome?: string | null;
                 resource_type?: string | null;
+                resource_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -3344,6 +3902,268 @@ export interface operations {
             };
         };
     };
+    ask_v1_kt__kt_code__ask_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopilotAskPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopilotTurnOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_bookmarks_v1_kt__kt_code__bookmarks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookmarksOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bookmark_v1_kt__kt_code__bookmarks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BookmarkPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BookmarkOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_bookmark_v1_kt__kt_code__bookmarks__bookmark_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                bookmark_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_conversations_v1_kt__kt_code__conversations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_conversations_v1_kt__kt_code__conversations_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationSearchPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_one_conversation_v1_kt__kt_code__conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_one_conversation_v1_kt__kt_code__conversations__conversation_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_kt_documents_v1_kt__kt_code__documents_get: {
         parameters: {
             query?: {
@@ -3474,6 +4294,134 @@ export interface operations {
             };
         };
     };
+    read_progress_v1_kt__kt_code__progress_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProgressListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    write_progress_v1_kt__kt_code__progress__item_key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                item_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProgressPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProgressOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_progress_v1_kt__kt_code__progress__item_key__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                item_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_kt_workspace_v1_kt__kt_code__workspace_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_package_v1_kt__package_id__get: {
         parameters: {
             query?: never;
@@ -3484,6 +4432,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtAdminOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_v1_kt__package_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KtUpdatePayload"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

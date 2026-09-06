@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -21,7 +22,7 @@ import {
 } from "@/components/states";
 import { Field } from "@/components/pilot/field";
 import { FormError } from "@/components/pilot/submit-button";
-import { api, type KtAdmin, type KtAdminPage } from "@/lib/api";
+import { api, type AuditEntry, type KtAdmin, type KtAdminPage } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 import type { components } from "@/lib/api-schema";
 import { can } from "@/lib/permissions";
@@ -38,6 +39,15 @@ type Employee = components["schemas"]["Employee"];
  *
  * Statuses are derived server-side in one place, so this list, the detail and the
  * recipient's open path cannot disagree about what a package currently is.
+ *
+ * The detail panel also carries the two changes an administrator may make to a live
+ * package — extend its expiry, or re-address one nobody has opened — through the one
+ * `PATCH` the server exposes; what it offers follows the server's own rules.
+ *
+ * The detail panel's activity list is the audit trail filtered to one package: opens,
+ * claims, refused attempts and lifecycle changes, each as the trail records it. Actors
+ * appear as JUTSU IDs or an actor type — the trail carries no email address (§4.9), and
+ * this page never looks one up to "enrich" a row.
  */
 
 const STATUS_TONE: Record<string, "good" | "attention" | "bad" | "neutral"> = {
@@ -65,6 +75,329 @@ const SCOPE_LABELS: Record<string, string> = {
   meetings: "Meetings",
   responsibilities: "Responsibilities",
 };
+
+/** How a package names its recipient before and after the first open binds it. */
+function recipientLabel(pkg: KtAdmin): string {
+  return pkg.recipient_email ?? (pkg.claimed_at ? "Claimed" : "Bound to first opener");
+}
+
+function OutcomePill({ outcome }: { outcome: string }) {
+  const tone = outcome === "success" ? "good" : outcome === "denied" ? "attention" : "bad";
+  return <Pill tone={tone}>{outcome}</Pill>;
+}
+
+function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5 bg-background p-4">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-sm text-foreground">{children}</dd>
+    </div>
+  );
+}
+
+const EXTENSION_CHOICES = [7, 30, 60, 90] as const;
+
+/**
+ * Extend or re-address, through `PATCH /v1/kt/{id}`.
+ *
+ * What is offered follows the server's rules rather than guessing at them: a revoked or
+ * completed package is terminal and gets neither control; a package that has bound its
+ * recipient cannot be re-addressed. The server refuses both anyway (409) — the panel just
+ * never offers a button whose only possible outcome is that refusal.
+ */
+function PackageControls({ pkg, onChanged }: { pkg: KtAdmin; onChanged: () => void }) {
+  const queryClient = useQueryClient();
+  const [extendDays, setExtendDays] = useState<number>(30);
+  const [recipient, setRecipient] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const update = useMutation({
+    mutationFn: (body: Parameters<typeof api.ktUpdate>[1]) => api.ktUpdate(pkg.id, body),
+    onSuccess: (_updated, body) => {
+      setError(null);
+      if (body.recipient_email) setRecipient("");
+      toast.success(body.extend_days ? "Expiry extended." : "Package re-addressed.");
+      // The record and its trail re-read; the list is the caller's to refresh.
+      void queryClient.invalidateQueries({ queryKey: ["kt", pkg.id] });
+      onChanged();
+    },
+    onError: (mutationError: unknown) => setError(classifyApiError(mutationError).message),
+  });
+
+  if (pkg.status === "revoked" || pkg.status === "completed") return null;
+  const readdressable = pkg.claimed_at === null;
+
+  const buttonClass =
+    "self-start rounded-lg border border-hairline-strong px-3.5 py-2 text-sm font-medium transition-colors hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60";
+
+  return (
+    <section aria-labelledby="kt-manage-heading" className="flex flex-col gap-3">
+      <h3 id="kt-manage-heading" className="text-sm font-medium text-foreground">
+        Manage
+      </h3>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex flex-col gap-3 rounded-xl border border-hairline bg-background p-4">
+          <label htmlFor="kt-extend-days" className="text-xs text-muted-foreground">
+            Extend expiry by
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <select
+              id="kt-extend-days"
+              value={extendDays}
+              onChange={(event) => setExtendDays(Number(event.target.value))}
+              className="h-10 rounded-lg border border-hairline-strong bg-surface/40 px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            >
+              {EXTENSION_CHOICES.map((days) => (
+                <option key={days} value={days}>
+                  {days} days
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={update.isPending}
+              aria-busy={update.isPending}
+              onClick={() => {
+                setError(null);
+                update.mutate({ extend_days: extendDays });
+              }}
+              className={buttonClass}
+            >
+              Extend expiry
+            </button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            From the later of now and the current expiry, never past a year from today. A
+            lapsed package reopens for its recipient.
+          </p>
+        </div>
+
+        {readdressable ? (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const value = recipient.trim();
+              if (!value || update.isPending) return;
+              setError(null);
+              update.mutate({ recipient_email: value });
+            }}
+            className="flex flex-col gap-3 rounded-xl border border-hairline bg-background p-4"
+          >
+            <Field
+              id="kt-readdress"
+              name="readdress"
+              type="email"
+              label="Re-address to"
+              placeholder="The person who should open it"
+              value={recipient}
+              onChange={(event) => setRecipient(event.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={update.isPending || recipient.trim().length === 0}
+              aria-busy={update.isPending}
+              className={buttonClass}
+            >
+              Re-address
+            </button>
+            <p className="text-xs text-muted-foreground">
+              Only until somebody opens it: the first open binds the package to its
+              recipient, and the address then cannot change.
+            </p>
+          </form>
+        ) : (
+          <div className="flex flex-col gap-1.5 rounded-xl border border-hairline bg-background p-4">
+            <p className="text-xs text-muted-foreground">Re-address</p>
+            <p className="text-sm text-muted-foreground">
+              Bound to its recipient at first open, so it can no longer be re-addressed.
+              Revoke it and create a new package instead.
+            </p>
+          </div>
+        )}
+      </div>
+      {error ? <FormError message={error} /> : null}
+    </section>
+  );
+}
+
+/**
+ * One package's record and its slice of the audit trail.
+ *
+ * `canReadAudit` is decided by the caller from capabilities: without `audit:read` the
+ * activity request would only come back 403, so the panel says so in one sentence
+ * instead of rendering a denial notice for a request it never needed to make.
+ */
+function PackageDetails({
+  id,
+  canReadAudit,
+  onClose,
+  onChanged,
+}: {
+  id: string;
+  canReadAudit: boolean;
+  onClose: () => void;
+  /** After an extension or a re-address: the list's expiry and recipient columns changed. */
+  onChanged: () => void;
+}) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const detail = useQuery({ queryKey: ["kt", id, "detail"], queryFn: () => api.ktGet(id) });
+  const activity = useQuery({
+    queryKey: ["kt", id, "activity"],
+    queryFn: () => api.audit({ resource_type: "kt_package", resource_id: id, limit: 20 }),
+    enabled: canReadAudit,
+  });
+
+  // The panel opens beneath a table the reader was just working in; moving focus to
+  // its heading is what tells a keyboard or screen-reader user that anything happened.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [id]);
+
+  return (
+    <section
+      id="kt-details"
+      aria-labelledby="kt-details-heading"
+      className="flex flex-col gap-5 rounded-2xl border border-hairline bg-surface/40 p-6 sm:p-7"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h2
+          id="kt-details-heading"
+          ref={headingRef}
+          tabIndex={-1}
+          className="display text-lg font-semibold focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand"
+        >
+          Package details
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-hairline-strong px-3 py-1.5 text-sm transition-colors hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Close details
+        </button>
+      </div>
+
+      {detail.error ? (
+        <FailureState
+          failure={classifyApiError(detail.error)}
+          onRetry={() => void detail.refetch()}
+          deniedWhat="reading this package"
+        />
+      ) : detail.isPending ? (
+        <LoadingRegion label="Loading the package.">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-14" />
+            ))}
+          </div>
+        </LoadingRegion>
+      ) : (
+        <dl className="grid gap-px overflow-clip rounded-2xl border border-hairline bg-hairline sm:grid-cols-2 lg:grid-cols-3">
+          <DetailField label="Status">
+            <Pill tone={STATUS_TONE[detail.data.status] ?? "neutral"}>{detail.data.status}</Pill>
+          </DetailField>
+          <DetailField label="KT ID">
+            <span className="font-mono text-[0.6875rem] uppercase tracking-[0.14em]">
+              {detail.data.kt_code}
+            </span>
+          </DetailField>
+          <DetailField label="Employee">
+            {detail.data.subject_name ?? detail.data.subject_email}
+          </DetailField>
+          <DetailField label="Recipient">{recipientLabel(detail.data)}</DetailField>
+          <DetailField label="Knowledge scope">
+            <span className="flex flex-wrap gap-1.5">
+              {detail.data.scope.map((category) => (
+                <Pill key={category} tone="neutral">
+                  {SCOPE_LABELS[category] ?? category}
+                </Pill>
+              ))}
+            </span>
+          </DetailField>
+          <DetailField label="Knowledge period">
+            {detail.data.period_start ? (
+              <>
+                <When iso={detail.data.period_start} /> — <When iso={detail.data.period_end} />
+              </>
+            ) : (
+              "Full history"
+            )}
+          </DetailField>
+          <DetailField label="Created">
+            <When iso={detail.data.created_at} />
+          </DetailField>
+          <DetailField label="Expires">
+            <When iso={detail.data.expires_at} />
+          </DetailField>
+          <DetailField label="Claimed at">
+            <When iso={detail.data.claimed_at} />
+          </DetailField>
+          <DetailField label="Last activity">
+            <When iso={detail.data.last_activity_at} />
+          </DetailField>
+        </dl>
+      )}
+
+      {detail.data ? <PackageControls pkg={detail.data} onChanged={onChanged} /> : null}
+
+      <section aria-labelledby="kt-activity-heading" className="flex flex-col gap-3">
+        <h3 id="kt-activity-heading" className="text-sm font-medium text-foreground">
+          Activity
+        </h3>
+        <p className="max-w-prose text-xs text-muted-foreground">
+          The audit trail for this package: opens, claims, refused attempts and lifecycle
+          changes, newest first, up to the 20 most recent. In the trail, actors appear as
+          JUTSU IDs, never as email addresses.
+        </p>
+        {!canReadAudit ? (
+          <p className="text-sm text-muted-foreground">Your role cannot read the audit trail.</p>
+        ) : activity.error ? (
+          <FailureState
+            failure={classifyApiError(activity.error)}
+            onRetry={() => void activity.refetch()}
+            deniedWhat="reading the audit trail"
+          />
+        ) : activity.isPending ? (
+          <LoadingRegion label="Loading this package's activity.">
+            <div className="flex flex-col gap-2">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-10" />
+              ))}
+            </div>
+          </LoadingRegion>
+        ) : activity.data.items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No activity recorded for this package yet.
+          </p>
+        ) : (
+          <ul className="flex flex-col divide-y divide-hairline rounded-xl border border-hairline">
+            {activity.data.items.map((entry: AuditEntry) => (
+              <li
+                key={entry.id}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5 text-xs"
+              >
+                <span className="font-mono text-foreground">{entry.action}</span>
+                <OutcomePill outcome={entry.outcome} />
+                <span className="text-muted-foreground">
+                  <When iso={entry.ts} />
+                </span>
+                <span className="font-mono text-muted-foreground">
+                  {entry.actor_jutsu_id ?? entry.actor_type}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <Link
+          href="/admin/audit"
+          className="self-start rounded text-sm text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Open the full audit trail
+        </Link>
+      </section>
+    </section>
+  );
+}
 
 function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   const [subjectQuery, setSubjectQuery] = useState("");
@@ -339,8 +672,13 @@ export default function KnowledgeTransferPage() {
   // it the null cursor falls back to the head page's cursor and the walk restarts.
   const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Completion is terminal, so it takes two clicks on the same row: the first turns the
+  // button into the question, the second answers it. One row at a time.
+  const [confirmingComplete, setConfirmingComplete] = useState<string | null>(null);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
 
   const mayManage = can(capabilities, "kt:manage");
+  const mayReadAudit = can(capabilities, "audit:read");
 
   const head = useQuery({
     queryKey: ["kt", "list"],
@@ -358,6 +696,24 @@ export default function KnowledgeTransferPage() {
       void queryClient.invalidateQueries({ queryKey: ["kt", "list"] });
     },
     onError: (error: unknown) => toast.error(classifyApiError(error).message),
+  });
+
+  const complete = useMutation({
+    mutationFn: (id: string) => api.ktComplete(id),
+    onSuccess: (_pkg, id) => {
+      toast.success("Package completed. Its workspace closes; the record stays.");
+      setConfirmingComplete(null);
+      setOlder([]);
+      setCursor(null);
+      setExhausted(false);
+      void queryClient.invalidateQueries({ queryKey: ["kt", "list"] });
+      // An open detail panel for this package shows the old status until it refetches.
+      void queryClient.invalidateQueries({ queryKey: ["kt", id] });
+    },
+    onError: (error: unknown) => {
+      setConfirmingComplete(null);
+      toast.error(classifyApiError(error).message);
+    },
   });
 
   if (!mayManage) {
@@ -445,9 +801,18 @@ export default function KnowledgeTransferPage() {
           ) : (
             <>
               <TableShell
-                caption="Knowledge-transfer packages with employee, KT ID, status, recipient and expiry."
-                headings={["Employee", "KT ID", "Status", "Recipient", "Created", "Expires", "Actions"]}
-                minWidth="min-w-[56rem]"
+                caption="Knowledge-transfer packages with employee, KT ID, status, recipient, expiry and last activity."
+                headings={[
+                  "Employee",
+                  "KT ID",
+                  "Status",
+                  "Recipient",
+                  "Created",
+                  "Expires",
+                  "Last activity",
+                  "Actions",
+                ]}
+                minWidth="min-w-[72rem]"
               >
                 {rows.map((pkg) => (
                   <tr key={pkg.id} className="border-b border-hairline last:border-b-0">
@@ -461,7 +826,7 @@ export default function KnowledgeTransferPage() {
                       <Pill tone={STATUS_TONE[pkg.status] ?? "neutral"}>{pkg.status}</Pill>
                     </td>
                     <td className="px-5 py-3.5 text-xs text-muted-foreground">
-                      {pkg.recipient_email ?? (pkg.claimed_at ? "Claimed" : "First opener")}
+                      {recipientLabel(pkg)}
                     </td>
                     <td className="px-5 py-3.5 text-xs text-muted-foreground">
                       <When iso={pkg.created_at} />
@@ -469,27 +834,72 @@ export default function KnowledgeTransferPage() {
                     <td className="px-5 py-3.5 text-xs text-muted-foreground">
                       <When iso={pkg.expires_at} />
                     </td>
+                    <td className="px-5 py-3.5 text-xs text-muted-foreground">
+                      <When iso={pkg.last_activity_at} />
+                    </td>
                     <td className="px-5 py-3.5">
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={() => {
                             void navigator.clipboard.writeText(pkg.kt_code);
                             toast.success("KT ID copied.");
                           }}
+                          aria-label={`Copy ID ${pkg.kt_code}`}
                           className="rounded-md border border-hairline-strong px-2.5 py-1 text-xs transition-colors hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                         >
                           Copy ID
                         </button>
+                        <button
+                          type="button"
+                          aria-label={`Details for ${pkg.kt_code}`}
+                          aria-expanded={detailsId === pkg.id}
+                          aria-controls={detailsId === pkg.id ? "kt-details" : undefined}
+                          onClick={() => setDetailsId(detailsId === pkg.id ? null : pkg.id)}
+                          className={`rounded-md border px-2.5 py-1 text-xs transition-colors hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${
+                            detailsId === pkg.id
+                              ? "border-brand/40 bg-brand/8 text-foreground"
+                              : "border-hairline-strong"
+                          }`}
+                        >
+                          Details
+                        </button>
                         {pkg.status === "active" || pkg.status === "claimed" ? (
-                          <button
-                            type="button"
-                            disabled={revoke.isPending}
-                            onClick={() => revoke.mutate(pkg.id)}
-                            className="rounded-md border border-hairline-strong px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                          >
-                            Revoke
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              aria-label={
+                                confirmingComplete === pkg.id
+                                  ? `Confirm completing ${pkg.kt_code}`
+                                  : `Complete ${pkg.kt_code}`
+                              }
+                              disabled={complete.isPending}
+                              aria-busy={complete.isPending && complete.variables === pkg.id}
+                              onClick={() => {
+                                if (confirmingComplete === pkg.id) {
+                                  complete.mutate(pkg.id);
+                                } else {
+                                  setConfirmingComplete(pkg.id);
+                                }
+                              }}
+                              className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 ${
+                                confirmingComplete === pkg.id
+                                  ? "border-brand/40 bg-brand/8 font-medium text-foreground"
+                                  : "border-hairline-strong text-muted-foreground hover:border-brand/40 hover:text-foreground"
+                              }`}
+                            >
+                              {confirmingComplete === pkg.id ? "Confirm complete?" : "Complete"}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Revoke ${pkg.kt_code}`}
+                              disabled={revoke.isPending}
+                              onClick={() => revoke.mutate(pkg.id)}
+                              className="rounded-md border border-hairline-strong px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                            >
+                              Revoke
+                            </button>
+                          </>
                         ) : null}
                       </div>
                     </td>
@@ -497,6 +907,19 @@ export default function KnowledgeTransferPage() {
                 ))}
               </TableShell>
               {more ? <LoadMore onClick={() => void loadOlder()} pending={loadingMore} /> : null}
+              {detailsId ? (
+                <PackageDetails
+                  id={detailsId}
+                  canReadAudit={mayReadAudit}
+                  onClose={() => setDetailsId(null)}
+                  onChanged={() => {
+                    setOlder([]);
+                    setCursor(null);
+                    setExhausted(false);
+                    void queryClient.invalidateQueries({ queryKey: ["kt", "list"] });
+                  }}
+                />
+              ) : null}
             </>
           )}
         </>
