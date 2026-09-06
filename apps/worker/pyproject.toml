@@ -17,6 +17,10 @@ dependencies = [
     "anthropic>=1.2.0",
     # Decrypting stored provider tokens for sync fetchers (Fernet).
     "cryptography>=50.0.1",
+    # The production worker is a private Cloud Run service rung by Cloud Tasks (ADR 0017).
+    # arq stays the dev transport; these serve `jutsu_worker.http`.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [build-system]

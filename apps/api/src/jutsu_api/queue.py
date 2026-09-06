@@ -5,12 +5,16 @@ What Postgres cannot do is wake the worker, and until this module existed nothin
 a `connector.sync` row enqueued by "Sync now" sat `pending` for ever unless a CLI drain
 happened to run. This publishes the wake-up.
 
-Three properties are load-bearing:
+Two transports behind one function (spec §5, ADR 0017): Cloud Tasks in production,
+chosen whenever its three variables are set, and arq over Redis otherwise — the Compose
+stack dev runs. Call sites see neither.
+
+Three properties are load-bearing, on both transports:
 
   * **Best-effort, never a failure.** The row is already committed (or about to be); a
-    doorbell lost to a Redis restart costs latency, not work — the next doorbell for the
-    same org drains the whole backlog, because the worker's handler is a full per-org
-    drain rather than a single-job poke.
+    doorbell lost to a Redis restart or a refused task costs latency, not work — the
+    next doorbell for the same org drains the whole backlog, because the worker's
+    handler is a full per-org drain rather than a single-job poke.
   * **Org-scoped by construction.** The message carries the org id the session was
     already scoped to. There is no cross-tenant enumeration anywhere: the worker cannot
     list orgs (RLS holds the app role to one at a time), and this module never needs to.
@@ -28,6 +32,7 @@ from datetime import timedelta
 from uuid import UUID
 
 from arq.connections import ArqRedis, RedisSettings, create_pool
+from jutsu_core.doorbell import CloudTasksDoorbell, MisconfiguredDoorbell
 
 logger = logging.getLogger("jutsu.api.queue")
 
@@ -71,10 +76,31 @@ async def reset_pool() -> None:
             _pool = None
 
 
+def transport() -> str:
+    """Which doorbell this process rings: `cloud_tasks` when its variables are set
+    (production, ADR 0017), else `arq` (dev, over the Redis Compose provides).
+
+    Raises `MisconfiguredDoorbell` on a partial Cloud Tasks configuration. Called at
+    startup so a mis-deployed API fails to start rather than enqueueing rows nobody
+    drains — the request path below never raises for the same condition.
+    """
+    return "cloud_tasks" if CloudTasksDoorbell.from_env() is not None else "arq"
+
+
 async def ring_doorbell(org_id: UUID) -> bool:
     """Ask the worker to drain this organisation's queue. Returns whether the message
     was published — callers treat `False` as "the row will wait", never as an error.
     """
+    try:
+        cloud_tasks = CloudTasksDoorbell.from_env()
+    except MisconfiguredDoorbell:
+        # Startup already refused this configuration; a request that reaches here
+        # anyway keeps its durable row and reports the doorbell as unrung.
+        logger.warning("%s", {"event": "doorbell_failed", "reason": "misconfigured"})
+        return False
+    if cloud_tasks is not None:
+        return await cloud_tasks.ring(org_id, delay_seconds=int(_DEFER.total_seconds()))
+
     try:
         pool = await asyncio.wait_for(_get_pool(), timeout=_CONNECT_TIMEOUT_S)
         await pool.enqueue_job(DRAIN_JOB_NAME, str(org_id), _defer_by=_DEFER)

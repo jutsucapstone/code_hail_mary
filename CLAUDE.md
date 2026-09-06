@@ -535,6 +535,39 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   route hours after the code landed, with the pre-change log format — the replacement
   worker never took the port. A route that "does not exist" on the dev server while
   `emit-openapi.py` lists it means restart the preview, not debug the router.
-- **Production runs no worker and no Redis.** Extraction never runs there, so the knowledge
-  tabs, coverage and learning path are empty in production until a worker service is
-  deployed. Nothing in the console papers over that; keep it that way.
+- **Production runs no Redis and no always-on worker — it runs a Cloud Tasks-rung worker
+  service (ADR 0017).** `jutsu_api.queue.ring_doorbell` prefers Cloud Tasks whenever
+  `CLOUD_TASKS_QUEUE`, `CLOUD_TASKS_SERVICE_ACCOUNT` and `WORKER_DRAIN_URL` are set; a
+  partial set is refused at startup. The worker (`jutsu_worker.http`) is private, scales
+  from zero, and re-rings itself; both dispatchers share `jutsu_worker.drain`.
+- **A Cloud Tasks name is tombstoned for an hour after it runs.** Task names carry a
+  time window (`{bucket}-{org}-{window}`) so a burst coalesces AND the next ring has a
+  fresh name. A deterministic name without the window rings exactly once, then is
+  refused for an hour with ALREADY_EXISTS — which the code treats as success.
+- **`claimable_now` counts rows in a claimable *state*, not work the drain can do.**
+  `drain_org` skips `embed.document` entirely when no embedding provider is configured,
+  so those rows stay `pending` — correct and documented — and a follow-up decision made
+  on the count alone rings every five seconds for ever against a table nothing changed.
+  Measured: a two-file ingest with Vertex unset left two pending rows and re-rang on
+  both. `drain_and_report` therefore requires **progress** before it will ring `now`;
+  with none, recovery is the next real doorbell (sign-in, Jobs page, next enqueue).
+- **A caller-supplied `drain_url` is an address, not a configuration.** The worker
+  always knows its own, so `CloudTasksDoorbell.from_env(drain_url=…)` must decide "is
+  this transport in use" from the environment alone. Counting the argument made the
+  unconfigured dev door raise `MisconfiguredDoorbell` — answering 500 for a follow-up
+  ring on a drain that had already committed, which is precisely what "best-effort,
+  never a failure" forbids. Every `_doorbell_for` test stubbed it, which is how it got
+  that far.
+- **`/healthz` never reaches a Cloud Run container — Google's frontend answers it.**
+  Verified on `jutsu-api`: `/nonexistent-abc` and `/v1/nope` come back as the app's JSON
+  404 carrying `x-request-id`, while `/healthz` returns a Google HTML 404 with no such
+  header. `/readyz` is untouched, which is why `deploy.yml` verifies on that one. The
+  worker exposes `/healthz` too and its deploy check reads Cloud Run's own Ready
+  condition rather than calling it, so nothing is broken — but do not debug a
+  production liveness route by curling it, and do not "fix" a 404 there in the code.
+- **`create_app()` must not log.** `scripts/emit-openapi.py` writes the schema to
+  stdout and `_configure_logging()` points the root handler at stdout too, so one line
+  emitted at construction lands *inside* `openapi.json` and makes it invalid JSON —
+  `make api-types-check`, and with it the commit gate, fails on a file whose schema is
+  perfectly correct. Startup facts belong in the app's `lifespan`, which the schema
+  emitter never runs.

@@ -14,7 +14,7 @@
  * runner is resolved rather than assumed.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const BLOCK = 2;
@@ -62,6 +62,59 @@ export function isGitCommit(command) {
 }
 
 /**
+ * The directory the commit will actually run in.
+ *
+ * The hook process inherits the *session's* directory, which is not necessarily the
+ * one the command targets: with git worktrees they are routinely different trees at
+ * different commits. Running preflight in the wrong one certifies code that is not
+ * being committed and blocks on failures that belong to a tree nobody touched — which
+ * is exactly what happened, and it is a gate reporting on the wrong thing rather than
+ * a gate being strict.
+ *
+ * Read in the same precedence the shell and git would apply: an explicit `git -C`
+ * wins, then a `cd` earlier in the same command, then the payload's own directory.
+ * A path that is not a directory is ignored rather than trusted.
+ */
+export function resolveCommitDirectory(command, fallback) {
+  const candidates = [];
+
+  if (typeof command === "string") {
+    let pendingCd = null;
+    for (const segment of command.split(/[;&|]+/)) {
+      const tokens = segment.trim().split(/\s+/).filter(Boolean);
+      if (!tokens.length) continue;
+
+      if (tokens[0] === "cd" && tokens[1]) {
+        pendingCd = unquote(tokens.slice(1).join(" "));
+        continue;
+      }
+      if (tokens[0] !== "git") continue;
+
+      const dashC = tokens.indexOf("-C");
+      if (dashC !== -1 && tokens[dashC + 1]) candidates.push(unquote(tokens[dashC + 1]));
+      if (pendingCd) candidates.push(pendingCd);
+    }
+  }
+  if (fallback) candidates.push(fallback);
+
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      // Not a path on this machine; try the next.
+    }
+  }
+  return undefined;
+}
+
+function unquote(value) {
+  const trimmed = value.trim();
+  const quoted = /^(["'])(.*)\1$/.exec(trimmed);
+  return quoted ? quoted[2] : trimmed;
+}
+
+
+/**
  * The command sequence for the first runner that actually exists on this machine.
  *
  * With any make present this is one command: `make preflight`, the target §4.15 names.
@@ -96,9 +149,13 @@ function main() {
 
   if (!isGitCommit(command)) process.exit(0);
 
+  const cwd = resolveCommitDirectory(command, payload?.cwd);
+  if (cwd) process.stderr.write(`preflight running in ${cwd}
+`);
+
   for (const { bin, args } of resolveRunner()) {
     try {
-      execFileSync(bin, args, { stdio: "inherit", shell: process.platform === "win32" });
+      execFileSync(bin, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
     } catch {
       process.stderr.write(
         `\nCommit blocked: \`${bin} ${args.join(" ")}\` failed.\n\n` +

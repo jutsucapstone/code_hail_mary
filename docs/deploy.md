@@ -229,9 +229,9 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 ```
 
 There is deliberately **no `jutsu-redis-url`**. Production has no Redis — the reaper is
-a scheduled Cloud Run job for exactly that cost reason (§8), and the deploy mounts no
-`REDIS_URL`: sync jobs enqueue durable rows that wait, visible on the Jobs page, and the
-mount lands together with the worker slice that would hear the doorbell.
+a scheduled Cloud Run job for exactly that cost reason (§8), and the queue's doorbell is
+Cloud Tasks ringing a worker service that scales from zero (§9, ADR 0017). Postgres is the
+queue either way; nothing in production needs a broker.
 
 **Budgets are environment variables, not secrets, and production runs on their defaults.**
 `SEARCH_RATE_LIMIT` / `SEARCH_RATE_WINDOW_S` (60 per 60s per person) bound `/v1/search`,
@@ -408,7 +408,76 @@ process that is running anyway, and this job can be deleted.
 
 ---
 
-### 9. The custom domain
+### 9. The worker service and the drain queue
+
+Postgres is the queue (ADR 0012): "Sync now", a source walk, an embedding, an extraction —
+each is a durable row with a lease and bounded attempts. What Postgres cannot do is wake a
+worker. In dev arq does that over Compose's Redis; in production **Cloud Tasks rings a
+private Cloud Run service** (`jutsu-worker`, `jutsu_worker.http`) that drains one
+organisation per request and scales back to zero (ADR 0017). No Redis, no always-on
+container: nothing runs or bills between doorbells.
+
+The pipeline deploys the service on every push. Three things are created once, by hand:
+
+```bash
+gcloud services enable cloudtasks.googleapis.com
+
+# The queue. Retries are the transport's (a drain that dies mid-flight is re-dispatched
+# on this backoff); the job's own bounded attempts and dead-letter state are unchanged.
+gcloud tasks queues create jutsu-drain --location="$REGION" \
+  --max-concurrent-dispatches=3 --max-dispatches-per-second=5 \
+  --max-attempts=10 --min-backoff=10s --max-backoff=300s --max-doublings=5
+
+# The runtime account rings the queue…
+gcloud tasks queues add-iam-policy-binding jutsu-drain --location="$REGION" \
+  --member="serviceAccount:jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/cloudtasks.enqueuer
+
+# …and signs each task's OIDC token as itself, which needs actAs on itself.
+gcloud iam service-accounts add-iam-policy-binding \
+  "jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --member="serviceAccount:jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/iam.serviceAccountUser
+```
+
+The fourth binding — `run.invoker` on `jutsu-worker` for the runtime account — is applied by
+`deploy.yml` on every deploy, because the service must exist first. The API learns the
+worker's URL in the same run (`WORKER_DRAIN_URL`), and both services carry
+`CLOUD_TASKS_QUEUE` and `CLOUD_TASKS_SERVICE_ACCOUNT`; a partial set refuses to start.
+
+What a doorbell is, end to end: the API commits the job row → two seconds later Cloud Tasks
+POSTs `{"org_id"}` to `/drain` with an OIDC token → Cloud Run admits only the runtime
+account → the worker runs `drain_org` for that organisation under row-level security →
+if work remains claimable it rings itself again in five seconds, if only retries are
+waiting in sixty → the queue coalesces rings inside a window into one dispatch. Rings
+come from "Sync now", from opening the Jobs page, and from a sign-in (ADR 0017 §5).
+
+To watch one: `gcloud tasks list --queue=jutsu-drain --location=$REGION` while it waits;
+`gcloud logging read 'resource.labels.service_name="jutsu-worker"' --limit=20` for
+`drain_complete` afterwards, which carries the task name, the counts and the follow-up.
+To ring by hand, for an organisation whose id you hold:
+
+```bash
+gcloud tasks create-http-task --queue=jutsu-drain --location="$REGION" \
+  --url="$(gcloud run services describe jutsu-worker --region="$REGION" --format='value(status.url)')/drain" \
+  --method=POST --header="Content-Type: application/json" \
+  --body-content='{"org_id":"ORG-UUID"}' \
+  --oidc-service-account-email="jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+Do not health-check either service by curling `/healthz`: Google's frontend answers that
+path itself and the request never reaches the container, so it returns an HTML 404 no
+matter what the app serves. Verified on `jutsu-api`, where an ordinary unknown path comes
+back as the app's JSON 404 with an `x-request-id` and `/healthz` does not. `/readyz` is
+unaffected and is what the pipeline checks; the worker is private, so its readiness is
+read from Cloud Run's own Ready condition instead.
+
+The reaper stays a scheduled job (§8) — it is the one piece of maintenance with no tenant
+and no doorbell.
+
+---
+
+### 10. The custom domain
 
 `jutsu.co.in`, fronted by a global external Application Load Balancer.
 

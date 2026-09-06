@@ -36,6 +36,7 @@ from jutsu_api.config import (
 )
 from jutsu_api.deps import Db, get_email_sender
 from jutsu_api.email import EmailSender
+from jutsu_api.queue import ring_doorbell
 from jutsu_api.security import (
     CSRF_COOKIE,
     SESSION_COOKIE,
@@ -171,6 +172,9 @@ async def verify(
     credentials = await open_session(
         session, identity_id=identity_id, user_id=user_id, org_id=org_id
     )
+    # Somebody from this organisation is back: drain whatever waited for them. The
+    # only tenant enumeration the worker ever gets is a person signing in (ADR 0017).
+    await ring_doorbell(org_id)
     set_session_cookies(
         response,
         token=credentials.token,

@@ -3,7 +3,11 @@ name = "jutsu-core"
 version = "0.1.0"
 description = "JUTSU domain models, enums and typed errors"
 requires-python = ">=3.12,<3.13"
-dependencies = ["pydantic>=2.9"]
+# `google-cloud-tasks` is the production doorbell transport (ADR 0017), imported LAZILY
+# by `jutsu_core.doorbell` — `import jutsu_core` never pulls it in, so the "import-cheap,
+# side-effect free" contract holds. It lives here because it is the one package both the
+# API and the worker import, and neither may import the other.
+dependencies = ["pydantic>=2.9", "google-cloud-tasks>=2.16"]
 
 [build-system]
 requires = ["hatchling"]

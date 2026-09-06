@@ -410,16 +410,21 @@ class TestDrainFollowUp:
     ) -> None:
         """A drain stopped at its soft deadline (or killed at arq's hard one) leaves
         pending work; the follow-up must not wait a backoff it does not owe."""
+        from jutsu_worker import drain as drain_module
         from jutsu_worker.main import drain_org_jobs
 
         org_id = uuid.uuid4()
         _connection_id, _job_id = await seed_connection_and_job(org_id)
 
         async def out_of_time(org: uuid.UUID, **kwargs: object) -> dict[str, int]:
-            # The soft deadline elapsed before anything was claimed.
-            return {"connector.sync": 0}
+            # Twelve jobs ran, then the soft deadline elapsed with one still claimable.
+            # The counts have to be non-zero: a drain that claimed *nothing* is the
+            # livelock case, and it must not ring itself again at once.
+            return {"connector.sync": 12}
 
-        monkeypatch.setattr("jutsu_worker.main.drain_org", out_of_time)
+        # `drain_org_jobs` reaches `drain_org` through the shared drain now, not
+        # through its own module (ADR 0017), so that is where the stub belongs.
+        monkeypatch.setattr(drain_module, "drain_org", out_of_time)
 
         class RecordingRedis:
             def __init__(self) -> None:
@@ -446,3 +451,147 @@ class TestDrainFollowUp:
                 raise AssertionError("no follow-up was warranted")
 
         await drain_org_jobs({"redis": RefusingRedis()}, str(org_id))
+
+
+@pytest.mark.usefixtures("worker_database")
+class TestDrainReport:
+    """The follow-up decision both dispatchers share (ADR 0017), against the real table."""
+
+    async def test_an_empty_queue_needs_no_follow_up(self) -> None:
+        from jutsu_worker.drain import drain_and_report
+
+        report = await drain_and_report(uuid.uuid4())
+        assert (report.claimable_now, report.retries_waiting, report.follow_up) == (0, 0, None)
+
+    async def test_a_retry_that_is_not_due_yet_rings_after_the_backoff(self) -> None:
+        from jutsu_worker.drain import drain_and_report
+
+        org_id = uuid.uuid4()
+        _connection_id, job_id = await seed_connection_and_job(org_id)
+        async with org_session(org_id) as session:
+            await session.execute(
+                text(
+                    "UPDATE jobs SET state = 'retry_scheduled', attempts = 1, "
+                    "next_attempt_at = now() + interval '1 hour' WHERE id = :id"
+                ),
+                {"id": job_id},
+            )
+
+        report = await drain_and_report(org_id)
+
+        assert sum(report.counts.values()) == 0, "not due, so not claimed"
+        assert report.retries_waiting == 1
+        assert report.follow_up == "retry"
+
+    async def test_work_the_drain_could_not_finish_rings_again_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A drain that stops at its deadline leaves claimable rows; the report says so
+        and the follow-up is immediate. The stub returns the jobs it got through before
+        the deadline — an all-zero count would be a drain that claimed nothing, which is
+        a different thing entirely and is covered below."""
+        from jutsu_worker import drain as drain_module
+
+        org_id = uuid.uuid4()
+        await seed_connection_and_job(org_id)
+
+        async def stopped_short(org: uuid.UUID) -> dict[str, int]:
+            return {"connector.sync": 9}
+
+        monkeypatch.setattr(drain_module, "drain_org", stopped_short)
+        report = await drain_module.drain_and_report(org_id)
+
+        assert report.claimable_now == 1
+        assert report.follow_up == "now"
+
+    async def test_work_the_drain_cannot_run_does_not_ring_for_ever(self) -> None:
+        """`claimable_now` counts rows in a claimable *state*, not work this drain can do.
+
+        `drain_org` skips embedding entirely when no provider is configured, so those
+        rows sit `pending` — correct and documented. What must not follow is a follow-up
+        every five seconds against a table nothing changed: measured locally, a two-file
+        ingest with no Vertex left two `embed.document` rows and the door re-rang itself
+        on every one of them. Progress is the evidence that ringing again is worth
+        anything; without it the recovery path is the next real doorbell.
+        """
+        from jutsu_worker import drain as drain_module
+
+        org_id = uuid.uuid4()
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("INSERT INTO orgs (id, name) VALUES (:id, 'no-embedder')"), {"id": org_id}
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, "
+                    "payload_json) VALUES (:id, :org, 'embed.document', 'pending', :key, "
+                    "cast(:p AS jsonb))"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "org": str(org_id),
+                    "key": f"embed.document:{org_id}:{uuid.uuid4()}",
+                    "p": '{"document_id": "irrelevant"}',
+                },
+            )
+
+        async def claimed_nothing(org: uuid.UUID) -> dict[str, int]:
+            return {"embed.document": 0}
+
+        mp = pytest.MonkeyPatch()
+        mp.setattr(drain_module, "drain_org", claimed_nothing)
+        try:
+            report = await drain_module.drain_and_report(org_id)
+        finally:
+            mp.undo()
+
+        assert report.claimable_now == 1, "the row is genuinely claimable-by-state"
+        assert report.follow_up is None, "but nothing moved, so ringing again buys nothing"
+
+    async def test_a_stalled_drain_still_rings_for_a_waiting_retry(self) -> None:
+        """No progress does not silence a retry that has its own due time."""
+        from jutsu_worker import drain as drain_module
+
+        org_id = uuid.uuid4()
+        _connection_id, job_id = await seed_connection_and_job(org_id)
+        async with org_session(org_id) as session:
+            await session.execute(
+                text(
+                    "UPDATE jobs SET state = 'retry_scheduled', attempts = 1, "
+                    "next_attempt_at = now() + interval '1 hour' WHERE id = :id"
+                ),
+                {"id": job_id},
+            )
+
+        async def claimed_nothing(org: uuid.UUID) -> dict[str, int]:
+            return {}
+
+        mp = pytest.MonkeyPatch()
+        mp.setattr(drain_module, "drain_org", claimed_nothing)
+        try:
+            report = await drain_module.drain_and_report(org_id)
+        finally:
+            mp.undo()
+
+        assert report.follow_up == "retry"
+
+    async def test_another_tenant_s_backlog_is_invisible_to_the_report(self) -> None:
+        """The org id is a hint, never an authorization: a report for one organisation
+        counts nothing that belongs to another, so it cannot ring on their behalf."""
+        from jutsu_worker import drain as drain_module
+
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        await seed_connection_and_job(org_a)
+
+        async def nothing(org: uuid.UUID) -> dict[str, int]:
+            return {}
+
+        import pytest as _pytest
+
+        mp = _pytest.MonkeyPatch()
+        mp.setattr(drain_module, "drain_org", nothing)
+        try:
+            assert (await drain_module.drain_and_report(org_b)).claimable_now == 0
+            assert (await drain_module.drain_and_report(org_a)).claimable_now == 1
+        finally:
+            mp.undo()

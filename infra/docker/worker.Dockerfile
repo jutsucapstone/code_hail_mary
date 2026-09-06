@@ -5,13 +5,12 @@
 # two things to patch, two things to pin and two chances for them to drift apart on a
 # security update.
 #
-# Nothing deploys this as a long-running service today. It exists for two callers: the
-# `jutsu-reap` Cloud Run *job*, which deploy.yml points at this image on every push and
-# Cloud Scheduler invokes every five minutes with its own `--command` (so nothing runs
-# or bills at idle), and the future ingestion-worker slice (S8). An always-on arq
-# service means `--min-instances=1 --no-cpu-throttling` plus Redis — a standing cost
-# that is that slice's own decision, not a default smuggled in from a Dockerfile
-# header. The CMD below is what that service will run when it lands.
+# Two production callers, neither of them the CMD below. The `jutsu-reap` Cloud Run *job*
+# runs `python -m jutsu_worker.reap` on a schedule, and the `jutsu-worker` Cloud Run
+# *service* runs `uvicorn jutsu_worker.http:app` — a private door Cloud Tasks rings, which
+# scales from zero so nothing runs or bills at idle (ADR 0017). deploy.yml sets both
+# commands explicitly. The CMD is the dev shape: arq over Compose's Redis, which an
+# always-on production arq would have needed too, at a standing cost the runbook refuses.
 
 # ---------------------------------------------------------------- build
 FROM python:3.12-slim AS build

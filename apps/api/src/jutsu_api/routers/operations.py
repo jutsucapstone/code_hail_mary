@@ -30,6 +30,7 @@ from jutsu_api.operations import (
     list_sources,
     read_job_stats,
 )
+from jutsu_api.queue import ring_doorbell
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1", tags=["operations"], route_class=GuardedAPIRoute)
@@ -141,6 +142,10 @@ async def read_jobs(
     Carries the classified `failure_kind`, never the exception text: error strings can
     embed file paths and provider payloads, which §4.9 keeps out of anything renderable.
     """
+    # Looking at the queue wakes the worker for this organisation. This is the recovery
+    # ADR 0012 left open: a tenant whose doorbell was lost is drained the moment
+    # somebody comes to see why nothing moved. Org-scoped, coalesced, best-effort.
+    await ring_doorbell(principal.org_id)
     page = await list_jobs(session, limit=limit, cursor=cursor, state=state, kind=kind)
     return JobPageOut(
         items=[JobEntry(**asdict(row)) for row in page.items],

@@ -23,15 +23,14 @@ from typing import Any, ClassVar
 from arq import cron
 from arq.connections import RedisSettings
 from jutsu_db import unscoped_session
-from jutsu_db.engine import org_session
 from jutsu_retrieval.client import VertexTransport
 from jutsu_retrieval.config import get_embedding_settings
 from jutsu_retrieval.embeddings import Embedder
 from sqlalchemy import text
 
+from jutsu_worker.drain import drain_and_report, follow_up_delay
 from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.runner import (
-    drain_org,
     process_connector_sync,
     process_document,
     process_embedding,
@@ -129,55 +128,27 @@ async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
 
     The org id is a hint about where to look, never an authorization: every query the
     drain runs is scoped by row-level security to exactly that organisation. One message
-    drains the org's whole backlog, so a doorbell lost to a Redis restart is recovered
-    by the next one for the same org (ADR 0012: Postgres is the queue, Redis is only
+    drains the org's whole backlog, so a doorbell lost to a restart is recovered by the
+    next one for the same org (ADR 0012: Postgres is the queue; the transport is only
     the doorbell).
-    """
-    counts = await drain_org(uuid.UUID(org_id))
-    ran = sum(counts.values())
-    if ran:
-        logger.info("%s", {"event": "org_drained", "org_id": org_id, "jobs": ran})
 
-    # Two kinds of leftover, two follow-ups. Work claimable NOW remains when the
-    # drain stopped at its own soft deadline (or a predecessor was killed at arq's
-    # hard one) — ring again almost immediately. A retry_scheduled job with a future
-    # next_attempt_at has no doorbell of its own — the doorbell fires on *enqueue*,
-    # and a retry is not an enqueue — so ring after the shortest backoff has passed.
-    # Deterministic job ids collapse bursts into one follow-up each.
-    async with org_session(uuid.UUID(org_id)) as session:
-        claimable_now = (
-            await session.execute(
-                text(
-                    "SELECT count(*) FROM jobs WHERE state = 'pending' "
-                    "OR (state = 'retry_scheduled' AND next_attempt_at <= now())"
-                )
-            )
-        ).scalar_one()
-        retries_waiting = (
-            await session.execute(
-                text(
-                    "SELECT count(*) FROM jobs WHERE state = 'retry_scheduled' "
-                    "AND next_attempt_at > now()"
-                )
-            )
-        ).scalar_one()
+    The follow-up decision is `jutsu_worker.drain`'s, shared with the Cloud Tasks door
+    (`jutsu_worker.http`) so dev and prod re-ring identically (ADR 0017). Deterministic
+    job ids collapse bursts into one follow-up each.
+    """
+    report = await drain_and_report(uuid.UUID(org_id))
+
     redis = ctx.get("redis")
-    if redis is not None:
-        if claimable_now:
-            await redis.enqueue_job(
-                "drain_org_jobs",
-                org_id,
-                _defer_by=timedelta(seconds=5),
-                _job_id=f"drain-more:{org_id}",
-            )
-        elif retries_waiting:
-            await redis.enqueue_job(
-                "drain_org_jobs",
-                org_id,
-                _defer_by=timedelta(seconds=60),
-                _job_id=f"drain-retry:{org_id}",
-            )
-    return counts
+    delay = follow_up_delay(report.follow_up)
+    if redis is not None and delay is not None:
+        job_id = f"drain-more:{org_id}" if report.follow_up == "now" else f"drain-retry:{org_id}"
+        await redis.enqueue_job(
+            "drain_org_jobs",
+            org_id,
+            _defer_by=timedelta(seconds=delay),
+            _job_id=job_id,
+        )
+    return report.counts
 
 
 async def reap_expired_registrations(ctx: dict[str, Any]) -> int:

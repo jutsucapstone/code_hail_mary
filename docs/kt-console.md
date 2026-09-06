@@ -142,9 +142,10 @@ where the server would accept them) and the package's activity from the trail.
 
 ## What is honestly absent
 
-* **Extraction in production.** No worker service is deployed, so `extraction_claims` are
-  never written there; the knowledge tabs, coverage and learning path show their empty
-  states and reasons until a worker (and its queue transport) is deployed.
+* **Knowledge for a tenant that has synced nothing.** The worker now runs in production
+  (ADR 0017: Cloud Tasks rings a private Cloud Run service), so a connected provider's
+  documents are chunked, embedded and extracted within the drain that follows the sync.
+  A tenant with no connection still sees the honest empty states and their reasons.
 * **A graph leg.** See above.
 * **Streaming.** The citation gate needs the whole answer and the Next proxy buffers bodies;
   streaming post-gate events is a separate decision.

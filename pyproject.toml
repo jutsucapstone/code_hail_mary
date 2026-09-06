@@ -28,6 +28,8 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    # Stubs for the protobuf timestamp the Cloud Tasks doorbell builds (ADR 0017).
+    "types-protobuf>=5.29",
 ]
 
 [tool.ruff]

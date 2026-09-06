@@ -126,7 +126,8 @@ complicate binding for a benefit nobody has asked for.
   `request_id`, `org_id` and an opaque `user_id` (`logging_context.py`).
 * Four new environment variables (`KT_CLAIM_RATE_*`, `KT_SUMMARY_RATE_*`) with documented
   defaults; none is required.
-* **Production blocker, unchanged by this work:** with no worker deployed, extraction never
-  runs in production, so the knowledge tabs, coverage and learning path are empty there
-  until a worker service (and the queue transport it needs) is deployed. The console shows
-  the honest empty state and its reason rather than anything else.
+* **Production blocker, unchanged by this work — since closed by ADR 0017:** at the time,
+  no worker was deployed, so extraction never ran in production and the knowledge tabs,
+  coverage and learning path were empty there. ADR 0017 deploys a Cloud Tasks-rung worker
+  service; a tenant that has synced a provider now sees its knowledge, and one that has not
+  still sees the honest empty state and its reason.

@@ -13,7 +13,8 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import FastAPI, Request
@@ -23,6 +24,7 @@ from jutsu_core import InternalError, JutsuError, RateLimited, ValidationFailed
 from jutsu_db.engine import ping as postgres_ping
 
 from jutsu_api.logging_context import RequestContextFilter, bind, clear
+from jutsu_api.queue import transport as doorbell_transport
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import connections as connections_router
 from jutsu_api.routers import employees as employees_router
@@ -73,6 +75,20 @@ def _configure_logging() -> None:
 
 def create_app() -> FastAPI:
     _configure_logging()
+    # Which doorbell this process rings (ADR 0017). Resolved here, so a partial Cloud
+    # Tasks configuration raises before the app exists and a mis-deployed API fails to
+    # start — the deploy's readiness check fails with it — rather than enqueueing rows
+    # nobody drains.
+    transport = doorbell_transport()
+
+    # Announced on startup rather than at construction, because `create_app` also runs
+    # inside `scripts/emit-openapi.py`, which writes the schema to stdout — and so does
+    # this logger. A line emitted here lands *in* `openapi.json` and makes it invalid
+    # JSON, which `make api-types-check`, and therefore the commit gate, fails on.
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        logger.info("%s", {"event": "doorbell_transport", "transport": transport})
+        yield
 
     # The interactive docs and the schema are a complete map of every endpoint and
     # payload. Useful in development, and free enumeration for an attacker in
@@ -86,6 +102,7 @@ def create_app() -> FastAPI:
         docs_url="/docs" if expose_schema else None,
         redoc_url=None,
         openapi_url="/openapi.json" if expose_schema else None,
+        lifespan=lifespan,
     )
 
     @app.middleware("http")
