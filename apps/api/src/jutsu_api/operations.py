@@ -91,8 +91,14 @@ async def list_audit(
     action: str | None = None,
     outcome: str | None = None,
     resource_type: str | None = None,
+    resource_id: str | None = None,
 ) -> AuditPage:
     """The organisation's audit trail, newest first.
+
+    `resource_id` narrows to one resource's history — a knowledge-transfer package's
+    opens, claims and refusals, say. Server-side like every other filter here: a trail
+    can be arbitrarily long, and a client filtering one page would report "no denials"
+    while the denials sat on page two.
 
     The join to `users` resolves an actor to their JUTSU ID for display. It is guarded by
     a regex on the actor string because `actor_id` is `String(255)` by design — a system
@@ -120,6 +126,9 @@ async def list_audit(
     if resource_type:
         params["resource_type"] = resource_type
         filters.append("a.resource_type = :resource_type")
+    if resource_id:
+        params["resource_id"] = resource_id
+        filters.append("a.resource_id = :resource_id")
 
     # S608: every joined fragment is a literal defined above; caller input is bound.
     rows = (

@@ -23,6 +23,7 @@ probe, and the trail is where a probe becomes visible.
 
 from __future__ import annotations
 
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from jutsu_core.ids import ALPHABET, normalise_jutsu_id
 from jutsu_db.engine import org_session
 from jutsu_retrieval.search import ACL_PREDICATE
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import AnswerOutcome, AnswerTransport, synthesise_answer
@@ -48,6 +50,7 @@ __all__ = [
     "kt_documents",
     "list_packages",
     "revoke_package",
+    "update_package",
 ]
 
 #: The categories the backend can actually serve (§13). Documents come from the corpus
@@ -71,6 +74,62 @@ _EXPIRED_MESSAGE = "This Knowledge Transfer package has expired."
 def _generate_code() -> str:
     suffix = "".join(secrets.choice(ALPHABET) for _ in range(8))
     return f"KT-JUTSU-{suffix}"
+
+
+_NOT_FOUND = "No package matches that ID. Check it with your administrator."
+
+
+async def _audit(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    actor_id: UUID,
+    action: str,
+    resource_id: UUID | str,
+    outcome: str = "success",
+    correlation_id: str | None = None,
+    meta: dict[str, object] | None = None,
+) -> None:
+    """One KT audit row, on the request session.
+
+    On the request session deliberately: a success row must commit or roll back with the
+    change it describes. Denials go through `_audit_denied_open`, which commits on its
+    own session for the opposite reason — see its docstring.
+
+    `correlation_id` is the request id (§25), so a row in the trail can be joined to the
+    log line that produced it. Never a question, a title, a quote or an address in `meta`
+    — the trail is read by administrators and exported; §4.9 has no carve-out for it.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+            "resource_id, outcome, correlation_id, meta_json) "
+            "VALUES (:org, :actor, 'user', :action, 'kt_package', :rid, :outcome, "
+            ":correlation, cast(:meta AS jsonb))"
+        ),
+        {
+            "org": str(org_id),
+            "actor": str(actor_id),
+            "action": action,
+            "rid": str(resource_id),
+            "outcome": outcome,
+            "correlation": correlation_id,
+            "meta": json.dumps(meta or {}),
+        },
+    )
+
+
+async def _touch_activity(session: AsyncSession, *, package_id: UUID) -> None:
+    """Record that the recipient did something with the package just now.
+
+    Called from every recipient read, not only from the open — the admin list shows
+    `last_activity_at` as "last activity", and a figure that moved only on the shell
+    mount understated everything a recipient did after it.
+    """
+    await session.execute(
+        text("UPDATE kt_packages SET last_activity_at = now() WHERE id = :id"),
+        {"id": package_id},
+    )
 
 
 # ------------------------------------------------------------------------ views
@@ -160,6 +219,7 @@ async def create_package(
     validity_days: int,
     period_days: int | None,
     recipient_email: str | None,
+    correlation_id: str | None = None,
 ) -> KtAdminView:
     """Create a package for one employee's context.
 
@@ -191,48 +251,50 @@ async def create_package(
 
     now = datetime.now(tz=UTC)
     package_id = uuid4()
+    params: dict[str, object] = {
+        "id": package_id,
+        "org": str(org_id),
+        "subject": subject_user_id,
+        "creator": created_by,
+        "scope": "[" + ", ".join(f'"{c}"' for c in cleaned) + "]",
+        "period_start": now - timedelta(days=period_days) if period_days else None,
+        "period_end": now if period_days else None,
+        "expires_at": now + timedelta(days=validity_days),
+        "recipient": recipient_email.strip().lower() if recipient_email else None,
+    }
 
     # The code is random over a 40-bit space; a collision is unlikely and a retry is
-    # cheap. Three attempts, then give up loudly rather than loop forever.
+    # cheap. The UNIQUE constraint is what detects it — not a SELECT first, because that
+    # read runs under RLS and cannot see another tenant's code, while the constraint is
+    # global. Each attempt is a savepoint so a refused INSERT does not abort the request
+    # transaction around it. Three attempts, then give up loudly rather than loop.
     for _attempt in range(3):
-        code = _generate_code()
-        exists = (
-            await session.execute(
-                text("SELECT 1 FROM kt_packages WHERE kt_code = :code"), {"code": code}
-            )
-        ).scalar_one_or_none()
-        if exists is None:
-            break
+        params["code"] = _generate_code()
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        "INSERT INTO kt_packages (id, org_id, kt_code, subject_user_id, "
+                        "created_by, scope, period_start, period_end, expires_at, "
+                        "recipient_email) "
+                        "VALUES (:id, :org, :code, :subject, :creator, cast(:scope AS jsonb), "
+                        ":period_start, :period_end, :expires_at, :recipient)"
+                    ),
+                    params,
+                )
+        except IntegrityError:
+            continue
+        break
     else:  # pragma: no cover - 2^-120 territory, kept for honesty
         raise Conflict("Could not allocate a package code. Try again.")
 
-    await session.execute(
-        text(
-            "INSERT INTO kt_packages (id, org_id, kt_code, subject_user_id, created_by, "
-            "scope, period_start, period_end, expires_at, recipient_email) "
-            "VALUES (:id, :org, :code, :subject, :creator, cast(:scope AS jsonb), "
-            ":period_start, :period_end, :expires_at, :recipient)"
-        ),
-        {
-            "id": package_id,
-            "org": str(org_id),
-            "code": code,
-            "subject": subject_user_id,
-            "creator": created_by,
-            "scope": "[" + ", ".join(f'"{c}"' for c in cleaned) + "]",
-            "period_start": now - timedelta(days=period_days) if period_days else None,
-            "period_end": now if period_days else None,
-            "expires_at": now + timedelta(days=validity_days),
-            "recipient": recipient_email.strip().lower() if recipient_email else None,
-        },
-    )
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
-            "resource_id, outcome) "
-            "VALUES (:org, :actor, 'user', 'kt.created', 'kt_package', :rid, 'success')"
-        ),
-        {"org": str(org_id), "actor": str(created_by), "rid": str(package_id)},
+    await _audit(
+        session,
+        org_id=org_id,
+        actor_id=created_by,
+        action="kt.created",
+        resource_id=package_id,
+        correlation_id=correlation_id,
     )
     return await get_package(session, package_id=package_id)
 
@@ -309,7 +371,12 @@ async def get_package(session: AsyncSession, *, package_id: UUID) -> KtAdminView
 
 
 async def revoke_package(
-    session: AsyncSession, *, org_id: UUID, actor_id: UUID, package_id: UUID
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    actor_id: UUID,
+    package_id: UUID,
+    correlation_id: str | None = None,
 ) -> KtAdminView:
     """Revocation takes effect at the next authorization check, which is every check."""
     updated = (
@@ -327,19 +394,24 @@ async def revoke_package(
         # would put a second actor on a transition the first one made.
         view = await get_package(session, package_id=package_id)
         raise Conflict(f"That package is already {view.status}.")
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
-            "resource_id, outcome) "
-            "VALUES (:org, :actor, 'user', 'kt.revoked', 'kt_package', :rid, 'success')"
-        ),
-        {"org": str(org_id), "actor": str(actor_id), "rid": str(package_id)},
+    await _audit(
+        session,
+        org_id=org_id,
+        actor_id=actor_id,
+        action="kt.revoked",
+        resource_id=package_id,
+        correlation_id=correlation_id,
     )
     return await get_package(session, package_id=package_id)
 
 
 async def complete_package(
-    session: AsyncSession, *, org_id: UUID, actor_id: UUID, package_id: UUID
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    actor_id: UUID,
+    package_id: UUID,
+    correlation_id: str | None = None,
 ) -> KtAdminView:
     """Mark a handover finished. Completion also ends access: complete is terminal."""
     updated = (
@@ -357,14 +429,97 @@ async def complete_package(
         # as a success anyway would record a transition that never ran.
         view = await get_package(session, package_id=package_id)
         raise Conflict(f"That package is already {view.status}.")
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
-            "resource_id, outcome) "
-            "VALUES (:org, :actor, 'user', 'kt.completed', 'kt_package', :rid, 'success')"
-        ),
-        {"org": str(org_id), "actor": str(actor_id), "rid": str(package_id)},
+    await _audit(
+        session,
+        org_id=org_id,
+        actor_id=actor_id,
+        action="kt.completed",
+        resource_id=package_id,
+        correlation_id=correlation_id,
     )
+    return await get_package(session, package_id=package_id)
+
+
+async def update_package(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    actor_id: UUID,
+    package_id: UUID,
+    extend_days: int | None,
+    recipient_email: str | None,
+    correlation_id: str | None = None,
+) -> KtAdminView:
+    """Extend a package's expiry, or re-address one nobody has claimed yet.
+
+    Two changes an administrator legitimately needs and could not make: a handover that
+    runs long, and a package created for the wrong address before anyone opened it.
+    Both are bounded the way creation is. Extension counts from the later of now and the
+    current expiry — so a lapsed package can be reopened, which is the point, and a live
+    one gains exactly the days asked — and can never place the expiry more than the
+    creation ceiling (365 days) past now. Re-addressing is refused once a recipient is
+    bound: a claimed package belongs to its claimant, and moving it would be a second
+    person's access decided by an edit rather than by a claim.
+
+    A revoked or completed package is terminal and refuses both. Each change is its own
+    audit row (`kt.extended` with the before/after expiry; `kt.readdressed` with no
+    address — an address is personal data and the trail carries none).
+    """
+    if extend_days is None and recipient_email is None:
+        raise ValidationFailed("Nothing to change.")
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT id, expires_at, revoked_at, completed_at, recipient_user_id, now() AS now "
+                "FROM kt_packages WHERE id = :id"
+            ),
+            {"id": package_id},
+        )
+    ).first()
+    if row is None:
+        raise NotFound("That package was not found.")
+    if row.revoked_at is not None or row.completed_at is not None:
+        view = await get_package(session, package_id=package_id)
+        raise Conflict(f"That package is {view.status}; it cannot be changed.")
+
+    if extend_days is not None:
+        if not 1 <= extend_days <= 365:
+            raise ValidationFailed("An extension must be between 1 and 365 days.")
+        base = max(row.now, row.expires_at)
+        new_expiry = base + timedelta(days=extend_days)
+        if new_expiry > row.now + timedelta(days=365):
+            raise ValidationFailed("A package cannot be extended more than a year past today.")
+        await session.execute(
+            text("UPDATE kt_packages SET expires_at = :expires WHERE id = :id"),
+            {"expires": new_expiry, "id": package_id},
+        )
+        await _audit(
+            session,
+            org_id=org_id,
+            actor_id=actor_id,
+            action="kt.extended",
+            resource_id=package_id,
+            correlation_id=correlation_id,
+            meta={"expires_at": {"from": row.expires_at.isoformat(), "to": new_expiry.isoformat()}},
+        )
+
+    if recipient_email is not None:
+        if row.recipient_user_id is not None:
+            raise Conflict("That package is already claimed; its recipient cannot change.")
+        await session.execute(
+            text("UPDATE kt_packages SET recipient_email = :email WHERE id = :id"),
+            {"email": recipient_email.strip().lower(), "id": package_id},
+        )
+        await _audit(
+            session,
+            org_id=org_id,
+            actor_id=actor_id,
+            action="kt.readdressed",
+            resource_id=package_id,
+            correlation_id=correlation_id,
+        )
+
     return await get_package(session, package_id=package_id)
 
 
@@ -409,7 +564,23 @@ async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_co
     row = (await session.execute(lookup, {"code": code, "user": user_id})).first()
     if row is None:
         await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=code[:64])
-        raise NotFound("No package matches that ID. Check it with your administrator.")
+        raise NotFound(_NOT_FOUND)
+
+    # Binding BEFORE state. A package that belongs to somebody else is a 404 whatever
+    # its state: answering "revoked" or "expired" to the wrong holder confirms both that
+    # the package exists and that it was closed, and a KT ID must confirm nothing to
+    # whoever happens to hold it. The exact revoked/expired sentences are still what the
+    # RIGHT person sees (§39) — and what any member sees for a package that was never
+    # addressed to anyone, since there is no one for it to be kept from.
+    bound_elsewhere = row.recipient_user_id is not None and row.recipient_user_id != user_id
+    addressed_elsewhere = (
+        row.recipient_user_id is None
+        and row.recipient_email is not None
+        and row.recipient_email != row.caller_email.lower()
+    )
+    if bound_elsewhere or addressed_elsewhere:
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        raise NotFound(_NOT_FOUND)
 
     if row.revoked_at is not None:
         await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
@@ -419,14 +590,9 @@ async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_co
         raise PermissionDenied(_EXPIRED_MESSAGE)
 
     if row.recipient_user_id is not None:
-        if row.recipient_user_id != user_id:
-            await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
-            raise NotFound("No package matches that ID. Check it with your administrator.")
+        # Bound to this caller. The row still carries recipient_user_id, which is how
+        # `claim_or_open` tells a re-open from the first claim below.
         return row
-
-    if row.recipient_email is not None and row.recipient_email != row.caller_email.lower():
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
-        raise NotFound("No package matches that ID. Check it with your administrator.")
 
     # First eligible opener claims it. From here on, everyone else is a 404. The
     # rowcount is the race detector: two concurrent first opens both read the package
@@ -465,15 +631,33 @@ async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_co
 
 
 async def claim_or_open(
-    session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    correlation_id: str | None = None,
 ) -> KtRecipientView:
-    """Open (claiming if unclaimed) and return the recipient's view of the package."""
+    """Open (claiming if unclaimed) and return the recipient's view of the package.
+
+    Every open is an access event (§25 `KT_ACCESSED`). The first one is already written
+    as `kt.claimed` inside `_open_for`, on the same session as the binding it describes;
+    every later one is `kt.opened` here. The row `_open_for` returns tells the two apart:
+    the first-claim path returns the row as it was read, before the UPDATE bound it, so
+    `recipient_user_id` is still NULL exactly when this call performed the claim.
+    """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
 
-    await session.execute(
-        text("UPDATE kt_packages SET last_activity_at = now() WHERE id = :id"),
-        {"id": row.id},  # type: ignore[attr-defined]
-    )
+    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+    if row.recipient_user_id is not None:  # type: ignore[attr-defined]
+        await _audit(
+            session,
+            org_id=org_id,
+            actor_id=user_id,
+            action="kt.opened",
+            resource_id=row.id,  # type: ignore[attr-defined]
+            correlation_id=correlation_id,
+        )
 
     scope = list(row.scope)  # type: ignore[attr-defined]
     profile_row = None
@@ -561,6 +745,7 @@ async def kt_documents(
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
     if "documents" not in list(row.scope):  # type: ignore[attr-defined]
         raise PermissionDenied("Documents are not part of this package's scope.")
+    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
 
     # No early return on empty principals: the predicate's third arm serves documents
     # granted to the whole organisation, which a caller with no personal principal may
@@ -692,6 +877,7 @@ async def kt_insights(
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
     scope = list(row.scope)  # type: ignore[attr-defined]
+    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
 
     if claim_type is not None:
         category = _CLAIM_SCOPE.get(claim_type)
@@ -781,6 +967,7 @@ async def kt_insight_summary(
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
     scope = list(row.scope)  # type: ignore[attr-defined]
+    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
     allowed = [t for t, cat in _CLAIM_SCOPE.items() if cat in scope]
     if not allowed:
         return KtInsightSummary(by_type={})

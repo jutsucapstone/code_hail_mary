@@ -19,15 +19,17 @@ from typing import Any, Final
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from jutsu_core import InternalError, JutsuError, ValidationFailed
+from jutsu_core import InternalError, JutsuError, RateLimited, ValidationFailed
 from jutsu_db.engine import ping as postgres_ping
 
+from jutsu_api.logging_context import RequestContextFilter, bind, clear
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import connections as connections_router
 from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import evidence as evidence_router
 from jutsu_api.routers import identities as identities_router
 from jutsu_api.routers import kt as kt_router
+from jutsu_api.routers import kt_console as kt_console_router
 from jutsu_api.routers import me as me_router
 from jutsu_api.routers import operations as operations_router
 from jutsu_api.routers import orgs as orgs_router
@@ -53,8 +55,15 @@ def _configure_logging() -> None:
     take the service down, and must not silence it either.
     """
     handler = logging.StreamHandler(sys.stdout)
+    # The filter stamps request_id / org_id / user_id (opaque ids, never PII) from the
+    # per-request context onto every record, whichever module emitted it, and the
+    # formatter names them — see `logging_context`. Unbound fields render as "-".
+    handler.addFilter(RequestContextFilter())
     handler.setFormatter(
-        logging.Formatter('{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}')
+        logging.Formatter(
+            '{"level":"%(levelname)s","logger":"%(name)s","request_id":"%(request_id)s",'
+            '"org_id":"%(org_id)s","user_id":"%(user_id)s","msg":"%(message)s"}'
+        )
     )
     root = logging.getLogger()
     root.handlers = [handler]
@@ -90,16 +99,33 @@ def create_app() -> FastAPI:
         """
         request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
         request.state.request_id = request_id
+        # Fresh context for this task, then the id: every log line the request emits
+        # carries it, and `get_principal` adds the org and user ids once it knows them.
+        clear()
+        bind(request_id=request_id)
         response = await call_next(request)
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
 
     @app.exception_handler(JutsuError)
     async def jutsu_error_handler(request: Request, exc: JutsuError) -> JSONResponse:
-        """The one envelope for every 4xx/5xx (§15)."""
+        """The one envelope for every 4xx/5xx (§15).
+
+        A 429 also carries `Retry-After`. Every budget in `rate_limit.py` is a fixed
+        window and names its `window_seconds` in the envelope's details; the header is
+        the same number spelled the way a client library already understands, set here
+        once rather than in each route that spends a budget.
+        """
         request_id = getattr(request.state, "request_id", "unknown")
         logger.warning("%s", exc.code)
-        return JSONResponse(status_code=exc.status_code, content=exc.envelope(request_id))
+        headers: dict[str, str] = {}
+        if isinstance(exc, RateLimited):
+            window = exc.details.get("window_seconds")
+            if isinstance(window, int) and window > 0:
+                headers["retry-after"] = str(window)
+        return JSONResponse(
+            status_code=exc.status_code, content=exc.envelope(request_id), headers=headers
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -202,6 +228,7 @@ def create_app() -> FastAPI:
     app.include_router(operations_router.router)
     app.include_router(connections_router.router)
     app.include_router(kt_router.router)
+    app.include_router(kt_console_router.router)
     app.include_router(roles_router.router)
 
     return app

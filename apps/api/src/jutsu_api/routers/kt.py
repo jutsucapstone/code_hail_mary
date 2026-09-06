@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from pydantic import BaseModel, EmailStr, Field
@@ -35,7 +35,9 @@ from jutsu_api.kt import (
     kt_insights,
     list_packages,
     revoke_package,
+    update_package,
 )
+from jutsu_api.rate_limit import Bucket, spend_budget
 from jutsu_api.routers.search import AnswerTransportDep
 from jutsu_api.security import GuardedAPIRoute, requires
 
@@ -112,6 +114,22 @@ class KtClaimPayload(BaseModel):
     kt_code: str = Field(min_length=8, max_length=24)
 
 
+class KtUpdatePayload(BaseModel):
+    """The two edits an administrator may make after creation.
+
+    `extend_days` counts from the later of now and the current expiry, never past a year
+    from today. `recipient_email` re-addresses a package nobody has claimed; a claimed
+    one refuses with 409. Neither field touches scope or period — those describe what
+    the package IS, and changing them under a recipient's feet would make the workspace
+    they were reading a different one.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    extend_days: int | None = Field(default=None, ge=1, le=365)
+    recipient_email: EmailStr | None = None
+
+
 class KtDocumentOut(BaseModel):
     id: UUID
     title: str
@@ -135,7 +153,9 @@ async def read_supported_scopes(principal: CurrentPrincipal, session: Db) -> KtS
 
 @router.post("/kt", status_code=status.HTTP_201_CREATED)
 @requires(Permission.KT_MANAGE)
-async def create(payload: KtCreatePayload, principal: CurrentPrincipal, session: Db) -> KtAdminOut:
+async def create(
+    payload: KtCreatePayload, principal: CurrentPrincipal, session: Db, request: Request
+) -> KtAdminOut:
     """Create a package. Creates no access: what the recipient reads inside it is
     bounded by their own grants, per query, exactly as everywhere else."""
     view = await create_package(
@@ -147,6 +167,7 @@ async def create(payload: KtCreatePayload, principal: CurrentPrincipal, session:
         validity_days=payload.validity_days,
         period_days=payload.period_days,
         recipient_email=str(payload.recipient_email) if payload.recipient_email else None,
+        correlation_id=request.state.request_id,
     )
     return KtAdminOut(**asdict(view))
 
@@ -175,20 +196,55 @@ async def read_package(package_id: UUID, principal: CurrentPrincipal, session: D
 
 @router.post("/kt/{package_id}/revoke")
 @requires(Permission.KT_MANAGE)
-async def revoke(package_id: UUID, principal: CurrentPrincipal, session: Db) -> KtAdminOut:
+async def revoke(
+    package_id: UUID, principal: CurrentPrincipal, session: Db, request: Request
+) -> KtAdminOut:
     """Revoke. Takes effect at the next authorization check, which is every check —
     the workspace stops answering whatever any browser has cached (§39)."""
     view = await revoke_package(
-        session, org_id=principal.org_id, actor_id=principal.user_id, package_id=package_id
+        session,
+        org_id=principal.org_id,
+        actor_id=principal.user_id,
+        package_id=package_id,
+        correlation_id=request.state.request_id,
     )
     return KtAdminOut(**asdict(view))
 
 
 @router.post("/kt/{package_id}/complete")
 @requires(Permission.KT_MANAGE)
-async def complete(package_id: UUID, principal: CurrentPrincipal, session: Db) -> KtAdminOut:
+async def complete(
+    package_id: UUID, principal: CurrentPrincipal, session: Db, request: Request
+) -> KtAdminOut:
     view = await complete_package(
-        session, org_id=principal.org_id, actor_id=principal.user_id, package_id=package_id
+        session,
+        org_id=principal.org_id,
+        actor_id=principal.user_id,
+        package_id=package_id,
+        correlation_id=request.state.request_id,
+    )
+    return KtAdminOut(**asdict(view))
+
+
+@router.patch("/kt/{package_id}")
+@requires(Permission.KT_MANAGE)
+async def update(
+    package_id: UUID,
+    payload: KtUpdatePayload,
+    principal: CurrentPrincipal,
+    session: Db,
+    request: Request,
+) -> KtAdminOut:
+    """Extend a package's expiry, or re-address one nobody has claimed yet. Every change
+    is its own audit row; a revoked or completed package refuses both."""
+    view = await update_package(
+        session,
+        org_id=principal.org_id,
+        actor_id=principal.user_id,
+        package_id=package_id,
+        extend_days=payload.extend_days,
+        recipient_email=str(payload.recipient_email) if payload.recipient_email else None,
+        correlation_id=request.state.request_id,
     )
     return KtAdminOut(**asdict(view))
 
@@ -199,16 +255,26 @@ async def complete(package_id: UUID, principal: CurrentPrincipal, session: Db) -
 @router.post("/kt/claim")
 @requires(Permission.KT_OPEN)
 async def claim(
-    payload: KtClaimPayload, principal: CurrentPrincipal, session: Db
+    payload: KtClaimPayload, principal: CurrentPrincipal, session: Db, request: Request
 ) -> KtRecipientOut:
     """Open a package addressed to you, claiming it on first open.
 
     Every refusal is server-side and specific where it is safe to be (revoked, expired)
     and deliberately uniform where it is not: a foreign tenant's code, a typo and a
     package bound to someone else all answer with the same 404.
+
+    The budget is spent BEFORE the lookup, on its own committed session, so a refused
+    guess costs the caller quota — that is what turns a 40-bit code space from "probe as
+    fast as the API answers" into a wall. The denied-open audit rows remain the evidence
+    of a probe; this is what stops one.
     """
+    await spend_budget(Bucket.KT_CLAIM, org_id=principal.org_id, user_id=principal.user_id)
     view = await claim_or_open(
-        session, org_id=principal.org_id, user_id=principal.user_id, kt_code=payload.kt_code
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=payload.kt_code,
+        correlation_id=request.state.request_id,
     )
     return KtRecipientOut(
         kt_code=view.kt_code,
@@ -362,6 +428,9 @@ async def read_kt_handover_summary(
             "Handover summaries are not configured for this deployment yet. The "
             "knowledge tabs still work; a summary needs an answer model."
         )
+    # After the free configuration gate and before anything paid — the same ordering as
+    # /v1/ask. A summary is one model call per press; the budget is what stops a held key.
+    await spend_budget(Bucket.KT_SUMMARY, org_id=principal.org_id, user_id=principal.user_id)
     principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     outcome = await kt_handover_summary(
         session,

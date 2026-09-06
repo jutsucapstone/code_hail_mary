@@ -100,12 +100,16 @@ async def read_audit(
     action: Annotated[str | None, Query(max_length=64)] = None,
     outcome: Annotated[str | None, Query(max_length=16)] = None,
     resource_type: Annotated[str | None, Query(max_length=64)] = None,
+    resource_id: Annotated[str | None, Query(max_length=255)] = None,
 ) -> AuditPageOut:
     """The organisation's immutable trail, newest first.
 
     Read-only is not a convention here — migration 0002 revoked UPDATE and DELETE on
     `audit_log` from the application role, so this endpoint could not tamper with the
     trail even if it were wrong.
+
+    `resource_id` is an opaque id (a package id, say), never a name or an address — the
+    trail's own columns hold nothing else, so nothing else can be asked of it.
     """
     page = await list_audit(
         session,
@@ -114,6 +118,7 @@ async def read_audit(
         action=action,
         outcome=outcome,
         resource_type=resource_type,
+        resource_id=resource_id,
     )
     return AuditPageOut(
         items=[AuditEntry(**asdict(row)) for row in page.items],
