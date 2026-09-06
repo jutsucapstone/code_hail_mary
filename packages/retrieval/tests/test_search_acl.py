@@ -1002,3 +1002,101 @@ class TestObservability:
         assert page.stats.attempts >= 1
         assert page.stats.ef_search in DEFAULT_EF_SEARCH_LADDER
         assert page.stats.elapsed_ms >= 0
+
+
+class TestTheWindowNarrows:
+    """`RetrievalWindow` is the first narrowing parameter `search_chunks` has ever taken,
+    and the whole argument for admitting one is that it can only intersect. Both halves
+    are pinned: the SQL shape (the window sits inside the documents EXISTS beside the
+    ACL predicate and changes nothing else) and the outcome (a window never returns a
+    document the caller could not read without it)."""
+
+    def test_the_window_sits_inside_the_scan_beside_the_acl_predicate(self) -> None:
+        windowed = _statement(paginated=False, windowed=True)
+        inner = windowed.split(") SELECT h.id")[0]
+
+        # Everything the two cliff tests pin, still true with the window on.
+        assert "FROM chunks c" in inner
+        assert "JOIN documents" not in inner
+        assert "JOIN sources" not in inner
+        assert ACL_PREDICATE in inner
+        assert "ORDER BY c.embedding <=> CAST(:query AS vector) LIMIT :k" in inner
+        assert "<=> CAST(:query AS vector), c.id" not in inner
+
+        # The window itself: two conjuncts on `d`, inside the EXISTS, after the predicate.
+        assert "d.created_at >= CAST(:window_start AS timestamptz)" in inner
+        assert "d.created_at <= CAST(:window_end AS timestamptz)" in inner
+        assert inner.index(ACL_PREDICATE) < inner.index("d.created_at >=")
+
+    def test_without_a_window_the_statement_is_byte_identical_to_before(self) -> None:
+        assert _statement(paginated=False, windowed=False) == _statement(paginated=False)
+        assert ":window_start" not in _statement(paginated=False)
+
+    async def test_a_window_leaves_out_what_falls_outside_it(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from jutsu_retrieval.search import RetrievalWindow
+
+        # `direct` is old; `orgwide` was created just now by the fixture.
+        await db_session.execute(
+            text("UPDATE documents SET created_at = '2020-01-01T00:00:00Z' WHERE id = :d"),
+            {"d": world["direct"]},
+        )
+
+        everything = await titles(db_session, world["ada"])
+        recent = await titles(
+            db_session,
+            world["ada"],
+            within=RetrievalWindow(created_from=datetime(2025, 1, 1, tzinfo=UTC)),
+        )
+        old = await titles(
+            db_session,
+            world["ada"],
+            within=RetrievalWindow(created_to=datetime(2021, 1, 1, tzinfo=UTC)),
+        )
+
+        assert everything == {"direct", "orgwide"}
+        assert recent == {"orgwide"}
+        assert old == {"direct"}
+
+    async def test_a_window_cannot_widen_authorization(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        """`secret` is inside any window that covers now and outside Ada's grants. The
+        window must not be a way in — intersection, never union."""
+        from datetime import UTC, datetime
+
+        from jutsu_retrieval.search import RetrievalWindow
+
+        wide_open = RetrievalWindow(
+            created_from=datetime(2000, 1, 1, tzinfo=UTC),
+            created_to=datetime(2100, 1, 1, tzinfo=UTC),
+        )
+        found = await titles(db_session, world["ada"], within=wide_open)
+
+        assert "secret" not in found
+        assert "publicly" not in found
+        assert found == {"direct", "orgwide"}
+
+    async def test_a_window_is_no_way_across_tenants(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from jutsu_retrieval.search import RetrievalWindow
+
+        wide_open = RetrievalWindow(created_from=datetime(2000, 1, 1, tzinfo=UTC))
+        found = await titles(db_session, world["ada"], within=wide_open)
+        assert "crosstenant" not in found
+
+    def test_search_still_takes_no_org_id_and_no_principals(self) -> None:
+        """Adding `within` must not have been the moment those slipped in."""
+        import inspect
+
+        parameters = set(inspect.signature(search_chunks).parameters)
+        assert "within" in parameters
+        assert "org_id" not in parameters
+        assert "principals" not in parameters
+        assert "groups" not in parameters

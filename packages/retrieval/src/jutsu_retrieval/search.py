@@ -58,6 +58,7 @@ __all__ = [
     "DEFAULT_STATEMENT_TIMEOUT_MS",
     "ORG_SCOPE_SQL",
     "Evidence",
+    "RetrievalWindow",
     "SearchPage",
     "SearchStats",
     "search_chunks",
@@ -141,6 +142,26 @@ class Evidence:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalWindow:
+    """A narrowing of the documents a search may draw from, by creation time.
+
+    **Narrowing only, by construction.** The bounds are ANDed inside the same `EXISTS`
+    that carries `ACL_PREDICATE`, so a document the caller may not read stays unreadable
+    whatever the window says, and a document they may read is merely left out when it
+    falls outside it. Intersection, never union — it cannot be edited into access, which
+    is why it is a parameter here while `principals` and `org_id` never will be (ADR
+    0011; `test_search_takes_no_org_id_and_no_principals`).
+
+    Either bound may be None for a half-open window. A knowledge-transfer package's
+    period (`kt_packages.period_start` / `period_end`) is the first caller; the shape is
+    general so the next one does not grow a second filter path.
+    """
+
+    created_from: datetime | None = None
+    created_to: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SearchStats:
     """What the search cost. Numbers only, safe to log and to assert on.
 
@@ -197,7 +218,7 @@ def _vector_literal(vector: Sequence[float]) -> str:
 #
 # S608: `ORG_SCOPE_SQL` and `ACL_PREDICATE` are constants in this file; `:query`,
 # `:principals`, `:groups` and `:k` are bound parameters.
-_INNER: Final = (
+_INNER_HEAD: Final = (
     "SELECT c.id, c.document_id, c.text, c.char_start, c.char_end, "  # noqa: S608
     "c.embedding <=> CAST(:query AS vector) AS distance "
     "FROM chunks c "
@@ -210,8 +231,34 @@ _INNER: Final = (
     # §4.4 — superseding never overwrites, so retrieval has to exclude what was replaced
     # or an answer cites a version that is no longer true.
     "AND d.superseded_by IS NULL "
-    f"AND {ACL_PREDICATE})"
+    f"AND {ACL_PREDICATE}"
 )
+
+#: `RetrievalWindow`, as SQL. It sits INSIDE the documents `EXISTS`, beside the ACL
+#: predicate and ANDed with it, so it can only remove rows the caller was already
+#: authorized to see — never add one. The CASTs give asyncpg a type for a NULL bound,
+#: which is how a half-open window binds both parameters without a second statement.
+_WINDOW: Final = (
+    " AND (CAST(:window_start AS timestamptz) IS NULL "
+    "OR d.created_at >= CAST(:window_start AS timestamptz))"
+    " AND (CAST(:window_end AS timestamptz) IS NULL "
+    "OR d.created_at <= CAST(:window_end AS timestamptz))"
+)
+
+#: The un-windowed scan, exactly as it has always read. Kept as a constant because the
+#: string-shape tests and the EXPLAIN test assert against it.
+_INNER: Final = _INNER_HEAD + ")"
+
+
+def _inner(*, windowed: bool) -> str:
+    """The inner scan, with the window conjuncts inside the documents `EXISTS` or not.
+
+    Same `FROM chunks c`, same distance-only `ORDER BY`, same predicate — the window is
+    two more `AND` terms on `d`, which is the only place a narrowing may go without
+    reopening either of the two measured performance cliffs (see `_ORDER`).
+    """
+    return _INNER_HEAD + _WINDOW + ")" if windowed else _INNER
+
 
 #: Keyset continuation, applied **inside** the inner scan so the `LIMIT` still lands after
 #: authorization. Expressed on `score` rather than distance because that is what the cursor
@@ -244,9 +291,9 @@ _ORDER: Final = (
 )
 
 
-def _statement(*, paginated: bool) -> str:
+def _statement(*, paginated: bool, windowed: bool = False) -> str:
     """Assemble the two halves. A CTE so the `LIMIT` binds to the authorized scan."""
-    inner = _INNER + (_CURSOR if paginated else "")
+    inner = _inner(windowed=windowed) + (_CURSOR if paginated else "")
     return (
         "WITH hits AS ("
         + inner
@@ -291,6 +338,7 @@ async def search_chunks(
     query_vector: Sequence[float],
     k: int = DEFAULT_K,
     after: tuple[float, UUID] | None = None,
+    within: RetrievalWindow | None = None,
     ef_search_ladder: Sequence[int] = DEFAULT_EF_SEARCH_LADDER,
     statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
 ) -> SearchPage:
@@ -299,6 +347,12 @@ async def search_chunks(
     `session` must already be scoped to the caller's organisation — in the API that is
     `resolve_principal`, in a worker it is `org_session`. An unscoped session reads a NULL
     tenant and matches nothing, which is the correct failure direction and is tested.
+
+    `within` narrows by document creation time and nothing else. It is ANDed inside the
+    same `EXISTS` as the ACL predicate, so it can leave out documents the caller may read
+    and can never let in one they may not — the intersection shape `RetrievalWindow`
+    documents. Passing it changes the statement by two conjuncts on `d` and nothing about
+    the scan, the ordering or the ladder.
 
     The escalation ladder handles the case §12 warns about. Each rung re-runs
     `ACL_PREDICATE` unchanged with a larger `ef_search`, and stops as soon as one of three
@@ -319,7 +373,7 @@ async def search_chunks(
     # is the line that makes a stale or widened principal set unrepresentable.
     principals, groups = await resolve_acl_principals(session, user_id=user_id)
 
-    statement = _statement(paginated=after is not None)
+    statement = _statement(paginated=after is not None, windowed=within is not None)
     params: dict[str, object] = {
         "query": _vector_literal(query_vector),
         # asyncpg maps a Python list to a Postgres array, which is what `= ANY(...)`
@@ -331,6 +385,8 @@ async def search_chunks(
     }
     if after is not None:
         params["after_score"], params["after_id"] = after[0], str(after[1])
+    if within is not None:
+        params["window_start"], params["window_end"] = within.created_from, within.created_to
 
     rows: list[Any] = []
     attempts = 0

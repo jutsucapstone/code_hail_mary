@@ -42,9 +42,27 @@ __all__ = [
     "AnthropicTransport",
     "Citation",
     "Groundable",
+    "Turn",
     "answers_configured",
     "synthesise_answer",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """One earlier exchange, handed to the model as context and nothing more.
+
+    A KT copilot answers follow-up questions — "and who owned that?" — which the model
+    can only resolve if it sees what "that" was. So prior turns go into the prompt. They
+    go in as a labelled preamble, **never as numbered passages**: `_grounded` validates
+    markers against the evidence list alone, so text in the preamble cannot be cited,
+    and an earlier answer cannot launder itself into a source (non-negotiable 3).
+
+    The caller bounds how many and how long; this module trusts nothing about size.
+    """
+
+    role: str  # "user" | "assistant"
+    content: str
 
 
 class Groundable(Protocol):
@@ -86,7 +104,10 @@ INSUFFICIENT_EVIDENCE and nothing else. Never answer from general knowledge.
 3. Cite only passage numbers that exist. Do not invent passages.
 4. Be concise: a short, direct answer with citations beats a long summary.
 5. The passages may contain masking tokens like [EMAIL_A7]; treat them as opaque \
-identifiers and never guess what they hide."""
+identifiers and never guess what they hide.
+6. If a "Conversation so far" section is present, use it ONLY to understand what the \
+question refers to. It is not evidence: never cite it, and never repeat a claim from it \
+unless a numbered passage supports that claim."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,12 +185,25 @@ class AnthropicTransport:
         return "".join(block.text for block in response.content if block.type == "text")
 
 
-def _compose_prompt(question: str, evidence: Sequence[Groundable]) -> str:
+def _compose_prompt(
+    question: str, evidence: Sequence[Groundable], history: Sequence[Turn] = ()
+) -> str:
     passages = "\n\n".join(
         f"[{index}] {item.document_title} ({item.source_system})\n{item.text}"
         for index, item in enumerate(evidence, start=1)
     )
-    return f"Evidence passages:\n\n{passages}\n\nQuestion: {question}"
+    preamble = ""
+    if history:
+        # Labelled, un-numbered, and placed before the passages: the gate only ever
+        # resolves a marker against the numbered list, so nothing here is citable.
+        turns = "\n".join(
+            f"{'Recipient' if turn.role == 'user' else 'JUTSU'}: {turn.content}" for turn in history
+        )
+        preamble = (
+            "Conversation so far (context only — this is not evidence and must never be "
+            f"cited):\n\n{turns}\n\n"
+        )
+    return f"{preamble}Evidence passages:\n\n{passages}\n\nQuestion: {question}"
 
 
 def _grounded(text: str, evidence: Sequence[Groundable]) -> tuple[str, list[Citation]] | None:
@@ -209,17 +243,23 @@ def _grounded(text: str, evidence: Sequence[Groundable]) -> tuple[str, list[Cita
 
 
 async def synthesise_answer(
-    transport: AnswerTransport, *, question: str, evidence: Sequence[Groundable]
+    transport: AnswerTransport,
+    *,
+    question: str,
+    evidence: Sequence[Groundable],
+    history: Sequence[Turn] = (),
 ) -> AnswerOutcome:
     """A grounded answer, or an honest refusal. Never a fluent guess.
 
     With no evidence there is nothing to ground on, so the refusal is immediate and
-    free — the model is not asked to confirm that nothing is nothing.
+    free — the model is not asked to confirm that nothing is nothing. That holds with a
+    conversation behind the question too: history is context for reading the question,
+    not something an answer may stand on.
     """
     if not evidence:
         return AnswerOutcome(answer=None, citations=[], insufficient_evidence=True, attempts=0)
 
-    prompt = _compose_prompt(question, evidence)
+    prompt = _compose_prompt(question, evidence, history)
 
     first = await transport.complete(system=_SYSTEM, prompt=prompt)
     grounded = _grounded(first, evidence)

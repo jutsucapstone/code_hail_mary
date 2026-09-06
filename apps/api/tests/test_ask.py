@@ -266,3 +266,70 @@ class TestAskEndpoint:
             headers=csrf(client),
         )
         assert response.status_code == 422
+
+
+class TestHistoryIsContextNotEvidence:
+    """A KT copilot hands prior turns to the model so a follow-up can be understood. They
+    are a labelled preamble, never numbered passages — so nothing in them is citable, and
+    an earlier answer cannot launder itself into a source (non-negotiable 3)."""
+
+    def test_history_is_a_labelled_preamble_and_passages_stay_numbered_from_one(self) -> None:
+        from jutsu_api.answers import Turn, _compose_prompt
+
+        items = [evidence(1), evidence(2)]
+        history = [
+            Turn(role="user", content="What did the team decide about storage?"),
+            Turn(role="assistant", content="They chose Postgres [1]."),
+        ]
+        prompt = _compose_prompt("And who owned that decision?", items, history)
+
+        assert prompt.startswith("Conversation so far (context only")
+        assert "Recipient: What did the team decide about storage?" in prompt
+        assert "JUTSU: They chose Postgres [1]." in prompt
+        # The numbered list begins after the preamble and still counts from [1].
+        assert prompt.index("Evidence passages:") > prompt.index("Conversation so far")
+        assert "[1] Design doc 1" in prompt
+        assert "[2] Design doc 2" in prompt
+
+    def test_no_history_means_the_prompt_is_unchanged(self) -> None:
+        from jutsu_api.answers import _compose_prompt
+
+        items = [evidence(1)]
+        assert _compose_prompt("q", items) == _compose_prompt("q", items, [])
+        assert not _compose_prompt("q", items).startswith("Conversation so far")
+
+    async def test_a_marker_echoed_from_history_is_still_validated_against_evidence(
+        self,
+    ) -> None:
+        """History mentions [7]; only two passages exist. A model that parrots [7] is
+        citing nothing that was retrieved, and the gate must say so."""
+        from jutsu_api.answers import Turn
+
+        history = [Turn(role="assistant", content="Earlier I said Kafka is used [7].")]
+        model = ScriptedModel("Kafka is used [7].", "Kafka is used [7].")
+
+        outcome = await synthesise_answer(
+            model, question="?", evidence=[evidence(1), evidence(2)], history=history
+        )
+
+        assert outcome.insufficient_evidence is True
+        assert outcome.citations == []
+
+    async def test_history_cannot_ground_an_answer_on_its_own(self) -> None:
+        """No evidence, a rich history: still an immediate, free refusal."""
+        from jutsu_api.answers import Turn
+
+        history = [Turn(role="assistant", content="The system uses Postgres.")]
+        model = ScriptedModel()
+
+        outcome = await synthesise_answer(model, question="?", evidence=[], history=history)
+
+        assert outcome.insufficient_evidence is True
+        assert outcome.attempts == 0
+        assert model.calls == []
+
+    async def test_the_system_prompt_names_the_rule(self) -> None:
+        from jutsu_api.answers import _SYSTEM
+
+        assert "Conversation so far" in _SYSTEM
+        assert "not evidence" in _SYSTEM
