@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jutsu_api.auth_service import load_csrf_hash, resolve_principal
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.email import ConsoleEmailSender, EmailSender, SmtpEmailSender
+from jutsu_api.logging_context import bind
 from jutsu_api.security import (
     SESSION_COOKIE,
     Principal,
@@ -81,6 +82,9 @@ async def get_principal(request: Request, session: Db) -> Principal:
         raise Unauthenticated("Sign in to continue.")
 
     principal = await resolve_principal(session, token=token)
+    # Opaque ids onto every log line this request emits from here on (non-negotiable 9).
+    # Never the email, the role, or a subject — those are not identifiers a log may hold.
+    bind(org_id=str(principal.org_id), user_id=str(principal.user_id))
 
     # Checked after the session resolves, because the expected value lives on the session
     # row. Safe methods are exempt inside `verify_csrf`, so a GET pays nothing for this.

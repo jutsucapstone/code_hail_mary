@@ -254,17 +254,59 @@ async def two_orgs(conn: AsyncConnection) -> tuple[uuid.UUID, uuid.UUID]:
         )
 
         # Migration 0013 — one package per tenant so the isolation battery covers it.
+        # The id is minted client-side because 0019's four tables hang off it.
+        package_id = uuid.uuid4()
         await conn.execute(
             text(
                 "INSERT INTO kt_packages (id, org_id, kt_code, subject_user_id, created_by, "
-                "expires_at) VALUES (gen_random_uuid(), :org, :code, :user, :user, "
+                "expires_at) VALUES (:id, :org, :code, :user, :user, "
                 "now() + interval '30 days')"
             ),
             {
+                "id": package_id,
                 "org": org_id,
                 "user": user_id,
                 "code": f"KT-JUTSU-AAAA000{1 if label == 'alpha' else 2}",
             },
+        )
+
+        # Migration 0019 — one row per tenant in each KT console table. The composite
+        # foreign keys name this tenant's package and this tenant's user; a row that
+        # tried to cross would be refused before the policy was even consulted.
+        conversation_id = uuid.uuid4()
+        await conn.execute(
+            text(
+                "INSERT INTO kt_conversations (id, org_id, kt_package_id, user_id, title) "
+                "VALUES (:id, :org, :pkg, :user, :title)"
+            ),
+            {
+                "id": conversation_id,
+                "org": org_id,
+                "pkg": package_id,
+                "user": user_id,
+                "title": f"first question {label}",
+            },
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO kt_messages (id, org_id, conversation_id, role, content) "
+                "VALUES (gen_random_uuid(), :org, :conv, 'user', :content)"
+            ),
+            {"org": org_id, "conv": conversation_id, "content": f"question {label}"},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO kt_bookmarks (id, org_id, kt_package_id, user_id, kind, ref_id) "
+                "VALUES (gen_random_uuid(), :org, :pkg, :user, 'document', :doc)"
+            ),
+            {"org": org_id, "pkg": package_id, "user": user_id, "doc": doc_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO kt_progress (org_id, kt_package_id, user_id, item_key, state) "
+                "VALUES (:org, :pkg, :user, :key, 'seen')"
+            ),
+            {"org": org_id, "pkg": package_id, "user": user_id, "key": f"document:{doc_id}"},
         )
 
         # Migration 0014's four newly protected tables, one row each per tenant, so

@@ -1036,3 +1036,53 @@ class TestTheLimiterIsSubjectToRowLevelSecurity:
 
         assert deleted == [], "another tenant deleted this tenant's budget row"
         assert len(await budget_rows(db_session, who["org_id"])) == 1
+
+
+class TestBuckets:
+    """Migration 0019 put every budget in one table, keyed by bucket. Independence is
+    the property that makes that safe: exhausting one door must leave the others open."""
+
+    async def test_a_kt_claim_spend_does_not_consume_the_search_budget(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from jutsu_api.rate_limit import Bucket, spend_budget, spend_search_budget
+
+        who = await register_owner(client, mailbox)
+        await db_session.commit()
+        monkeypatch.setenv("SEARCH_RATE_LIMIT", "1")
+        monkeypatch.setenv("KT_CLAIM_RATE_LIMIT", "1")
+
+        await spend_budget(Bucket.KT_CLAIM, org_id=who["org_id"], user_id=who["user_id"])
+        remaining = await spend_search_budget(org_id=who["org_id"], user_id=who["user_id"])
+        assert remaining == 0, "a claim spend consumed the search budget"
+
+        with pytest.raises(RateLimited):
+            await spend_budget(Bucket.KT_CLAIM, org_id=who["org_id"], user_id=who["user_id"])
+        with pytest.raises(RateLimited):
+            await spend_search_budget(org_id=who["org_id"], user_id=who["user_id"])
+
+    async def test_the_legacy_rows_are_the_search_bucket(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+    ) -> None:
+        """Rows written through `spend_search_budget` land in bucket 'search' — what every
+        pre-0019 row is read as by the column default."""
+        from jutsu_api.rate_limit import spend_search_budget
+
+        who = await register_owner(client, mailbox)
+        await db_session.commit()
+        await spend_search_budget(org_id=who["org_id"], user_id=who["user_id"])
+
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :o, true)"), {"o": str(who["org_id"])}
+        )
+        buckets = (
+            (await db_session.execute(text("SELECT bucket FROM search_budget"))).scalars().all()
+        )
+        assert buckets == ["search"]

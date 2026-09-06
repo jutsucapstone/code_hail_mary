@@ -757,3 +757,62 @@ class TestWhatEachRouteMails:
         assert mailbox.last.secrets == {}
         assert mailbox.last.html is not None
         assert "[[" not in mailbox.last.html
+
+
+class TestSlidingIdleExpiry:
+    """`auth.touch_session` existed since migration 0003 and nothing called it, so every
+    session hard-expired sixty minutes after it was minted however active the person
+    was. The touch is at most once per interval and never past the absolute ceiling."""
+
+    async def test_activity_after_the_interval_slides_the_idle_deadline(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, inspector: AsyncSession
+    ) -> None:
+        from jutsu_api.config import SESSION_TOUCH_INTERVAL_SECONDS
+
+        await complete_registration(client, mailbox)
+        row = (
+            await inspector.execute(
+                text("SELECT id, idle_expires_at, expires_at FROM auth.sessions LIMIT 1")
+            )
+        ).one()
+
+        # As if the interval had elapsed: pull the deadline back further than one touch
+        # interval, then make any authenticated request.
+        await inspector.execute(
+            text(
+                "UPDATE auth.sessions SET idle_expires_at = idle_expires_at "
+                "- make_interval(secs => :s) WHERE id = :id"
+            ),
+            {"s": SESSION_TOUCH_INTERVAL_SECONDS + 60, "id": row.id},
+        )
+        pushed_back = (
+            await inspector.execute(
+                text("SELECT idle_expires_at FROM auth.sessions WHERE id = :id"), {"id": row.id}
+            )
+        ).scalar_one()
+
+        assert (await client.get("/v1/me")).status_code == 200
+
+        after = (
+            await inspector.execute(
+                text("SELECT idle_expires_at FROM auth.sessions WHERE id = :id"), {"id": row.id}
+            )
+        ).scalar_one()
+        assert after > pushed_back, "activity did not slide the idle deadline"
+        assert after <= row.expires_at, "the idle deadline passed the absolute ceiling"
+
+    async def test_a_burst_inside_the_interval_does_not_rewrite_the_row(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, inspector: AsyncSession
+    ) -> None:
+        await complete_registration(client, mailbox)
+        before = (
+            await inspector.execute(text("SELECT idle_expires_at FROM auth.sessions LIMIT 1"))
+        ).scalar_one()
+
+        for _ in range(3):
+            assert (await client.get("/v1/me")).status_code == 200
+
+        after = (
+            await inspector.execute(text("SELECT idle_expires_at FROM auth.sessions LIMIT 1"))
+        ).scalar_one()
+        assert after == before

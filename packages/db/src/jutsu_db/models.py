@@ -630,6 +630,162 @@ class KtPackage(Base):
     created_at: Mapped[datetime] = _now()
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    __table_args__ = (
+        # Purely so the KT console tables below can bind to a package AND its tenant in
+        # one composite foreign key (migration 0019) — the `employee_profiles` shape.
+        UniqueConstraint("id", "org_id", name="uq_kt_packages_id_org_id"),
+    )
+
+
+class KtConversation(Base):
+    """One recipient's thread of questions inside one package (migration 0019).
+
+    The recipient's own record of what they asked and were told. Every read passes
+    `_open_for`, so revocation or expiry of the package closes the history with it.
+    """
+
+    __tablename__ = "kt_conversations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    kt_package_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    #: The first question, trimmed. Never generated.
+    title: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["kt_package_id", "org_id"],
+            ["kt_packages.id", "kt_packages.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_conversations_package",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "org_id"],
+            ["users.id", "users.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_conversations_user",
+        ),
+        Index(
+            "ix_kt_conversations_recent", "org_id", "kt_package_id", "user_id", "updated_at", "id"
+        ),
+    )
+
+
+class KtMessage(Base):
+    """One turn. Citations are stored as references (chunk and document ids), never as
+    copied evidence text, so replaying a turn re-checks the ACL through the evidence
+    endpoint rather than re-reading a document the caller may no longer see."""
+
+    __tablename__ = "kt_messages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("kt_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    citations_json: Mapped[list[JsonDict]] = mapped_column(JSONB, nullable=False, default=list)
+    insufficient_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = _now()
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="role"),
+        Index("ix_kt_messages_conversation", "org_id", "conversation_id", "created_at", "id"),
+    )
+
+
+class KtBookmark(Base):
+    """A saved claim, document, message or free-text question, with a private note."""
+
+    __tablename__ = "kt_bookmarks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    kt_package_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    ref_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["kt_package_id", "org_id"],
+            ["kt_packages.id", "kt_packages.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_bookmarks_package",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "org_id"],
+            ["users.id", "users.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_bookmarks_user",
+        ),
+        CheckConstraint("kind IN ('claim', 'document', 'message', 'question')", name="kind"),
+        CheckConstraint(
+            "(kind = 'question' AND ref_id IS NULL AND note IS NOT NULL) "
+            "OR (kind <> 'question' AND ref_id IS NOT NULL)",
+            name="shape",
+        ),
+        Index("ix_kt_bookmarks_owner", "org_id", "kt_package_id", "user_id", "created_at", "id"),
+        Index(
+            "uq_kt_bookmarks_ref",
+            "kt_package_id",
+            "user_id",
+            "kind",
+            "ref_id",
+            unique=True,
+            postgresql_where=text("ref_id IS NOT NULL"),
+        ),
+    )
+
+
+class KtProgress(Base):
+    """`seen | done | unclear` against an item key — the marker the learning path,
+    "still unclear" and coverage read. A marker, never a copy of the item."""
+
+    __tablename__ = "kt_progress"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    kt_package_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    item_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_at: Mapped[datetime] = _now()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["kt_package_id", "org_id"],
+            ["kt_packages.id", "kt_packages.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_progress_package",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "org_id"],
+            ["users.id", "users.org_id"],
+            ondelete="CASCADE",
+            name="fk_kt_progress_user",
+        ),
+        CheckConstraint("state IN ('seen', 'done', 'unclear')", name="state"),
+    )
+
 
 #: Tables carrying RLS. Kept as data so the migration and its tests cannot disagree
 #: about which tables are protected.
@@ -667,4 +823,12 @@ RLS_TABLES: tuple[str, ...] = (
     "extraction_runs",
     "extraction_claims",
     "resolution_queue",
+    # Migration 0019 — what a KT recipient keeps between visits. All four are
+    # authorization-adjacent (a conversation names the evidence it was grounded on, a
+    # bookmark names a claim), so they were policed on the day they landed rather than
+    # backfilled later, which is the lesson `user_groups` taught.
+    "kt_conversations",
+    "kt_messages",
+    "kt_bookmarks",
+    "kt_progress",
 )

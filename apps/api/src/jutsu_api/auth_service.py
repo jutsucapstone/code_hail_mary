@@ -41,6 +41,7 @@ from jutsu_api.config import (
     OTP_MAX_ATTEMPTS,
     SESSION_ABSOLUTE_TTL_SECONDS,
     SESSION_IDLE_TTL_SECONDS,
+    SESSION_TOUCH_INTERVAL_SECONDS,
     Settings,
 )
 from jutsu_api.email import EmailMessage, EmailSender
@@ -505,6 +506,39 @@ async def scoped_acl_principals(
     return await resolve_acl_principals(session, user_id=user_id)
 
 
+async def _touch_session(
+    session: AsyncSession,
+    *,
+    session_id: object,
+    expires_at: datetime,
+    idle_expires_at: datetime,
+) -> None:
+    """Slide the idle deadline forward on activity — at most once per touch interval.
+
+    `auth.touch_session` has existed since migration 0003 and `SESSION_TOUCH_INTERVAL_SECONDS`
+    since the config module was written, and nothing ever called the one with the other.
+    So every session in the product — sign-in, registration, invitation acceptance all
+    mint through `open_session` — hard-expired sixty minutes after it was created, however
+    active the person was. In a knowledge-transfer workspace that is a 401 in the middle
+    of reading, with the in-memory state gone.
+
+    The fix is a touch, not a longer TTL: `config.py` explains that idle expiry is what
+    protects a shared machine, and lengthening it would trade that away for everyone.
+
+    Written at most once per interval so a burst of requests does not turn every read
+    into a write on the sessions row, and never past `expires_at` — the absolute ceiling
+    is a ceiling. The function itself refuses a revoked or absolutely-expired session, so
+    a touch can never resurrect one.
+    """
+    now = datetime.now(UTC)
+    target = min(now + timedelta(seconds=SESSION_IDLE_TTL_SECONDS), expires_at)
+    if (target - idle_expires_at).total_seconds() < SESSION_TOUCH_INTERVAL_SECONDS:
+        return
+    await session.execute(
+        text("SELECT auth.touch_session(:sid, :idle)"), {"sid": session_id, "idle": target}
+    )
+
+
 async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     """Turn an opaque handle into an authenticated caller.
 
@@ -515,7 +549,8 @@ async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     row = (
         await session.execute(
             text(
-                "SELECT session_id, identity_id, user_id, org_id, csrf_hash "
+                "SELECT session_id, identity_id, user_id, org_id, csrf_hash, "
+                "expires_at, idle_expires_at "
                 "FROM auth.resolve_session(:t)"
             ),
             {"t": _hash(token)},
@@ -524,7 +559,11 @@ async def resolve_principal(session: AsyncSession, *, token: str) -> Principal:
     if row is None:
         raise Unauthenticated("Your session has expired.")
 
-    session_id, identity_id, user_id, org_id, _csrf_hash = row
+    session_id, identity_id, user_id, org_id, _csrf_hash, expires_at, idle_expires_at = row
+
+    await _touch_session(
+        session, session_id=session_id, expires_at=expires_at, idle_expires_at=idle_expires_at
+    )
 
     role = await scoped_role(session, org_id=org_id, user_id=user_id)
     acl_principals, acl_groups = await scoped_acl_principals(session, user_id=user_id)

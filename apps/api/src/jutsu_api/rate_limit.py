@@ -1,8 +1,10 @@
-"""A cross-instance budget for the endpoint that spends money on demand (§20).
+"""Cross-instance budgets for the endpoints that spend money or invite probing (§20).
 
-`POST /v1/search` embeds the caller's question before it can search. That is a paid Vertex
-request per call, reachable by every authenticated employee, and nothing bounded how many.
-The per-request `TokenLedger` bounds *one* request; this bounds how many a caller gets.
+`POST /v1/search` embeds the caller's question before it can search — a paid request per
+call, reachable by every authenticated employee, and nothing bounded how many. That was
+the first budget. Two more joined it with the KT console: `POST /v1/kt/claim` is a 40-bit
+code space whose only defence was an audit trail of refused guesses, and the handover
+summary is a paid model call with no ceiling at all.
 
 **It commits in its own transaction, and that is the whole design.**
 
@@ -11,13 +13,18 @@ any exception. A counter incremented on that session would therefore be *undone 
 failure* — and the failures that matter here are the expensive ones. A provider 503 would
 roll back the spend, the caller retries, the spend rolls back again: an unbounded loop
 against a metered API, produced by a rate limiter that appears to be working. So the
-spend is taken on a separate session, committed before the embedding call is made, and it
-survives whatever the request does next.
+spend is taken on a separate session, committed before the guarded step, and it survives
+whatever the request does next.
 
-The consequence is deliberate and is the policy: **a failed search still consumes quota.**
-The quota counts attempts, because an attempt is what costs money and what a retry loop
-repeats. Counting only successes would mean a caller whose requests all fail has no limit
-at all.
+The consequence is deliberate and is the policy: **a refused or failed attempt still
+consumes quota.** The quota counts attempts, because an attempt is what costs money — or,
+for the claim endpoint, what a probe repeats. Counting only successes would mean a caller
+whose requests all fail has no limit at all.
+
+**One table, many buckets.** Migration 0019 added `bucket` to the key of `search_budget`
+rather than creating a sibling table per endpoint: two limiters is how one stops being
+maintained, and one atomic statement is one place the concurrency argument has to hold.
+The table keeps its historical name; every budget in this module lives in it.
 
 **Fixed window, not a token bucket.** A fixed window admits a burst at a boundary — up to
 `2x the limit` across two adjacent windows — and that is acceptable here: the limit exists to
@@ -29,6 +36,8 @@ already set this precedent in migration 0007.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
@@ -37,18 +46,78 @@ from jutsu_db.engine import org_session
 from sqlalchemy import text
 
 __all__ = [
+    "DEFAULT_KT_CLAIM_RATE_LIMIT",
+    "DEFAULT_KT_CLAIM_RATE_WINDOW_S",
+    "DEFAULT_KT_SUMMARY_RATE_LIMIT",
+    "DEFAULT_KT_SUMMARY_RATE_WINDOW_S",
     "DEFAULT_SEARCH_RATE_LIMIT",
     "DEFAULT_SEARCH_RATE_WINDOW_S",
+    "Bucket",
+    "BudgetSettings",
     "SearchRateLimitSettings",
+    "budget_settings",
     "search_rate_limit_settings",
+    "spend_budget",
     "spend_search_budget",
 ]
 
 DEFAULT_SEARCH_RATE_LIMIT: Final = 60
 DEFAULT_SEARCH_RATE_WINDOW_S: Final = 60
 
-_LIMIT_ENV: Final = "SEARCH_RATE_LIMIT"
-_WINDOW_ENV: Final = "SEARCH_RATE_WINDOW_S"
+#: A person types a KT ID once, perhaps twice after a typo. Ten a minute is far above
+#: honest use and turns a 2^40 code space into something no probe finishes; the denied
+#: opens the trail already records become the evidence, and this becomes the wall.
+DEFAULT_KT_CLAIM_RATE_LIMIT: Final = 10
+DEFAULT_KT_CLAIM_RATE_WINDOW_S: Final = 60
+
+#: The handover summary is one paid model call per press, composed fresh and never
+#: cached. Six a minute lets somebody retry after a refusal and stops a held-down key.
+DEFAULT_KT_SUMMARY_RATE_LIMIT: Final = 6
+DEFAULT_KT_SUMMARY_RATE_WINDOW_S: Final = 60
+
+
+class Bucket(StrEnum):
+    """Which budget a spend charges. The value is the `bucket` column."""
+
+    SEARCH = "search"
+    KT_CLAIM = "kt_claim"
+    KT_SUMMARY = "kt_summary"
+
+
+@dataclass(frozen=True, slots=True)
+class _BudgetSpec:
+    limit_env: str
+    window_env: str
+    default_limit: int
+    default_window: int
+    #: Read by whoever is being limited and by whatever logs the response — so never the
+    #: question, never an id (§4.9). The sentence names the action, nothing else.
+    refusal: str
+
+
+_SPECS: Final[dict[Bucket, _BudgetSpec]] = {
+    Bucket.SEARCH: _BudgetSpec(
+        limit_env="SEARCH_RATE_LIMIT",
+        window_env="SEARCH_RATE_WINDOW_S",
+        default_limit=DEFAULT_SEARCH_RATE_LIMIT,
+        default_window=DEFAULT_SEARCH_RATE_WINDOW_S,
+        refusal="Too many searches. Try again shortly.",
+    ),
+    Bucket.KT_CLAIM: _BudgetSpec(
+        limit_env="KT_CLAIM_RATE_LIMIT",
+        window_env="KT_CLAIM_RATE_WINDOW_S",
+        default_limit=DEFAULT_KT_CLAIM_RATE_LIMIT,
+        default_window=DEFAULT_KT_CLAIM_RATE_WINDOW_S,
+        refusal="Too many attempts to open a package. Try again shortly.",
+    ),
+    Bucket.KT_SUMMARY: _BudgetSpec(
+        limit_env="KT_SUMMARY_RATE_LIMIT",
+        window_env="KT_SUMMARY_RATE_WINDOW_S",
+        default_limit=DEFAULT_KT_SUMMARY_RATE_LIMIT,
+        default_window=DEFAULT_KT_SUMMARY_RATE_WINDOW_S,
+        refusal="Too many summaries composed. Try again shortly.",
+    ),
+}
 
 #: One atomic statement: read, roll the window if it has elapsed, increment, and report
 #: what remains. Split into a SELECT and an UPDATE, concurrent requests each read the old
@@ -59,14 +128,15 @@ _WINDOW_ENV: Final = "SEARCH_RATE_WINDOW_S"
 #: allowance, and the row is written either way: a refused caller does not get a free
 #: retry by being refused.
 _SPEND: Final = """
-INSERT INTO search_budget (org_id, user_id, window_start, spent)
+INSERT INTO search_budget (org_id, user_id, bucket, window_start, spent)
 VALUES (
     NULLIF(current_setting('app.current_org_id', true), '')::uuid,
     CAST(:user_id AS uuid),
+    :bucket,
     now(),
     1
 )
-ON CONFLICT (org_id, user_id) DO UPDATE
+ON CONFLICT (org_id, user_id, bucket) DO UPDATE
    SET window_start = CASE
          WHEN search_budget.window_start < now() - make_interval(secs => CAST(:window AS integer))
          THEN now() ELSE search_budget.window_start END,
@@ -77,14 +147,18 @@ RETURNING CAST(:limit AS integer) - spent
 """
 
 
-class SearchRateLimitSettings:
-    """How many searches, over how long. Read from the environment, validated once."""
+class BudgetSettings:
+    """How many attempts, over how long. Read from the environment, validated once."""
 
     __slots__ = ("limit", "window_seconds")
 
     def __init__(self, limit: int, window_seconds: int) -> None:
         self.limit = limit
         self.window_seconds = window_seconds
+
+
+#: The name the search limiter shipped under. Kept so nothing that imported it moves.
+SearchRateLimitSettings = BudgetSettings
 
 
 def _positive(name: str, default: int) -> int:
@@ -106,22 +180,27 @@ def _positive(name: str, default: int) -> int:
     return value
 
 
-def search_rate_limit_settings() -> SearchRateLimitSettings:
+def budget_settings(bucket: Bucket) -> BudgetSettings:
     """Read per call rather than cached, so a deployment can change the limit.
 
     Cheap — two environment reads — and the alternative is a process that has to be
     restarted to widen a limit during the incident that made you want to widen it.
     """
-    return SearchRateLimitSettings(
-        limit=_positive(_LIMIT_ENV, DEFAULT_SEARCH_RATE_LIMIT),
-        window_seconds=_positive(_WINDOW_ENV, DEFAULT_SEARCH_RATE_WINDOW_S),
+    spec = _SPECS[bucket]
+    return BudgetSettings(
+        limit=_positive(spec.limit_env, spec.default_limit),
+        window_seconds=_positive(spec.window_env, spec.default_window),
     )
 
 
-async def spend_search_budget(
-    *, org_id: UUID, user_id: UUID, settings: SearchRateLimitSettings | None = None
+def search_rate_limit_settings() -> BudgetSettings:
+    return budget_settings(Bucket.SEARCH)
+
+
+async def spend_budget(
+    bucket: Bucket, *, org_id: UUID, user_id: UUID, settings: BudgetSettings | None = None
 ) -> int:
-    """Charge one search to this caller. Raises `RateLimited` when there is none left.
+    """Charge one attempt in `bucket` to this caller. Raises `RateLimited` when none is left.
 
     Opens its own `org_session`, so the spend commits independently of the request
     transaction — see the module docstring. The organisation comes from the authenticated
@@ -131,7 +210,8 @@ async def spend_search_budget(
 
     Returns the remaining allowance, for the caller to log or surface.
     """
-    config = settings if settings is not None else search_rate_limit_settings()
+    spec = _SPECS[bucket]
+    config = settings if settings is not None else budget_settings(bucket)
 
     async with org_session(org_id) as session:
         remaining = (
@@ -139,6 +219,7 @@ async def spend_search_budget(
                 text(_SPEND),
                 {
                     "user_id": str(user_id),
+                    "bucket": bucket.value,
                     "window": config.window_seconds,
                     "limit": config.limit,
                 },
@@ -150,7 +231,14 @@ async def spend_search_budget(
         # message is read by whoever is being limited and by whatever logs the response
         # (§4.9). The numbers here are configuration, not data.
         raise RateLimited(
-            "Too many searches. Try again shortly.",
+            spec.refusal,
             details={"limit": config.limit, "window_seconds": config.window_seconds},
         )
     return int(remaining)
+
+
+async def spend_search_budget(
+    *, org_id: UUID, user_id: UUID, settings: BudgetSettings | None = None
+) -> int:
+    """Charge one search. The original entry point; `/v1/search` and `/v1/ask` call it."""
+    return await spend_budget(Bucket.SEARCH, org_id=org_id, user_id=user_id, settings=settings)
