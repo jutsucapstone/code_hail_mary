@@ -233,6 +233,17 @@ a scheduled Cloud Run job for exactly that cost reason (§8), and the deploy mou
 `REDIS_URL`: sync jobs enqueue durable rows that wait, visible on the Jobs page, and the
 mount lands together with the worker slice that would hear the doorbell.
 
+**Budgets are environment variables, not secrets, and production runs on their defaults.**
+`SEARCH_RATE_LIMIT` / `SEARCH_RATE_WINDOW_S` (60 per 60s per person) bound `/v1/search`,
+`/v1/ask` and the KT copilot; `KT_CLAIM_RATE_LIMIT` / `KT_CLAIM_RATE_WINDOW_S` (10 per 60s)
+bound `POST /v1/kt/claim`, the KT-ID door; `KT_SUMMARY_RATE_LIMIT` / `KT_SUMMARY_RATE_WINDOW_S`
+(6 per 60s) bound the handover summary. All six live in one table (`search_budget`, keyed by
+bucket since migration 0019) and none is set in `deploy.yml`, so the defaults in
+`apps/api/src/jutsu_api/rate_limit.py` apply. To tune one, add it to the API's
+`--set-env-vars` list in `.github/workflows/deploy.yml` — that flag REPLACES the whole
+variable set on every deploy, so a value set by hand on the service disappears at the next
+push. A value of `0` is refused at request time, never read as unlimited.
+
 The per-provider OAuth pairs (`jutsu-oauth-github-client-id` / `...-secret`, …) are not
 listed here or in the pipeline. An operator mounts each pair once with
 `gcloud run services update --update-secrets`, and the deploy — which also uses

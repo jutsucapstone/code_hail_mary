@@ -152,7 +152,8 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   `TokenLedger.charge` — the estimate picks batch boundaries, the provider's
   `token_count` is what is billed and therefore what the ceiling counts.
 - **`TOKEN_BUDGET_PER_REQUEST` is NOT the embedding ceiling.** It is §13's per-request
-  bound for the agent layer, which does not exist yet, and nothing reads it. The
+  bound; today `apps/api/.../retrieval.py` reads it into a fresh `TokenLedger` for each
+  `/v1/search`, `/v1/ask` and KT copilot question, and exceeding it is a 429. The
   embedding job ceiling is `EMBEDDING_TOKEN_BUDGET`. Wiring the former into
   `EmbeddingSettings` looks like a fix and would stop a 45k-document seed after a few
   dozen documents.
@@ -484,3 +485,56 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   `height` that its loader attaches; Vite hands the import back as a bare URL string, so any
   test rendering the console header failed on the logo. `vitest.config.mts` supplies the
   shape rather than mocking `next/image` away.
+
+### KT console traps (`apps/api/src/jutsu_api/kt.py`, `kt_workspace.py`)
+
+- **`_open_for` is the KT session.** Binding, expiry and revocation are re-decided on
+  every KT request from the cookie principal plus the code; there is no session table
+  to invalidate and none should be added. Every recipient-facing function calls it first
+  — a route that reads `kt_packages` any other way has re-implemented authorization.
+- **Binding before state.** A package bound or addressed to somebody else is a 404
+  *whatever its state*. Checking revoked/expired first told the wrong holder the package
+  existed and was closed. The right person still gets the exact 403 sentence.
+- **`RetrievalWindow` narrows inside the ACL `EXISTS`, and that is the only place a
+  narrowing may go.** Two conjuncts on `d.created_at` beside `ACL_PREDICATE`; never a
+  `principals`/`org_id` parameter, never a JOIN in the inner scan, never a secondary
+  `ORDER BY` key. `test_the_window_sits_inside_the_scan_beside_the_acl_predicate` pins it.
+- **History is context, never evidence.** Prior turns reach the model as a labelled
+  preamble; the citation gate resolves markers against retrieved passages alone. Numbering
+  a history turn like a passage would let an earlier answer launder itself into a source.
+- **Stored citations are references.** `kt_messages.citations_json` holds chunk and
+  document ids, never passage text; every read re-runs them through `ACL_PREDICATE` and
+  marks `available`. The handover summary is still never persisted — the ADR says why one
+  and not the other.
+- **Two turns, one transaction, one `now()`.** Messages are stamped with
+  `clock_timestamp()`, not the column default: `now()` is the transaction's start and is
+  identical for both rows, leaving the user/assistant order to a random UUID tie-break.
+- **One limiter, keyed by `bucket`.** `spend_budget(Bucket.X, …)` on `search_budget`; a
+  new budget is a `Bucket` member and a `_BudgetSpec`, never a second table or an in-process
+  counter. Spend before the guarded step, on its own committed session.
+- **Coverage has one formula and says so.** `chunks_covered / chunks_total` over the latest
+  extraction run of each readable document in the window; `reliable=False` and no number
+  when there is nothing to divide. No other percentage exists here, and none may be added
+  without a written formula.
+- **People are listed by recency, never ranked.** No score, no "who to contact" ordering,
+  no per-person figure — non-negotiables 16–18, and no consent field exists in the schema.
+- **`auth.touch_session` is called from `resolve_principal`, at most once per
+  `SESSION_TOUCH_INTERVAL_SECONDS`.** Before that, every session hard-expired sixty minutes
+  after creation. Do not lengthen `SESSION_IDLE_TTL_SECONDS` to "fix" a logout — `config.py`
+  explains what idle expiry protects.
+- **Inside the KT shell a 403 is the package's refusal, never a role problem.** Every
+  recipient route runs `_open_for` first, so the only 403 it can answer is revoked/expired
+  with the sentence to show. `components/kt/kt-failure.tsx` renders that; the shared
+  `FailureState` would say "your role does not include…", which no role controls here.
+- **One observer per KT query, and no `staleTime` on any of them.** Five panels each
+  mounting `useQuery` over one key refetched on every mount; the fix was a context from
+  `WorkspaceRegion`, not a longer `staleTime` — a revoked package must stop rendering
+  evidence-derived labels on the next request, not after a cache window.
+- **`uvicorn --reload` on Windows can announce "Reloading..." and keep serving the old
+  worker.** The dev API on :8000 answered 405 to the new `PATCH` and 404 to every console
+  route hours after the code landed, with the pre-change log format — the replacement
+  worker never took the port. A route that "does not exist" on the dev server while
+  `emit-openapi.py` lists it means restart the preview, not debug the router.
+- **Production runs no worker and no Redis.** Extraction never runs there, so the knowledge
+  tabs, coverage and learning path are empty in production until a worker service is
+  deployed. Nothing in the console papers over that; keep it that way.
