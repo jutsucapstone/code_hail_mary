@@ -512,24 +512,31 @@ class TestTheLeaseIsReachableFromTheOnlyCaller:
         )
         await conn.commit()
 
-        # 01:30 UTC, inside the hour-wide window for an organisation scheduled at 01:00.
-        moment = datetime(2026, 9, 10, 1, 30, tzinfo=UTC)
+        # **The timeline this must survive is the one that actually happens.**
+        #
+        # The organisation is due from 01:00 to 02:00 and the job ticks every fifteen
+        # minutes. The 01:00 tick claims it; the task dies at 01:05. A later tick in that
+        # same window has to be able to take the claim over — and the window is what
+        # bounds the opportunity, so a lease longer than the window can never fire.
+        #
+        # An earlier version of this test aged the claim by ninety minutes against a
+        # 01:30 evaluation, which places the claim at 00:00 — a moment the organisation
+        # was not due and could not have been claimed. It asserted a state that cannot
+        # occur, and passed while the lease was unreachable in every state that can.
+        claimed_at = datetime(2026, 9, 10, 1, 0, tzinfo=UTC)
+        await _set_claim(migration_url, org_a, started_at=claimed_at, finished_at=None)
 
-        # A claim ten minutes old is a run in progress: a second tick inside the same
-        # window must not start it again.
-        await _set_claim(
-            migration_url, org_a, started_at=moment - timedelta(minutes=10), finished_at=None
-        )
-        assert not await self._due(conn, org_a, moment)
+        # 01:10 — five minutes in. A second tick must not start the run again.
+        assert not await self._due(conn, org_a, claimed_at + timedelta(minutes=10))
 
-        # Ninety minutes old and never finished: the task died.
-        await _set_claim(
-            migration_url, org_a, started_at=moment - timedelta(minutes=90), finished_at=None
+        # 01:30 — two ticks later, still inside the window, nothing ever finished.
+        assert await self._due(conn, org_a, claimed_at + timedelta(minutes=30)), (
+            "a dead claim must be retaken by a later tick INSIDE the window; a lease "
+            "longer than the window is a branch that exists and never fires"
         )
-        assert await self._due(conn, org_a, moment), (
-            "a dead claim must be offered to the next tick, or mark_started's lease "
-            "is unreachable and the organisation loses the whole local day"
-        )
+
+        # 01:45 — the last tick of the window can still take it.
+        assert await self._due(conn, org_a, claimed_at + timedelta(minutes=45))
 
     async def test_a_finished_run_is_still_done_for_the_day(
         self,
@@ -546,15 +553,20 @@ class TestTheLeaseIsReachableFromTheOnlyCaller:
         )
         await conn.commit()
 
-        moment = datetime(2026, 9, 10, 1, 30, tzinfo=UTC)
+        claimed_at = datetime(2026, 9, 10, 1, 0, tzinfo=UTC)
         await _set_claim(
             migration_url,
             org_a,
-            started_at=moment - timedelta(minutes=90),
-            finished_at=moment - timedelta(minutes=89),
+            started_at=claimed_at,
+            finished_at=claimed_at + timedelta(seconds=30),
         )
 
-        assert not await self._due(conn, org_a, moment)
+        # Every remaining tick of the window sees a finished run and leaves it alone.
+        # Without this the shortened lease would turn into "run again every 20 minutes".
+        for minutes in (10, 30, 45, 59):
+            assert not await self._due(conn, org_a, claimed_at + timedelta(minutes=minutes)), (
+                f"a finished run must not be retaken {minutes} minutes later"
+            )
 
 
 class TestTheClockHasItsOwnPermission:

@@ -178,14 +178,26 @@ def upgrade() -> None:
     # and an outage longer than that costs the day rather than firing at an arbitrary
     # hour — these are provider quotas being spent.
     #
-    # **The third disjunct is the lease, and it has to be here as well as in
-    # `mark_started`.** `mark_started` was written to let the next tick take over an
-    # unfinished claim older than an hour, which is what stops a run killed between the
-    # claim and the finish from holding the day for ever. But this function is the only
-    # thing that ever offers an organisation to that claim, and it excluded anything
-    # started today whether or not it finished — so the takeover branch could not be
-    # reached from the only caller, and a job killed by a timeout or a replaced revision
-    # cost the whole local day, silently. The two predicates now say the same thing.
+    # **The third disjunct is the lease, and its length is the whole difficulty.**
+    #
+    # `mark_started` lets the next tick take over an unfinished claim, which is what
+    # stops a run killed between the claim and the finish from holding the day for
+    # ever. But this function is the only thing that ever offers an organisation to
+    # that claim, so the takeover must be reachable from *here* — and it must become
+    # reachable while the organisation is still inside its one-hour window.
+    #
+    # An hour-long lease is therefore exactly wrong: a claim made at 01:00 only
+    # qualifies after 02:00, by which time the window has closed and the row is not
+    # returned at all. The branch existed and could not fire; a run that died at 01:05
+    # still lost the whole local day, silently.
+    #
+    # Twenty minutes fires on the second or third of the four ticks in the window,
+    # and is comfortably longer than a healthy run: this job only enqueues one row per
+    # connection and rings the doorbell — it never contacts a provider — so a claim
+    # still open after twenty minutes is a dead one, not a slow one.
+    #
+    # `mark_started` carries the identical interval. They are two predicates over one
+    # rule, and a disagreement between them is either a lost day or a double run.
     op.execute(
         """
         CREATE FUNCTION sched.due_organisations(p_now timestamptz)
@@ -204,7 +216,7 @@ def upgrade() -> None:
                    OR (
                         (s.last_finished_at IS NULL
                          OR s.last_finished_at < s.last_started_at)
-                        AND s.last_started_at < p_now - INTERVAL '1 hour'
+                        AND s.last_started_at < p_now - INTERVAL '20 minutes'
                       )
                  )
            ORDER BY s.org_id;
@@ -219,16 +231,22 @@ def upgrade() -> None:
     # **And the claim is a lease, not a lock**, for the reason `jobs.locked_until` is one.
     # A task killed between the claim and the finish — a ten-minute job timeout, an OOM, a
     # revision replaced mid-run — would otherwise hold today's claim for ever: every
-    # remaining tick would skip the organisation, and the row would read as a run still in
-    # progress rather than as one that died. An unfinished claim older than an hour is
-    # therefore takeable, which the next tick does.
+    # remaining tick would skip the organisation, and the row would read as a run still
+    # in progress rather than as one that died. An unfinished claim older than twenty
+    # minutes is therefore takeable, which the next tick does. The interval must match
+    # `due_organisations`, which is the only thing that offers a row to this claim.
+    #
+    # `last_finished_at` is cleared as the claim is taken, for two reasons. It is what
+    # makes "unfinished" true of *this* run rather than a fact about the previous one,
+    # and without it the console showed a run whose Finished time was older than its
+    # Started time — a completed run from yesterday sitting under today's start.
     op.execute(
         """
         CREATE FUNCTION sched.mark_started(p_org_id uuid)
         RETURNS boolean
         LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, sched AS $fn$
           UPDATE sched.org_sync_schedules
-             SET last_started_at = now(), last_outcome = NULL
+             SET last_started_at = now(), last_finished_at = NULL, last_outcome = NULL
            WHERE org_id = p_org_id
              AND (
                    last_started_at IS NULL
@@ -236,7 +254,7 @@ def upgrade() -> None:
                       < (now() AT TIME ZONE timezone)::date
                    OR (
                         (last_finished_at IS NULL OR last_finished_at < last_started_at)
-                        AND last_started_at < now() - INTERVAL '1 hour'
+                        AND last_started_at < now() - INTERVAL '20 minutes'
                       )
                  )
           RETURNING true;

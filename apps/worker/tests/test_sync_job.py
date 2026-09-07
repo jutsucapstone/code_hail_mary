@@ -664,9 +664,26 @@ class TestTheNightlyClock:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A nightly run and a person pressing Sync now a second earlier must not produce
-        two walks of one connection. The shared key is the only thing preventing it."""
+        two walks of one connection. The shared key is the only thing preventing it.
+
+        **The provider configuration is set here rather than inherited.** `sync_now`
+        refuses with a 503 unless the deployment holds this provider's OAuth client *and*
+        an encryption key, and neither is set in CI — a developer machine with a `.env`
+        has both, so a test that relies on the ambient environment passes locally and
+        fails on the one runner that matters. The neighbouring
+        `test_a_missing_connection_key_fails_closed` deletes the same key for the
+        opposite assertion, which is what makes leaning on it here a mistake rather than
+        a convention.
+        """
+        from cryptography.fernet import Fernet
         from jutsu_api.connectors import sync_now
         from jutsu_worker import schedule
+
+        # A key generated for this test, never a real one. The seeded connection is
+        # `github`, so that is the client the route looks for.
+        monkeypatch.setenv("JUTSU_CONNECTION_KEY", Fernet.generate_key().decode("ascii"))
+        monkeypatch.setenv("JUTSU_OAUTH_GITHUB_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("JUTSU_OAUTH_GITHUB_CLIENT_SECRET", "test-client-secret")
 
         org_id = uuid.uuid4()
         connection_id, _ = await seed_connection_and_job(org_id)
