@@ -344,11 +344,6 @@ class TestSourcesEndpoint:
         assert other["jobs_completed"] == 0
 
 
-# --------------------------------------------------------------------------------------
-# Invitations
-# --------------------------------------------------------------------------------------
-
-
 class TestInvitationList:
     async def test_a_pending_invitation_is_listed_as_pending(
         self, client: AsyncClient, mailbox: RecordingEmailSender
@@ -787,3 +782,247 @@ class TestRoleTitle:
 
         assert (await client.get("/v1/employees")).status_code == 403
         assert (await client.get("/v1/audit")).status_code == 403
+
+
+class TestTheSyncSchedule:
+    """When an organisation's connected providers are re-read, over the wire.
+
+    The clock itself is proven in `packages/db/tests/test_sync_schedule.py` (due-ness in
+    local time, the claim, the privilege boundary) and in the worker suite (what it
+    enqueues). What matters here is the contract an administrator actually touches: who
+    may read it, who may change it, what an unknown zone does, and that `next_sync_at` is
+    the organisation's own 01:00 rather than a UTC number wearing a local label.
+    """
+
+    async def test_a_new_organisation_is_already_scheduled(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """A trigger writes the row when the organisation is created, so the feature
+        works for a tenant that never opens the settings page."""
+        await register_owner(client, mailbox)
+
+        response = await client.get("/v1/orgs/current/sync-schedule")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["hour_local"] == 1
+        # 01:00 in the zone this deployment serves. `UTC` here would put an untouched
+        # tenant's first sync at 06:30 local — inside the working day, against the same
+        # provider accounts its people are using.
+        assert body["timezone"] == "Asia/Kolkata"
+        assert body["enabled"] is True
+        assert body["next_sync_at"] is not None
+        assert body["last_outcome"] is None
+
+    async def test_an_administrator_sets_the_hour_and_the_zone(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Asia/Kolkata", "hour_local": 2, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["timezone"], body["hour_local"]) == ("Asia/Kolkata", 2)
+        # 02:00 in Kolkata is 20:30 UTC the previous day. A `next_sync_at` that ended in
+        # 02:00Z would mean the zone had been stored and then ignored.
+        assert body["next_sync_at"].endswith("20:30:00Z") or "20:30" in body["next_sync_at"]
+
+        # And it survives the round trip.
+        again = (await client.get("/v1/orgs/current/sync-schedule")).json()
+        assert (again["timezone"], again["hour_local"]) == ("Asia/Kolkata", 2)
+
+    async def test_disabling_it_removes_the_next_run_rather_than_inventing_one(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "UTC", "hour_local": 1, "enabled": False},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["enabled"] is False
+        assert response.json()["next_sync_at"] is None, "there is no next one; a date would lie"
+
+    async def test_an_unknown_zone_is_refused_where_it_was_typed(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Not at 01:00 inside a job nobody is watching."""
+        await register_owner(client, mailbox)
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Mars/Olympus", "hour_local": 1, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 422
+        assert "Mars/Olympus" in response.json()["error"]["message"]
+
+    async def test_an_hour_outside_the_day_is_refused_by_the_schema(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "UTC", "hour_local": 24, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 422
+
+    async def test_a_member_sees_when_their_data_syncs_but_not_the_run_history(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """An employee who can connect a tool is entitled to know when it is read again.
+        `last_connections` counts the whole tenant, so it is redacted for them — the same
+        line `GET /v1/orgs/current` draws around member counts."""
+        await register_owner(client, mailbox)
+        await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Asia/Kolkata", "hour_local": 1, "enabled": True},
+            headers=csrf(client),
+        )
+        await invite_and_accept(client, mailbox, email="member@example.com")
+
+        response = await client.get("/v1/orgs/current/sync-schedule")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["timezone"], body["hour_local"]) == ("Asia/Kolkata", 1)
+        assert body["next_sync_at"] is not None
+        assert body["last_connections"] is None, "an org-wide count is not the employee's"
+        assert body["last_outcome"] is None
+
+    async def test_a_member_may_not_change_the_schedule(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="member@example.com")
+
+        refused = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "UTC", "hour_local": 5, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert refused.status_code == 403
+
+    async def test_an_unauthenticated_caller_gets_nothing(self, client: AsyncClient) -> None:
+        assert (await client.get("/v1/orgs/current/sync-schedule")).status_code == 401
+
+    async def test_a_change_is_written_to_the_audit_trail(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Europe/London", "hour_local": 3, "enabled": True},
+            headers=csrf(client),
+        )
+
+        trail = (await client.get("/v1/audit")).json()["items"]
+        entry = next(e for e in trail if e["action"] == "org.sync_schedule_updated")
+        assert entry["outcome"] == "success"
+
+    async def test_the_body_carries_no_organisation_id(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The organisation is the session's own, all the way down to the SQL function —
+        there is no `org_id` to forge, at any layer."""
+        await register_owner(client, mailbox)
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={
+                "timezone": "UTC",
+                "hour_local": 1,
+                "enabled": True,
+                "org_id": str(uuid.uuid4()),
+            },
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 422, "extra=forbid must reject it outright"
+
+
+class TestWhoOwnsTheClock:
+    """The four roles the product names, and nobody else.
+
+    `sync:schedule_manage` rather than `org:update`, because the two have different
+    owners: HR feels a stale corpus first — a handover assembled from a fortnight-old
+    index is the failure they notice — and `org:update` does not reach them. Widening
+    that permission instead would also have granted HR the organisation's profile and
+    its connection policies.
+    """
+
+    async def test_an_hr_admin_may_set_the_schedule(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="hr@example.com", role="hr_admin")
+        await sign_in(client, mailbox, email="hr@example.com")
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Asia/Kolkata", "hour_local": 3, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["hour_local"] == 3
+
+    async def test_an_it_admin_may_set_the_schedule(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="it@example.com", role="it_admin")
+        await sign_in(client, mailbox, email="it@example.com")
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Asia/Kolkata", "hour_local": 4, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 200, response.text
+
+    async def test_an_analyst_may_not(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """An Analyst holds `org:read` and sees the schedule; the clock is not theirs."""
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="analyst@example.com", role="analyst")
+        await sign_in(client, mailbox, email="analyst@example.com")
+
+        response = await client.put(
+            "/v1/orgs/current/sync-schedule",
+            json={"timezone": "Asia/Kolkata", "hour_local": 5, "enabled": True},
+            headers=csrf(client),
+        )
+
+        assert response.status_code == 403, response.text
+
+    async def test_the_python_default_matches_the_column_default(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Two defaults describe the same thing and are written in two places: the
+        column, which is what the trigger actually gives a new organisation, and
+        `sync_schedule.py`, which is what an organisation with no row would be told.
+        A disagreement is invisible until somebody hits the rare second path."""
+        from jutsu_api.sync_schedule import DEFAULT_HOUR_LOCAL, DEFAULT_TIMEZONE
+
+        await register_owner(client, mailbox)
+        body = (await client.get("/v1/orgs/current/sync-schedule")).json()
+
+        assert body["timezone"] == DEFAULT_TIMEZONE
+        assert body["hour_local"] == DEFAULT_HOUR_LOCAL

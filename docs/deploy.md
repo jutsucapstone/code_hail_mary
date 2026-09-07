@@ -20,7 +20,7 @@ push to main
      │                              pushed to Artifact Registry
      ├── migrate                    Cloud Run job, alembic upgrade head
      │                              runs as the OWNER, before any service is deployed
-     └── deploy                     api · reaper job · web
+     └── deploy                     api · worker · reaper job · sync job · web
                                     then curls the web URL and rolls back if it never 200s
 ```
 
@@ -477,7 +477,110 @@ and no doorbell.
 
 ---
 
-### 10. The custom domain
+### 10. The nightly sync clock
+
+Every connected provider is re-read once a night, at an hour each organisation chooses in
+its own timezone. Nothing about that is in the application: a scheduled Cloud Run job asks
+the database who is due and enqueues the same `connector.sync` rows "Sync now" writes
+(ADR 0018).
+
+**The hard part was enumeration.** `orgs` is `ENABLE` + `FORCE` row-level security, so
+`jutsu_app` sees nothing without a scope — and neither does the migration role, which in
+production is `postgres` with no `rolsuper` and no `rolbypassrls`. A `SELECT id FROM orgs`
+from a clock returns zero rows, and ADR 0012 refuses a `BYPASSRLS` role to fix it. So the
+clock reads `sched.org_sync_schedules` instead: one row per organisation holding an id, an
+IANA timezone, an hour and a flag, and no tenant content at all. `jutsu_app` holds **no
+table privilege** on it — only `EXECUTE` on five functions, of which the tenant-facing two
+take the organisation from `app.current_org_id` rather than from an argument.
+
+Two things are created once, by hand. The pipeline repoints the job's image on every push.
+
+```bash
+gcloud run jobs create jutsu-sync \
+  --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/jutsu/worker:bootstrap" \
+  --region="$REGION" \
+  --service-account="jutsu-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --set-cloudsql-instances="${PROJECT_ID}:${REGION}:jutsu" \
+  --set-secrets="DATABASE_URL=jutsu-database-url:latest" \
+  --set-env-vars="JUTSU_ENV=prod,LOG_LEVEL=INFO" \
+  --command=python --args="-m,jutsu_worker.schedule" \
+  --max-retries=1 --task-timeout=10m
+
+gcloud run jobs add-iam-policy-binding jutsu-sync --region="$REGION" \
+  --member="serviceAccount:jutsu-scheduler@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/run.invoker
+
+gcloud scheduler jobs create http jutsu-sync-schedule \
+  --location="$REGION" \
+  --schedule="*/15 * * * *" \
+  --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/jutsu-sync:run" \
+  --http-method=POST \
+  --oauth-service-account-email="jutsu-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+The doorbell variables are deliberately absent from that create: `deploy.yml` sets
+`CLOUD_TASKS_QUEUE`, `CLOUD_TASKS_SERVICE_ACCOUNT` and `WORKER_DRAIN_URL` on every push,
+because the last of them is read off the worker service rather than written down. Until
+the first pipeline run the job enqueues correctly and cannot ring, and says so in its own
+log line as `rung: false`.
+
+**Every fifteen minutes, not once a night.** The tick is cheap — one query against a table
+with one row per organisation — and the frequency is what makes "01:00 local" work for
+every zone at once without the job knowing which zones exist. `sched.due_organisations`
+answers who is actually due, and `sched.mark_started` claims each one, so an organisation
+runs at most once per local day however many ticks see it.
+
+What one run does, per due organisation: claim it → open an ordinary `org_session` (RLS on,
+app role, no bypass) → write one `connector.sync` row per `connected` or `error` connection
+under the key `connector.sync:{org}:{connection}` → ring the drain queue (§9) → record the
+outcome. It holds no provider credential and fetches nothing; the pipeline does the rest.
+Because the key is the one `POST /v1/me/connections/{id}/sync` uses, a nightly run and a
+person clicking "Sync now" a second earlier cannot produce two walks of one connection.
+
+Administrators set the schedule at `/admin/settings`, or over the API:
+
+```bash
+# integration:self_manage — every role, because an employee is entitled to know when
+# their own connected tools are read again. The run history below it is redacted for
+# anyone without org:read.
+curl -sS "$JUTSU/v1/orgs/current/sync-schedule"
+
+# sync:schedule_manage — owner, super_admin, it_admin and hr_admin. Illustrative of
+# the payload only: every state-changing route also needs the session cookies and the
+# x-jutsu-csrf double-submit header, so the real path is /admin/settings in the
+# console. A new organisation starts at 01:00 Asia/Kolkata without anyone setting it.
+curl -sS -X PUT "$JUTSU/v1/orgs/current/sync-schedule" \
+  -H 'content-type: application/json' \
+  -d '{"timezone":"Asia/Kolkata","hour_local":1,"enabled":true}'
+```
+
+An unknown zone is refused where it is typed, by `zoneinfo` in the API and by
+`sched.assert_timezone` in the database — not at 01:00 inside a job nobody is watching.
+Note that `zoneinfo` reads the operating system's tz database and a slim container has
+none, which is why `tzdata` is an explicit dependency of `apps/api`.
+
+To watch a night: `gcloud logging read 'resource.labels.job_name="jutsu-sync"' --limit=20`
+shows `scheduled_sync_tick` with the count due, then one `scheduled_sync` per organisation
+carrying its zone, connections seen, rows enqueued and whether the doorbell was rung. To
+force one for a single organisation there is one procedure, not two: set `hour_local`
+to that organisation's current local hour, then either wait for the next tick or run
+`gcloud run jobs execute jutsu-sync --region="$REGION"`. Executing the job alone changes
+nothing — `due_organisations` still decides, and an organisation that is not due is not
+synced.
+
+One edge, stated rather than discovered later: a scheduler outage lasting a full hour
+costs that day's run. These are provider quotas being spent, so firing at an arbitrary
+later hour is worse than not firing.
+
+A spring-forward transition does **not** cost a night. The hour is resolved to an
+*instant* (`sched.target_instant`), so a chosen hour the local clock skips normalises
+forward to the next real moment — 01:00 in a zone that jumps 01:00 to 02:00 runs at
+02:00 local. Matching the hour *label* instead would have made that organisation
+invisible for the whole day, silently.
+
+---
+
+### 11. The custom domain
 
 `jutsu.co.in`, fronted by a global external Application Load Balancer.
 

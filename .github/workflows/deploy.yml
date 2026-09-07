@@ -27,6 +27,9 @@ env:
   WEB_SERVICE: jutsu-web
   REAP_JOB: jutsu-reap
   MIGRATE_JOB: jutsu-migrate
+  # The nightly clock (ADR 0018). Created once out of band with its Cloud Scheduler
+  # trigger — docs/deploy.md §10 — and repointed at each new image here.
+  SYNC_JOB: jutsu-sync
   WORKER_SERVICE: jutsu-worker
   # The Cloud Tasks queue the API rings and the worker re-rings (ADR 0017). Created
   # once, out of band — docs/deploy.md §9 — the pipeline only names it.
@@ -367,6 +370,25 @@ jobs:
           gcloud run jobs update "${REAP_JOB}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/worker:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
+            --quiet
+
+      # The nightly clock, the same shape and the same reason as the reaper: a scheduler
+      # living inside a process means a container that never idles. Cloud Scheduler ticks
+      # this every fifteen minutes and `sched.due_organisations` decides who is actually
+      # due, in their own timezone, at most once per local day (ADR 0018).
+      #
+      # It carries the Cloud Tasks variables because it rings the doorbell after
+      # enqueueing; without them the rows would wait for an unrelated wake-up. The
+      # worker's URL is read off the service, never written down — a literal would aim a
+      # fork's deploy at this project's worker.
+      - name: Point the nightly sync job at this revision
+        run: |
+          WORKER_URL="$(gcloud run services describe "${WORKER_SERVICE}" --region "${REGION}" --format 'value(status.url)')"
+          test -n "${WORKER_URL}" || { echo "no worker URL resolved"; exit 1; }
+          gcloud run jobs update "${SYNC_JOB}" \
+            --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/worker:${{ needs.build.outputs.image_tag }}" \
+            --region "${REGION}" \
+            --set-env-vars "JUTSU_ENV=prod,LOG_LEVEL=INFO,CLOUD_TASKS_QUEUE=projects/${{ secrets.GCP_PROJECT_ID }}/locations/${REGION}/queues/${DRAIN_QUEUE},CLOUD_TASKS_SERVICE_ACCOUNT=${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }},WORKER_DRAIN_URL=${WORKER_URL}/drain" \
             --quiet
 
       - name: Deploy the web app

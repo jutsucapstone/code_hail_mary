@@ -5,11 +5,12 @@
 # two things to patch, two things to pin and two chances for them to drift apart on a
 # security update.
 #
-# Two production callers, neither of them the CMD below. The `jutsu-reap` Cloud Run *job*
-# runs `python -m jutsu_worker.reap` on a schedule, and the `jutsu-worker` Cloud Run
-# *service* runs `uvicorn jutsu_worker.http:app` — a private door Cloud Tasks rings, which
-# scales from zero so nothing runs or bills at idle (ADR 0017). deploy.yml sets both
-# commands explicitly. The CMD is the dev shape: arq over Compose's Redis, which an
+# Three production callers, none of them the CMD below. The `jutsu-reap` Cloud Run *job*
+# runs `python -m jutsu_worker.reap` every five minutes; the `jutsu-sync` job runs
+# `python -m jutsu_worker.schedule` every fifteen, which is the nightly clock (ADR 0018);
+# and the `jutsu-worker` Cloud Run *service* runs `uvicorn jutsu_worker.http:app` — a
+# private door Cloud Tasks rings, which scales from zero so nothing runs or bills at idle
+# (ADR 0017). deploy.yml sets all three commands explicitly. The CMD is the dev shape: arq over Compose's Redis, which an
 # always-on production arq would have needed too, at a standing cost the runbook refuses.
 
 # ---------------------------------------------------------------- build

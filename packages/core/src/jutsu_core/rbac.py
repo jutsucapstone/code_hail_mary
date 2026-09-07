@@ -43,6 +43,17 @@ class Permission(StrEnum):
     ORG_UPDATE = "org:update"
     ORG_DELETE = "org:delete"
 
+    #: Set when the organisation's connected providers are re-read overnight.
+    #:
+    #: Its own permission rather than a use of `org:update`, because the two have
+    #: different owners. The clock belongs to the Owner, the Super Admin, the IT Admin
+    #: *and* the HR Admin — a stale corpus is felt during onboarding and offboarding,
+    #: which is HR's work. `org:update` reaches only the first three, and widening it
+    #: would hand HR the organisation's profile and its connection policies as well,
+    #: which is a far larger grant than the schedule. §17's rule is that a permission
+    #: names a feature; this one names the clock and nothing else.
+    SYNC_SCHEDULE_MANAGE = "sync:schedule_manage"
+
     MEMBER_READ = "member:read"
     MEMBER_INVITE = "member:invite"
     MEMBER_UPDATE = "member:update"
@@ -189,6 +200,11 @@ ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = Mapping
                 # Knowledge transfer is a people-transition act — offboarding, role
                 # changes, onboarding — which is HR's domain, not IT's.
                 Permission.KT_MANAGE,
+                # And the same argument for the nightly clock: a handover assembled from
+                # a corpus that stopped updating a fortnight ago is the failure HR
+                # notices first, so HR can set when it runs without also gaining
+                # `org:update` over the organisation's profile and policies.
+                Permission.SYNC_SCHEDULE_MANAGE,
                 *_EVERYONE,
             }
         ),
@@ -196,6 +212,7 @@ ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = Mapping
             {
                 Permission.ORG_READ,
                 Permission.ORG_UPDATE,
+                Permission.SYNC_SCHEDULE_MANAGE,
                 Permission.MEMBER_READ,
                 Permission.INTEGRATION_READ,
                 Permission.INTEGRATION_CONNECT,

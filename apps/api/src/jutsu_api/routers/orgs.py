@@ -10,6 +10,7 @@ endpoint — without it, anyone could probe domains to learn which companies use
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Literal
@@ -38,6 +39,7 @@ from jutsu_api.routers.auth import (
     set_session_cookies,
 )
 from jutsu_api.security import GuardedAPIRoute, public, requires
+from jutsu_api.sync_schedule import SyncSchedule, read_sync_schedule, write_sync_schedule
 
 router = APIRouter(prefix="/v1/orgs", tags=["orgs"], route_class=GuardedAPIRoute)
 
@@ -358,6 +360,122 @@ async def update_current_organisation(
         session, org_id=principal.org_id, actor_user_id=principal.user_id, name=payload.name
     )
     return OrgRenamed(name=name)
+
+
+class SyncScheduleOut(BaseModel):
+    """When this organisation's connected providers are re-read.
+
+    `next_sync_at` is computed, never stored: "01:00 local" moves in UTC twice a year,
+    and this is the number a person checks against their own clock.
+    """
+
+    timezone: str
+    hour_local: int
+    enabled: bool
+    next_sync_at: datetime | None
+    #: The last run, or nulls for a caller without `org:read` — see `_schedule_out`.
+    last_started_at: datetime | None
+    last_finished_at: datetime | None
+    last_outcome: str | None
+    last_connections: int | None
+    last_enqueued: int | None
+
+
+class SyncSchedulePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    #: An IANA name ("Asia/Kolkata"), never an offset: an offset is wrong for half the
+    #: year in any zone that observes daylight saving.
+    timezone: str = Field(min_length=1, max_length=64)
+    hour_local: int = Field(ge=0, le=23)
+    enabled: bool
+
+
+def _schedule_out(schedule: SyncSchedule, *, history: bool) -> SyncScheduleOut:
+    """The schedule, with the run history only for a caller who may read the
+    organisation.
+
+    `last_connections` counts every connection in the tenant, which is a figure about the
+    organisation rather than about the reader — `GET /v1/orgs/current` keeps the
+    comparable member counts behind `org:read`, and this follows it. What an employee
+    gets is the part that is about them: when their connected tools are next read.
+    """
+    return SyncScheduleOut(
+        timezone=schedule.timezone,
+        hour_local=schedule.hour_local,
+        enabled=schedule.enabled,
+        next_sync_at=schedule.next_sync_at,
+        last_started_at=schedule.last_started_at if history else None,
+        last_finished_at=schedule.last_finished_at if history else None,
+        last_outcome=schedule.last_outcome if history else None,
+        last_connections=schedule.last_connections if history else None,
+        last_enqueued=schedule.last_enqueued if history else None,
+    )
+
+
+@router.get("/current/sync-schedule")
+@requires(Permission.INTEGRATION_SELF_MANAGE)
+async def read_current_sync_schedule(principal: CurrentPrincipal, session: Db) -> SyncScheduleOut:
+    """When the nightly sync runs, and — for an administrator — how the last one went.
+
+    Gated on `integration:self_manage` rather than `org:read`, which `member` does not
+    hold: an employee who can connect a tool is entitled to know when it will be read
+    again, and telling them is the difference between "we sync automatically" and a
+    promise with no time attached. The run history is redacted for them; changing the
+    schedule needs `sync:schedule_manage`.
+    """
+    return _schedule_out(
+        await read_sync_schedule(session),
+        history=Permission.ORG_READ in principal.permissions,
+    )
+
+
+@router.put("/current/sync-schedule")
+@requires(Permission.SYNC_SCHEDULE_MANAGE)
+async def update_current_sync_schedule(
+    payload: SyncSchedulePayload, principal: CurrentPrincipal, session: Db
+) -> SyncScheduleOut:
+    """Set the schedule. The organisation is the session's own — there is no `{org_id}`
+    variant, for the same reason `PATCH /current` has none.
+
+    `sync:schedule_manage` rather than `org:update`: the four roles that own this clock
+    are Owner, Super Admin, IT Admin and HR Admin, and `org:update` does not reach HR.
+    Adding HR to `org:update` instead would also have handed them the organisation's
+    profile and its connection policies — see the permission's own note in `rbac.py`.
+    """
+    schedule = await write_sync_schedule(
+        session,
+        actor_id=principal.user_id,
+        timezone=payload.timezone,
+        hour_local=payload.hour_local,
+        enabled=payload.enabled,
+    )
+    await session.execute(
+        text(
+            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+            "resource_id, outcome, meta_json) VALUES (:org, :actor, 'user', "
+            "'org.sync_schedule_updated', 'org', :resource, 'success', cast(:meta AS jsonb))"
+        ),
+        {
+            "org": str(principal.org_id),
+            # The same value as `:org`, bound separately: `org_id` is uuid and
+            # `resource_id` is text, and one parameter for both leaves asyncpg unable to
+            # deduce a type ("inconsistent types deduced for parameter $1").
+            "resource": str(principal.org_id),
+            "actor": str(principal.user_id),
+            "meta": json.dumps(
+                {
+                    "timezone": schedule.timezone,
+                    "hour_local": schedule.hour_local,
+                    "enabled": schedule.enabled,
+                }
+            ),
+        },
+    )
+    # Every role holding `sync:schedule_manage` also holds `org:read`, so the history
+    # is theirs to see. `_schedule_out`'s redaction is for the employee reading the
+    # GET, not for the administrator who just wrote it.
+    return _schedule_out(schedule, history=True)
 
 
 @router.get("/current/overview")

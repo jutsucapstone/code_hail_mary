@@ -595,3 +595,180 @@ class TestDrainReport:
             assert (await drain_module.drain_and_report(org_a)).claimable_now == 1
         finally:
             mp.undo()
+
+
+async def _not_rung(org_id: uuid.UUID) -> bool:
+    """A doorbell that reports "not rung" — the dev shape, where no transport exists."""
+    return False
+
+
+class TestTheNightlyClock:
+    """The scheduler (ADR 0018): who it wakes, what it enqueues, and what it cannot see.
+
+    The clock is deliberately the smallest thing that could work — it holds no provider
+    credential and fetches nothing, so the only harm it can do is enqueue the wrong work
+    or enqueue it twice. Both are what these assert against.
+    """
+
+    async def _schedule(self, org_id: uuid.UUID, *, timezone: str, hour: int) -> None:
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("SELECT sched.write_schedule(:tz, CAST(:h AS smallint), true, NULL)"),
+                {"tz": timezone, "h": hour},
+            )
+
+    async def _sync_keys(self, org_id: uuid.UUID) -> list[str]:
+        async with org_session(org_id) as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT idempotency_key FROM jobs WHERE kind = 'connector.sync' "
+                            "ORDER BY idempotency_key"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [str(row) for row in rows]
+
+    async def test_a_due_organisation_gets_one_sync_per_connected_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jutsu_worker import schedule
+
+        org_id = uuid.uuid4()
+        connection_id, _ = await seed_connection_and_job(org_id)
+        await self._schedule(org_id, timezone="UTC", hour=1)
+
+        rung: list[uuid.UUID] = []
+
+        async def fake_ring(target: uuid.UUID) -> bool:
+            rung.append(target)
+            return True
+
+        monkeypatch.setattr(schedule, "_ring", fake_ring)
+
+        run = await schedule.sync_organisation(
+            schedule.DueOrganisation(org_id=org_id, timezone="UTC", hour_local=1)
+        )
+
+        assert run is not None
+        assert run.connections == 1
+        assert run.outcome == "success"
+        assert rung == [org_id], "the worker must be woken, or the rows just sit there"
+        assert f"connector.sync:{org_id}:{connection_id}" in await self._sync_keys(org_id)
+
+    async def test_it_shares_the_idempotency_key_with_sync_now(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A nightly run and a person pressing Sync now a second earlier must not produce
+        two walks of one connection. The shared key is the only thing preventing it."""
+        from jutsu_api.connectors import sync_now
+        from jutsu_worker import schedule
+
+        org_id = uuid.uuid4()
+        connection_id, _ = await seed_connection_and_job(org_id)
+        await self._schedule(org_id, timezone="UTC", hour=1)
+        monkeypatch.setattr(schedule, "_ring", _not_rung)
+
+        async with org_session(org_id) as session:
+            user_id = (
+                await session.execute(
+                    text("SELECT user_id FROM connections WHERE id = :c"), {"c": connection_id}
+                )
+            ).scalar_one()
+
+        await schedule.sync_organisation(
+            schedule.DueOrganisation(org_id=org_id, timezone="UTC", hour_local=1)
+        )
+        async with org_session(org_id) as session:
+            await sync_now(session, org_id=org_id, user_id=user_id, connection_id=connection_id)
+
+        # Exactly one row carries the canonical key, though both paths wrote it. (The
+        # fixture also seeds a row under the pre-org-qualified key this suite predates;
+        # it is not what either production path writes, so it is not counted.)
+        keys = await self._sync_keys(org_id)
+        assert keys.count(f"connector.sync:{org_id}:{connection_id}") == 1, keys
+
+    async def test_a_second_tick_the_same_day_claims_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tick runs every fifteen minutes and an organisation is due for a whole
+        hour; without the claim the run would start four times over."""
+        from jutsu_worker import schedule
+
+        org_id = uuid.uuid4()
+        await seed_connection_and_job(org_id)
+        await self._schedule(org_id, timezone="UTC", hour=1)
+        monkeypatch.setattr(schedule, "_ring", _not_rung)
+
+        due = schedule.DueOrganisation(org_id=org_id, timezone="UTC", hour_local=1)
+        first = await schedule.sync_organisation(due)
+        second = await schedule.sync_organisation(due)
+
+        assert first is not None
+        assert second is None
+
+    async def test_it_only_touches_the_organisation_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The org id is a hint about where to look, never an authorization: every write
+        happens inside `org_session`, so another tenant is invisible to it."""
+        from jutsu_worker import schedule
+
+        org_a, org_b = uuid.uuid4(), uuid.uuid4()
+        await seed_connection_and_job(org_a)
+        await seed_connection_and_job(org_b)
+        await self._schedule(org_a, timezone="UTC", hour=1)
+        monkeypatch.setattr(schedule, "_ring", _not_rung)
+
+        await schedule.sync_organisation(
+            schedule.DueOrganisation(org_id=org_a, timezone="UTC", hour_local=1)
+        )
+
+        assert len(await self._sync_keys(org_b)) == 1, "org B keeps only its own seeded row"
+
+    async def test_the_run_is_recorded_where_an_administrator_can_read_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jutsu_worker import schedule
+
+        org_id = uuid.uuid4()
+        await seed_connection_and_job(org_id)
+        await self._schedule(org_id, timezone="UTC", hour=1)
+        monkeypatch.setattr(schedule, "_ring", _not_rung)
+
+        await schedule.sync_organisation(
+            schedule.DueOrganisation(org_id=org_id, timezone="UTC", hour_local=1)
+        )
+
+        async with org_session(org_id) as session:
+            row = (await session.execute(text("SELECT * FROM sched.read_schedule()"))).one()
+        assert row.last_outcome == "success"
+        assert row.last_connections == 1
+        assert row.last_finished_at is not None
+
+    async def test_a_tick_runs_only_organisations_whose_local_hour_has_arrived(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from jutsu_worker import schedule
+
+        indian, utc_org = uuid.uuid4(), uuid.uuid4()
+        await seed_connection_and_job(indian)
+        await seed_connection_and_job(utc_org)
+        await self._schedule(indian, timezone="Asia/Kolkata", hour=1)
+        await self._schedule(utc_org, timezone="UTC", hour=1)
+        monkeypatch.setattr(schedule, "_ring", _not_rung)
+
+        # 01:30 in Kolkata is 20:00 the previous day in UTC: the Indian organisation is
+        # due and the UTC one is not, which is the entire point of storing a zone.
+        runs = await schedule.run_due_syncs(
+            now=datetime(2026, 9, 8, 1, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+        )
+
+        assert [run.org_id for run in runs] == [indian]
