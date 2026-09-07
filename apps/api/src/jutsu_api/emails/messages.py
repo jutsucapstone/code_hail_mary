@@ -81,6 +81,28 @@ def _footer_lines(*extra: str) -> list[str]:
     return [*extra, _NO_REPLY, _SIGNATURE]
 
 
+#: The longest a customer-supplied name may make a subject line. Beyond this every
+#: client truncates anyway, and the part that identifies the message — "on JUTSU" —
+#: is what gets cut.
+_SUBJECT_NAME_LIMIT = 64
+
+
+def subject_name(value: str) -> str:
+    """A customer-supplied name, safe to put in a Subject header.
+
+    Whitespace collapsed and length bounded. The collapse is what stops a newline
+    reaching the header; the bound is what stops `POST /v1/orgs/register` — which is
+    public, and which mails an address nobody has verified — from being a way to
+    deliver 255 characters of chosen text to an arbitrary mailbox, from a domain
+    with JUTSU's authentication records on it. The name still appears in the body,
+    where it is plainly the registrant's own words rather than the platform's.
+    """
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= _SUBJECT_NAME_LIMIT:
+        return collapsed
+    return collapsed[: _SUBJECT_NAME_LIMIT - 1].rstrip() + "\u2026"
+
+
 def _compose(*, to: str, subject: str, text: str, html: str) -> EmailMessage:
     """The one constructor every builder returns through.
 
@@ -157,7 +179,12 @@ def organisation_verification(
         ],
         footer_lines=_footer_lines(f"Sent to {to} because it was used to register."),
     )
-    return _compose(to=to, subject=f"Verify {company_name} on JUTSU", text=text, html=html)
+    return _compose(
+        to=to,
+        subject=f"Verify {subject_name(company_name)} on JUTSU",
+        text=text,
+        html=html,
+    )
 
 
 def organisation_welcome(
@@ -244,7 +271,12 @@ def organisation_welcome(
         ],
         footer_lines=_footer_lines(f"Sent to {to}, the owner of {company_domain}."),
     )
-    return _compose(to=to, subject=f"{company_name} is live on JUTSU", text=text, html=html)
+    return _compose(
+        to=to,
+        subject=f"{subject_name(company_name)} is live on JUTSU",
+        text=text,
+        html=html,
+    )
 
 
 def employee_invitation(*, to: str, organisation: str, app_url: str, hours: int) -> EmailMessage:
@@ -302,7 +334,10 @@ def employee_invitation(*, to: str, organisation: str, app_url: str, hours: int)
         footer_lines=_footer_lines(f"Sent to {to} at the request of {organisation}."),
     )
     return _compose(
-        to=to, subject=f"You have been invited to {organisation} on JUTSU", text=text, html=html
+        to=to,
+        subject=f"You have been invited to {subject_name(organisation)} on JUTSU",
+        text=text,
+        html=html,
     )
 
 
@@ -376,7 +411,12 @@ def employee_welcome(
         ],
         footer_lines=_footer_lines(f"Sent to {to} because you joined {organisation}."),
     )
-    return _compose(to=to, subject=f"Welcome to {organisation} on JUTSU", text=text, html=html)
+    return _compose(
+        to=to,
+        subject=f"Welcome to {subject_name(organisation)} on JUTSU",
+        text=text,
+        html=html,
+    )
 
 
 def sign_in_code(*, to: str, app_url: str, minutes: int) -> EmailMessage:

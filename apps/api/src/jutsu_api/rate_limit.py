@@ -48,6 +48,8 @@ from sqlalchemy import text
 __all__ = [
     "DEFAULT_KT_CLAIM_RATE_LIMIT",
     "DEFAULT_KT_CLAIM_RATE_WINDOW_S",
+    "DEFAULT_KT_OPEN_RATE_LIMIT",
+    "DEFAULT_KT_OPEN_RATE_WINDOW_S",
     "DEFAULT_KT_SUMMARY_RATE_LIMIT",
     "DEFAULT_KT_SUMMARY_RATE_WINDOW_S",
     "DEFAULT_SEARCH_RATE_LIMIT",
@@ -70,6 +72,21 @@ DEFAULT_SEARCH_RATE_WINDOW_S: Final = 60
 DEFAULT_KT_CLAIM_RATE_LIMIT: Final = 10
 DEFAULT_KT_CLAIM_RATE_WINDOW_S: Final = 60
 
+#: Opening a package by code on any route other than the claim door.
+#:
+#: `KT_CLAIM` walls `POST /v1/kt/claim` at ten a minute, but a dozen sibling routes
+#: take a caller-supplied code and reach the same lookup — so guessing against
+#: `GET /v1/kt/{code}/documents` was free while the front door was walled. It cannot
+#: share the claim bucket: a person reading a KT package makes several requests per
+#: panel and would spend ten in seconds.
+#:
+#: A hundred and twenty a minute is far above what a session does — the console
+#: mounts a handful of queries per tab — and far below what a probe needs against a
+#: 32^8 code space. It is charged BEFORE the lookup, so a hit and a miss cost the
+#: same: a budget spent only on misses would tell a prober which guesses were close.
+DEFAULT_KT_OPEN_RATE_LIMIT: Final = 120
+DEFAULT_KT_OPEN_RATE_WINDOW_S: Final = 60
+
 #: The handover summary is one paid model call per press, composed fresh and never
 #: cached. Six a minute lets somebody retry after a refusal and stops a held-down key.
 DEFAULT_KT_SUMMARY_RATE_LIMIT: Final = 6
@@ -81,6 +98,7 @@ class Bucket(StrEnum):
 
     SEARCH = "search"
     KT_CLAIM = "kt_claim"
+    KT_OPEN = "kt_open"
     KT_SUMMARY = "kt_summary"
 
 
@@ -109,6 +127,13 @@ _SPECS: Final[dict[Bucket, _BudgetSpec]] = {
         default_limit=DEFAULT_KT_CLAIM_RATE_LIMIT,
         default_window=DEFAULT_KT_CLAIM_RATE_WINDOW_S,
         refusal="Too many attempts to open a package. Try again shortly.",
+    ),
+    Bucket.KT_OPEN: _BudgetSpec(
+        limit_env="KT_OPEN_RATE_LIMIT",
+        window_env="KT_OPEN_RATE_WINDOW_S",
+        default_limit=DEFAULT_KT_OPEN_RATE_LIMIT,
+        default_window=DEFAULT_KT_OPEN_RATE_WINDOW_S,
+        refusal="Too many requests for this package. Try again shortly.",
     ),
     Bucket.KT_SUMMARY: _BudgetSpec(
         limit_env="KT_SUMMARY_RATE_LIMIT",

@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from jutsu_core.errors import NotFound
 from jutsu_core.rbac import Permission, role_label
 from pydantic import BaseModel, EmailStr, Field
@@ -31,7 +31,12 @@ from jutsu_api.registration import (
     complete_registration,
     stage_registration,
 )
-from jutsu_api.routers.auth import set_session_cookies
+from jutsu_api.routers.auth import (
+    challenge_token,
+    clear_challenge_cookie,
+    set_challenge_cookie,
+    set_session_cookies,
+)
 from jutsu_api.security import GuardedAPIRoute, public, requires
 
 router = APIRouter(prefix="/v1/orgs", tags=["orgs"], route_class=GuardedAPIRoute)
@@ -89,6 +94,7 @@ class RegistrationAccepted(BaseModel):
 @public("Registration creates the first account; requiring a session would be circular.")
 async def register(
     payload: RegisterPayload,
+    response: Response,
     session: Db,
     settings: SettingsDep,
     sender: SenderDep,
@@ -100,7 +106,7 @@ async def register(
     is already registered is not, and cannot be reached from here at all: that answer is
     only produced after someone proves a mailbox at it.
     """
-    await stage_registration(
+    staged = await stage_registration(
         session,
         RegistrationRequest(
             full_name=payload.full_name,
@@ -115,15 +121,19 @@ async def register(
         settings=settings,
         sender=sender,
     )
-    # The pending registration is deliberately discarded rather than returned: the token
-    # belongs in the inbox and nowhere else.
+    # The token still never appears in a response body — it belongs in the inbox. It
+    # does go into the httpOnly challenge cookie, so the verification screen can ask for
+    # the six digits alone; `set_challenge_cookie` argues why that is safe.
+    set_challenge_cookie(response, token=staged.token, settings=settings)
     return RegistrationAccepted()
 
 
 class RegisterVerifyPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
-    token: str = Field(min_length=16, max_length=128)
+    #: Optional for the same reason as `/v1/auth/verify`: the browser that staged this
+    #: registration already holds the token in an httpOnly cookie.
+    token: str | None = Field(default=None, min_length=16, max_length=128)
     code: str = Field(min_length=OTP_DIGITS, max_length=OTP_DIGITS)
 
 
@@ -138,6 +148,7 @@ class RegistrationComplete(BaseModel):
 @public("Completing a registration is what brings the first session into existence.")
 async def register_verify(
     payload: RegisterVerifyPayload,
+    request: Request,
     response: Response,
     session: Db,
     settings: SettingsDep,
@@ -152,16 +163,19 @@ async def register_verify(
     `expected_purpose` means a sign-in code cannot complete a registration here, and a
     registration code cannot open a session there.
     """
+    # One resolution, used for both the redemption and the staged payload lookup: they
+    # are keyed on the same token, and resolving twice invites them to diverge.
+    token = challenge_token(payload.token, request)
     redeemed = await verify_challenge(
         session,
-        token=payload.token,
+        token=token,
         code=payload.code,
         expected_purpose=ChallengePurpose.REGISTER,
     )
 
     outcome = await complete_registration(
         session,
-        token=payload.token,
+        token=token,
         identity_id=redeemed.identity_id,
         challenge_id=redeemed.challenge_id,
         settings=settings,
@@ -187,6 +201,7 @@ async def register_verify(
         csrf_token=credentials.csrf_token,
         settings=settings,
     )
+    clear_challenge_cookie(response, settings=settings)
 
     # The one message that carries the organisation identifier, sent at the one moment
     # there is an organisation to identify — and only to the address that just proved a

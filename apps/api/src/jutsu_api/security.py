@@ -39,6 +39,7 @@ from jutsu_core.errors import PermissionDenied, Unauthenticated
 from jutsu_core.rbac import Permission, Role, permissions_for
 
 __all__ = [
+    "CHALLENGE_COOKIE",
     "GuardedAPIRoute",
     "Principal",
     "UndeclaredRoute",
@@ -53,6 +54,11 @@ _DECLARATION_ATTR: Final = "__jutsu_authz__"
 
 SESSION_COOKIE: Final = "__Host-jutsu_session"
 CSRF_COOKIE: Final = "__Host-jutsu_csrf"
+#: Holds the challenge token between "send me a code" and "here is the code", so the
+#: verification screen can ask for the six digits and nothing else. httpOnly, and it
+#: authorises nothing on its own — redeeming still needs the code, which only ever
+#: reaches the mailbox. See `routers/auth.set_challenge_cookie` for why that is safe.
+CHALLENGE_COOKIE: Final = "__Host-jutsu_challenge"
 CSRF_HEADER: Final = "x-jutsu-csrf"
 
 #: Methods that may change state, and therefore need the double-submit CSRF check.

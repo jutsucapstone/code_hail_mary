@@ -1,7 +1,7 @@
 """Knowledge transfer over HTTP: the admin lifecycle and the recipient's window.
 
   kt:manage  POST /v1/kt · GET /v1/kt · GET /v1/kt/{id} · revoke · complete
-  kt:open    POST /v1/kt/claim · GET /v1/kt/{code}/documents
+  kt:open    POST /v1/kt/claim · GET /v1/kt/{code}/documents · …/documents/{document_id}
 
 The recipient's Ask experience is the ordinary `POST /v1/search` under their own
 authorization — deliberately not a KT-specific search endpoint, because a second search
@@ -29,6 +29,7 @@ from jutsu_api.kt import (
     complete_package,
     create_package,
     get_package,
+    kt_document,
     kt_documents,
     kt_handover_summary,
     kt_insight_summary,
@@ -140,6 +141,25 @@ class KtDocumentOut(BaseModel):
 class KtDocumentPageOut(BaseModel):
     items: list[KtDocumentOut]
     next_cursor: str | None
+
+
+class KtDocumentChunkOut(BaseModel):
+    ordinal: int
+    #: The MASKED passage, in document order. No character offsets travel with it: the
+    #: stored pair indexes the ORIGINAL body, and offering them against this string is the
+    #: mis-highlight trap. A span belongs to `/v1/evidence/{chunk_id}`.
+    text: str
+
+
+class KtDocumentDetailOut(BaseModel):
+    id: UUID
+    title: str
+    source_system: str
+    created_at: datetime
+    chunks: list[KtDocumentChunkOut]
+    total_chunks: int
+    #: `from_ordinal` for the next request, or null at the end of the document.
+    next_ordinal: int | None
 
 
 # ------------------------------------------------------------------------- admin
@@ -317,6 +337,49 @@ async def read_kt_documents(
     return KtDocumentPageOut(
         items=[KtDocumentOut(**asdict(item)) for item in page.items],
         next_cursor=page.next_cursor,
+    )
+
+
+@router.get("/kt/{kt_code}/documents/{document_id}")
+@requires(Permission.KT_OPEN)
+async def read_kt_document(
+    kt_code: str,
+    document_id: UUID,
+    principal: CurrentPrincipal,
+    session: Db,
+    from_ordinal: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> KtDocumentDetailOut:
+    """One document from the listing, opened: its masked passages in document order.
+
+    The same permission and the same gates as the listing — `_open_for`, the package's
+    scope, then retrieval's own predicate and the package's period ANDed together inside
+    the SQL. A document that does not exist, one this recipient may not read and one
+    outside the window are the identical 404; a closed package is the package's 403.
+
+    Read a page at a time (`from_ordinal`, `next_ordinal`) because a document has no
+    bounded size and a whole handbook in one response helps nobody.
+    """
+    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    detail = await kt_document(
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        document_id=document_id,
+        principals=principals,
+        groups=groups,
+        from_ordinal=from_ordinal,
+        limit=limit,
+    )
+    return KtDocumentDetailOut(
+        id=detail.id,
+        title=detail.title,
+        source_system=detail.source_system,
+        created_at=detail.created_at,
+        chunks=[KtDocumentChunkOut(ordinal=c.ordinal, text=c.text) for c in detail.chunks],
+        total_chunks=detail.total_chunks,
+        next_ordinal=detail.next_ordinal,
     )
 
 

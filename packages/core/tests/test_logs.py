@@ -22,7 +22,37 @@ def record(msg: object = "hello", *args: object, name: str = "jutsu.test") -> lo
 class TestOneParseableLine:
     def test_a_plain_message_carries_level_logger_and_msg(self) -> None:
         line = json.loads(JsonFormatter().format(record("kt.opened")))
-        assert line == {"level": "INFO", "logger": "jutsu.test", "msg": "kt.opened"}
+        assert line == {
+            "severity": "INFO",
+            "level": "INFO",
+            "logger": "jutsu.test",
+            "message": "kt.opened",
+            "msg": "kt.opened",
+        }
+
+    def test_the_line_carries_the_two_keys_cloud_logging_actually_reads(self) -> None:
+        """`severity` and `message` are promoted out of a structured payload; every
+        other key is opaque data. Emitting only `level` and `msg` put every line —
+        including a traceback from a failed drain — at DEFAULT severity, so
+        `severity>=ERROR` matched nothing and no alert built on it could ever fire."""
+        line = json.loads(
+            JsonFormatter().format(
+                logging.LogRecord(
+                    "jutsu.test", logging.ERROR, __file__, 1, "drain_failed", None, None
+                )
+            )
+        )
+        assert line["severity"] == "ERROR"
+        assert line["message"] == "drain_failed"
+
+    def test_a_structured_event_names_itself_in_the_rendered_summary(self) -> None:
+        """The log viewer shows `message`; a dict left there renders as `{...}` and the
+        operator has to expand every row to see which event it was."""
+        line = json.loads(
+            JsonFormatter().format(record("%s", {"event": "sync_started", "org_id": "abc"}))
+        )
+        assert line["message"] == "sync_started"
+        assert line["org_id"] == "abc"
 
     def test_a_message_containing_quotes_and_newlines_still_parses(self) -> None:
         """The old format string interpolated the message into JSON it had already

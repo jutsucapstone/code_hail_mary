@@ -38,6 +38,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import AnswerOutcome, AnswerTransport, synthesise_answer
+from jutsu_api.rate_limit import Bucket, spend_budget
 
 __all__ = [
     "SUPPORTED_SCOPES",
@@ -47,6 +48,7 @@ __all__ = [
     "complete_package",
     "create_package",
     "get_package",
+    "kt_document",
     "kt_documents",
     "list_packages",
     "revoke_package",
@@ -69,6 +71,12 @@ SUPPORTED_SCOPES: tuple[str, ...] = (
 
 _REVOKED_MESSAGE = "This Knowledge Transfer package has been revoked."
 _EXPIRED_MESSAGE = "This Knowledge Transfer package has expired."
+#: Finished is not lapsed. Both close the package, and telling somebody who
+#: completed their handover that it "expired" reads as a deadline they missed —
+#: which is a support conversation about a thing that went right.
+_COMPLETED_MESSAGE = (
+    "This Knowledge Transfer is complete. Ask your administrator if you need it reopened."
+)
 
 
 def _generate_code() -> str:
@@ -548,13 +556,38 @@ async def _audit_denied_open(*, org_id: UUID, actor_id: UUID, resource_id: str) 
         )
 
 
-async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str) -> object:
+async def _open_for(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    budgeted: bool = True,
+) -> object:
     """The one authorization path for recipients. Everything KT-scoped calls this.
 
     Refusals in order: unknown/foreign/typo'd code (404, all identical), revoked (403,
     the exact sentence §39 requires), expired (403), wrong person (404 — a bound
     package must not confirm its own existence to the wrong holder).
+
+    **Every code that arrives here costs a `KT_OPEN` allowance, spent before the
+    lookup.** The claim wall was written to turn a 32^8 code space into something no
+    probe finishes, but it was spent in exactly one place — `POST /v1/kt/claim` —
+    while a dozen sibling routes reach this same lookup with a caller-supplied code
+    and were unbudgeted, so guessing against `GET /v1/kt/{code}/documents` was free.
+
+    Two details are load-bearing. It is a *different* bucket from the claim door,
+    because a person reading a package makes several requests per panel and would
+    spend the claim allowance in seconds. And it is charged BEFORE the lookup, so a
+    hit and a miss cost the same — a budget spent only on misses would answer, once
+    exhausted, the exact question the 404 is written to refuse.
+
+    `budgeted=False` is for `claim_or_open` alone: that route already spends
+    `KT_CLAIM` before calling in, and charging twice for one attempt halves the
+    stated allowance.
     """
+    if budgeted:
+        await spend_budget(Bucket.KT_OPEN, org_id=org_id, user_id=user_id)
     code = normalise_jutsu_id(kt_code)
 
     lookup = text(
@@ -585,7 +618,10 @@ async def _open_for(session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_co
     if row.revoked_at is not None:
         await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
         raise PermissionDenied(_REVOKED_MESSAGE)
-    if row.completed_at is not None or row.expires_at <= row.now:
+    if row.completed_at is not None:
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        raise PermissionDenied(_COMPLETED_MESSAGE)
+    if row.expires_at <= row.now:
         await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
         raise PermissionDenied(_EXPIRED_MESSAGE)
 
@@ -646,7 +682,10 @@ async def claim_or_open(
     the first-claim path returns the row as it was read, before the UPDATE bound it, so
     `recipient_user_id` is still NULL exactly when this call performed the claim.
     """
-    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    # `POST /v1/kt/claim` spends `KT_CLAIM` before it calls in, so the open is not
+    # charged again: one attempt, one charge. Every other route reaches `_open_for`
+    # directly and pays the `KT_OPEN` allowance there.
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code, budgeted=False)
 
     await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
     if row.recipient_user_id is not None:  # type: ignore[attr-defined]
@@ -805,6 +844,137 @@ async def kt_documents(
             for r in page
         ],
         next_cursor=next_cursor,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class KtDocumentChunk:
+    """One passage of a document, in the form the platform stores it: MASKED text.
+
+    No `char_start` / `char_end`, for the same reason `HandoverEvidence` carries no span.
+    The stored offsets index the ORIGINAL body while this `text` is the masked one, so
+    shipping the pair together is precisely the mis-highlight trap ADR 0005 records — the
+    numbers would look applicable to the string beside them and land somewhere else. A
+    reader needs the words; a citation span comes from `/v1/evidence/{chunk_id}`, which
+    re-checks the caller's ACL itself and returns offsets against text they match.
+    """
+
+    ordinal: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class KtDocumentDetail:
+    id: UUID
+    title: str
+    source_system: str
+    created_at: datetime
+    chunks: list[KtDocumentChunk]
+    total_chunks: int
+    #: The ordinal to ask for next, or None at the end of the document. An ordinal rather
+    #: than an opaque cursor because it is already the document's own total order and a
+    #: reader legitimately wants to say "showing 1-50 of 214".
+    next_ordinal: int | None
+
+
+#: One sentence for three different facts: no such document, not one this caller may read,
+#: and one outside the package's period. Telling them apart would turn the endpoint into a
+#: probe for what the tenant holds and where the package's window ends — the same reasoning
+#: that makes an unknown KT code and a package bound to somebody else the same 404.
+_DOCUMENT_NOT_FOUND = "That document is not available in this package."
+
+
+async def kt_document(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    document_id: UUID,
+    principals: frozenset[str],
+    groups: frozenset[str],
+    from_ordinal: int,
+    limit: int,
+) -> KtDocumentDetail:
+    """One document from the package window, as ordered MASKED passages.
+
+    `kt_documents` is a bibliography: it proves a document exists and is authorised to the
+    recipient, and lets them read not a word of it. This is the same window, opened.
+
+    Every gate the listing runs, in the same order and from the same constant: `_open_for`
+    first, then the package's scope, then the recipient's own ACL and the package's period
+    — the last two ANDed together **inside** the SQL, so one statement decides both. The
+    passage read re-runs that whole condition rather than inheriting the header's verdict;
+    two statements that could disagree about authorization is one more than there should be.
+
+    Paginated by ordinal because a document is not bounded: an ingested handbook is
+    hundreds of chunks, and returning all of them makes one response megabytes wide.
+    """
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    if "documents" not in list(row.scope):  # type: ignore[attr-defined]
+        raise PermissionDenied("Documents are not part of this package's scope.")
+    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+
+    params: dict[str, object] = {
+        "id": document_id,
+        "principals": list(principals),
+        "groups": list(groups),
+    }
+    # The window, as conjuncts on `d`. It sits beside ACL_PREDICATE and is ANDed with it,
+    # never applied to a wider result afterwards: intersection can only remove a document
+    # the caller was already authorized to see, and can never add one.
+    window = ["d.superseded_by IS NULL"]
+    if row.period_start is not None:  # type: ignore[attr-defined]
+        params["period_start"] = row.period_start  # type: ignore[attr-defined]
+        window.append("d.created_at >= :period_start")
+    if row.period_end is not None:  # type: ignore[attr-defined]
+        params["period_end"] = row.period_end  # type: ignore[attr-defined]
+        window.append("d.created_at <= :period_end")
+
+    header = (
+        await session.execute(
+            text(
+                "SELECT d.id, d.title, d.created_at, "  # noqa: S608
+                "CAST(s.system AS text) AS source_system, "
+                "(SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS total_chunks "
+                "FROM documents d "
+                "JOIN sources s ON s.id = d.source_id "
+                f"WHERE {ACL_PREDICATE} AND d.id = :id AND {' AND '.join(window)}"
+            ),
+            params,
+        )
+    ).first()
+    if header is None:
+        raise NotFound(_DOCUMENT_NOT_FOUND)
+
+    bounded = max(1, min(limit, 200))
+    params["from_ordinal"] = max(0, from_ordinal)
+    params["limit"] = bounded + 1
+    rows = (
+        await session.execute(
+            text(
+                "SELECT c.ordinal, c.text FROM chunks c "  # noqa: S608
+                "WHERE c.document_id = :id AND c.ordinal >= :from_ordinal "
+                "AND EXISTS (SELECT 1 FROM documents d WHERE d.id = c.document_id "
+                f"AND {' AND '.join(window)} AND {ACL_PREDICATE}) "
+                "ORDER BY c.ordinal LIMIT :limit"
+            ),
+            params,
+        )
+    ).all()
+
+    page = rows[:bounded]
+    # `+ 1` rather than the last ordinal: the next request asks for ordinals `>= n`, and
+    # handing back the one just read would repeat a passage on every page boundary.
+    next_ordinal = page[-1].ordinal + 1 if len(rows) > bounded and page else None
+    return KtDocumentDetail(
+        id=header.id,
+        title=header.title,
+        source_system=header.source_system,
+        created_at=header.created_at,
+        chunks=[KtDocumentChunk(ordinal=r.ordinal, text=r.text) for r in page],
+        total_chunks=header.total_chunks,
+        next_ordinal=next_ordinal,
     )
 
 
@@ -1071,4 +1241,23 @@ async def kt_handover_summary(
         )
         for i in insights
     ]
-    return await synthesise_answer(transport, question=_HANDOVER_QUESTION, evidence=evidence)
+    outcome = await synthesise_answer(transport, question=_HANDOVER_QUESTION, evidence=evidence)
+    # §25 names this act, and it is the one recipient-facing surface that spends a model
+    # call and composes a narrative over somebody else's documents. The row says it
+    # happened and how it went; the summary itself is never written down, here or
+    # anywhere — a stored one would outlive the ACL state that grounded it.
+    await _audit(
+        session,
+        org_id=org_id,
+        actor_id=user_id,
+        action="kt.handover_summary",
+        resource_id=normalise_jutsu_id(kt_code),
+        outcome="success",
+        meta={
+            "insufficient_evidence": outcome.insufficient_evidence,
+            "citations": len(outcome.citations),
+            "attempts": outcome.attempts,
+            "claims_considered": len(insights),
+        },
+    )
+    return outcome

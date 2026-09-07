@@ -85,11 +85,18 @@ class TestTheFormatter:
         line = json.loads(handler.format(record))
 
         assert line == {
+            # `severity` and `message` are the two keys Cloud Logging promotes out of a
+            # structured payload; `level` and `msg` are kept beside them because every
+            # query, dashboard and grep written against this format uses those names.
+            # Emitting only the second pair put every line — a drain's traceback
+            # included — at DEFAULT severity, so `severity>=ERROR` matched nothing.
+            "severity": "INFO",
             "level": "INFO",
             "logger": "jutsu.test",
             "request_id": "req-9",
             "org_id": "org-9",
             "user_id": "user-9",
+            "message": "kt.opened",
             "msg": "kt.opened",
         }
 

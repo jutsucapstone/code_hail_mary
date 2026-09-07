@@ -128,7 +128,21 @@ def create_app() -> FastAPI:
         once rather than in each route that spends a budget.
         """
         request_id = getattr(request.state, "request_id", "unknown")
-        logger.warning("%s", exc.code)
+        # The level follows the status, and the payload is a dict so the code and the
+        # status are queryable fields rather than a bare string in `message`. A 500 and
+        # a 404 logged identically at WARNING means "the database is down" and "somebody
+        # typed a bad URL" are the same line to every alert built on severity.
+        log = logger.error if exc.status_code >= 500 else logger.warning
+        log(
+            "%s",
+            {
+                "event": "request_failed",
+                "code": exc.code,
+                "status": exc.status_code,
+                "path": request.url.path,
+                "method": request.method,
+            },
+        )
         headers: dict[str, str] = {}
         if isinstance(exc, RateLimited):
             window = exc.details.get("window_seconds")
@@ -164,7 +178,16 @@ def create_app() -> FastAPI:
         error = ValidationFailed("Some of the details you entered are not valid.")
         envelope = error.envelope(request_id)
         envelope["error"]["details"] = {"fields": fields}
-        logger.warning("validation_failed")
+        # Field names and rule ids only — never `input`, which is the submitted value.
+        logger.warning(
+            "%s",
+            {
+                "event": "validation_failed",
+                "path": request.url.path,
+                "method": request.method,
+                "fields": [field["field"] for field in fields],
+            },
+        )
         return JSONResponse(status_code=error.status_code, content=envelope)
 
     @app.exception_handler(Exception)

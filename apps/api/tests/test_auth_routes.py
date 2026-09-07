@@ -17,11 +17,16 @@ from collections.abc import AsyncIterator
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jutsu_api.auth_service import SIGN_IN_BUDGET_LIMIT
-from jutsu_api.config import Settings, get_settings
+from jutsu_api.config import OTP_MAX_ATTEMPTS, Settings, get_settings
 from jutsu_api.deps import get_db, get_email_sender
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.main import create_app
-from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE
+from jutsu_api.security import (
+    CHALLENGE_COOKIE,
+    CSRF_COOKIE,
+    CSRF_HEADER,
+    SESSION_COOKIE,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -280,6 +285,140 @@ class TestVerifyEndpoint:
         )
         # `extra="forbid"` rejects it outright rather than ignoring it silently.
         assert response.status_code == 422
+
+
+class TestTheChallengeCookie:
+    """The six-digit code has to work without the emailed link.
+
+    It did not: the verification screen also demanded the sign-in token, and the only
+    place a person could obtain one was the link the code exists to replace. Asking for
+    a code now leaves the token in an httpOnly cookie, so the screen asks for six digits
+    and nothing else — while the code itself, which is the secret, still only ever
+    reaches the mailbox.
+    """
+
+    async def test_asking_for_a_code_leaves_the_token_in_an_httponly_cookie(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await complete_registration(client, mailbox)
+        client.cookies.clear()
+
+        response = await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+
+        assert response.status_code == 202
+        assert response.cookies.get(CHALLENGE_COOKIE) == mailbox.last.secrets["token"]
+        header = next(
+            h for h in response.headers.get_list("set-cookie") if h.startswith(CHALLENGE_COOKIE)
+        )
+        assert "HttpOnly" in header, "script must never read the challenge token"
+        assert "Secure" in header
+        assert "Max-Age=600" in header, "the cookie must not outlive the challenge row"
+
+    async def test_the_cookie_is_set_for_an_address_with_no_account(
+        self, client: AsyncClient
+    ) -> None:
+        """Otherwise its presence would answer "does this address have an account",
+        which is the one thing this whole path refuses to disclose."""
+        response = await client.post("/v1/auth/request", json={"email": "nobody@nowhere.example"})
+
+        assert response.status_code == 202
+        assert response.cookies.get(CHALLENGE_COOKIE)
+
+    async def test_the_code_alone_signs_in(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The whole point: no token in the body, because the browser already holds it."""
+        await complete_registration(client, mailbox)
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+
+        response = await client.post("/v1/auth/verify", json={"code": mailbox.last.secrets["code"]})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["destination"] == "/admin"
+        assert response.cookies.get(SESSION_COOKIE)
+
+    async def test_a_body_token_still_wins_for_the_emailed_link(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """Opening the link on a second device is the case the cookie cannot serve: that
+        browser never asked for the code, so the token has to come from the URL."""
+        await complete_registration(client, mailbox)
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+        delivered = mailbox.last.secrets
+        client.cookies.delete(CHALLENGE_COOKIE)
+
+        response = await client.post(
+            "/v1/auth/verify", json={"token": delivered["token"], "code": delivered["code"]}
+        )
+
+        assert response.status_code == 200, response.text
+
+    async def test_neither_a_cookie_nor_a_token_is_the_same_refusal_as_a_wrong_code(
+        self, client: AsyncClient
+    ) -> None:
+        """A different error here would tell an attacker which half to work on."""
+        client.cookies.clear()
+
+        response = await client.post("/v1/auth/verify", json={"code": "000000"})
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthenticated"
+        assert response.json()["error"]["message"] == "That code is not valid."
+
+    async def test_signing_in_clears_the_cookie(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """A challenge is single-use. Keeping the cookie would have the next sign-in
+        submit a dead token by default, which reads as "your code is wrong"."""
+        await complete_registration(client, mailbox)
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+
+        response = await client.post("/v1/auth/verify", json={"code": mailbox.last.secrets["code"]})
+
+        assert response.status_code == 200
+        assert not client.cookies.get(CHALLENGE_COOKIE)
+
+    async def test_a_wrong_code_still_spends_an_attempt_when_the_token_came_from_the_cookie(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The attempt budget is what makes carrying the token safe — five guesses per
+        challenge against a million-wide space. It must not depend on where the token
+        was read from."""
+        await complete_registration(client, mailbox)
+        await client.post("/v1/auth/request", json={"email": REGISTRATION["work_email"]})
+        code = mailbox.last.secrets["code"]
+
+        for _ in range(OTP_MAX_ATTEMPTS):
+            refused = await client.post("/v1/auth/verify", json={"code": "000000"})
+            assert refused.status_code == 401
+
+        spent = await client.post("/v1/auth/verify", json={"code": code})
+        assert spent.status_code == 401, "the budget must be exhausted, right code or not"
+
+
+class TestTheRegistrationChallengeCookie:
+    async def test_staging_a_registration_leaves_the_token_in_a_cookie(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        response = await client.post("/v1/orgs/register", json=REGISTRATION)
+
+        assert response.status_code == 202
+        assert response.cookies.get(CHALLENGE_COOKIE) == mailbox.last.secrets["token"]
+        assert "token" not in response.json(), "the body still never carries it"
+
+    async def test_the_code_alone_completes_a_registration(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        await client.post("/v1/orgs/register", json=REGISTRATION)
+
+        response = await client.post(
+            "/v1/orgs/register/verify", json={"code": mailbox.last.secrets["code"]}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["destination"] == "/admin"
+        assert response.cookies.get(SESSION_COOKIE)
+        assert not client.cookies.get(CHALLENGE_COOKIE)
 
 
 class TestProtectedEndpoint:

@@ -129,6 +129,10 @@ _TAB_FOR_TYPE: Final[dict[str, str]] = {
 # ------------------------------------------------------------------------- views
 
 
+#: What a flag whose subject is no longer readable says instead of `claim:<uuid>`.
+_MARKED_UNCLEAR_LABEL = "Something you marked unclear (no longer shown here)"
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationSummary:
     id: UUID
@@ -523,9 +527,18 @@ async def read_conversation(
     messages = (
         await session.execute(
             text(
-                "SELECT id, role, content, citations_json, insufficient_evidence, attempts, "
-                "created_at FROM kt_messages WHERE conversation_id = :c "
-                "ORDER BY created_at ASC, id ASC LIMIT :limit"
+                # **The newest `limit` turns, rendered oldest-first.** A plain
+                # `ORDER BY created_at ASC ... LIMIT` keeps the OLDEST rows, so a
+                # conversation past the cap stopped showing anything the recipient
+                # had said recently — the transcript froze at its beginning while
+                # new turns kept being written. The inner query selects the tail;
+                # the outer one puts it back in reading order.
+                "SELECT id, role, content, citations_json, insufficient_evidence, "
+                "attempts, created_at FROM ("
+                "  SELECT id, role, content, citations_json, insufficient_evidence, "
+                "  attempts, created_at FROM kt_messages WHERE conversation_id = :c "
+                "  ORDER BY created_at DESC, id DESC LIMIT :limit"
+                ") AS recent ORDER BY created_at ASC, id ASC"
             ),
             {"c": conversation_id, "limit": max(1, min(limit, 500))},
         )
@@ -1442,13 +1455,19 @@ async def read_workspace(
             break
 
     # ---- gaps: what the recipient flagged, and what the evidence itself lacks
+    # (`_MARKED_UNCLEAR_LABEL` covers a flag whose subject is no longer readable.)
     gaps: list[Gap] = []
     for key in unclear_keys:
         item = labels_by_key.get(key)
         gaps.append(
             Gap(
                 key=key,
-                label=item.label if item else key,
+                # A key is `claim:<uuid>`, and it reached the screen whenever the
+                # thing it names is no longer visible — superseded by a newer
+                # extraction, or ACL-invisible now. The recipient marked something
+                # unclear and got a database identifier back, which they can neither
+                # read nor act on. Say what is true instead.
+                label=item.label if item else _MARKED_UNCLEAR_LABEL,
                 why="You marked this unclear.",
                 source="you",
                 tab=item.tab if item else None,

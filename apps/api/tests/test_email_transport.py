@@ -398,3 +398,68 @@ class TestAppUrl:
         environment where the variable was set by hand."""
         monkeypatch.setenv("JUTSU_APP_URL", configured)
         assert _app_url("prod") == "https://preview.jutsu.co.in"
+
+
+class TestTheSubjectHeader:
+    """The header that used to be able to fail a send, and to carry chosen text.
+
+    Four of the six subjects interpolate a name a customer typed. Nothing on the way in
+    rejects a line break, and `MimeMessage.__setitem__` raises on one rather than folding
+    it — a `ValueError` inside the transport that no caller catches, so the invitation or
+    the registration returned 500 and no mail went out. It could not be seen in
+    development, where `ConsoleEmailSender` builds no MIME message at all.
+    """
+
+    def _rendered(self, subject: str) -> str:
+        message = EmailMessage(to="ada@example.com", subject=subject, body="body", secrets={})
+        header = SmtpEmailSender(SETTINGS)._render(message)["Subject"]
+        return str(header)
+
+    def test_a_newline_in_an_organisation_name_no_longer_fails_the_send(self) -> None:
+        assert self._rendered("Verify Acme\nCorp on JUTSU") == "Verify Acme Corp on JUTSU"
+
+    def test_a_carriage_return_is_collapsed_too(self) -> None:
+        assert self._rendered("Verify Acme\r\nCorp on JUTSU") == "Verify Acme Corp on JUTSU"
+
+    def test_the_unicode_line_separators_a_regex_would_miss(self) -> None:
+        """`str.split()` splits on the whole Unicode whitespace set. A `[\r\n]` filter
+        would pass these straight through to a header that folds on them."""
+        for separator in ("\u0085", "\u2028", "\u2029"):
+            assert self._rendered(f"Verify Acme{separator}Corp on JUTSU") == (
+                "Verify Acme Corp on JUTSU"
+            )
+
+    def test_an_ordinary_subject_is_untouched(self) -> None:
+        assert self._rendered("Your JUTSU sign-in code") == "Your JUTSU sign-in code"
+
+
+class TestWhatFreeTextMayPutInASubject:
+    """`POST /v1/orgs/register` is public and mails an address nobody has verified, so
+    the company name on that message is attacker-chosen text leaving a domain that
+    carries JUTSU's authentication records."""
+
+    def test_a_name_is_collapsed_and_bounded(self) -> None:
+        from jutsu_api.emails.messages import subject_name
+
+        assert subject_name("  Hail  Mary   Labs ") == "Hail Mary Labs"
+        bounded = subject_name("A" * 300)
+        assert len(bounded) <= 64
+        assert bounded.endswith("\u2026")
+
+    def test_a_short_name_survives_exactly(self) -> None:
+        from jutsu_api.emails.messages import subject_name
+
+        assert subject_name("Meridian Works") == "Meridian Works"
+
+    def test_the_registration_subject_cannot_be_stuffed(self) -> None:
+        from jutsu_api.emails.messages import organisation_verification
+
+        message = organisation_verification(
+            to="ada@example.com",
+            company_name="URGENT: your account is suspended, call 1-800-" + "9" * 300,
+            company_domain="example.com",
+            app_url="https://jutsu.co.in",
+            minutes=10,
+        )
+        assert len(message.subject) < 100
+        assert "\n" not in message.subject

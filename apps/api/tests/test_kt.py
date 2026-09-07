@@ -130,6 +130,7 @@ async def create_kt(
     subject_user_id: str,
     scope: list[str] | None = None,
     validity_days: int = 30,
+    period_days: int | None = None,
     recipient_email: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -137,11 +138,89 @@ async def create_kt(
         "scope": scope or ["documents", "profile"],
         "validity_days": validity_days,
     }
+    if period_days is not None:
+        payload["period_days"] = period_days
     if recipient_email:
         payload["recipient_email"] = recipient_email
     response = await client.post("/v1/kt", json=payload, headers=csrf(client))
     assert response.status_code == 201, response.text
     return dict(response.json())
+
+
+async def seed_source(db_session: AsyncSession, *, org_id: str) -> uuid.UUID:
+    """A local source to hang documents on, with the tenant GUC set for the inserts."""
+    await db_session.execute(
+        text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+    )
+    source_id = uuid.uuid4()
+    await db_session.execute(
+        text(
+            "INSERT INTO sources (id, org_id, system, config_json) "
+            "VALUES (:id, :org, 'local', '{}'::jsonb)"
+        ),
+        {"id": source_id, "org": org_id},
+    )
+    return source_id
+
+
+async def seed_document(
+    db_session: AsyncSession,
+    *,
+    org_id: str,
+    source_id: uuid.UUID,
+    title: str,
+    principal: str,
+    age_days: float = 0.5,
+    passages: tuple[tuple[int, str], ...] = (),
+) -> uuid.UUID:
+    """One ACL-granted document with its chunks, aged relative to now.
+
+    `passages` are `(ordinal, text)` and are inserted in the order given — which is
+    deliberately not ordinal order in one test below, because document order must come
+    from `ORDER BY c.ordinal` rather than from whatever the heap happens to return.
+    """
+    doc_id = uuid.uuid4()
+    await db_session.execute(
+        text(
+            "INSERT INTO documents (id, org_id, source_id, external_id, title, "
+            "content_hash, acl_hash, body_original, body_masked, created_at) "
+            "VALUES (:id, :org, :src, :ext, :title, :ext, 'a', 'b', 'b', "
+            # Multiplied rather than CAST to interval: asyncpg reads the cast and then
+            # demands a timedelta for the bound value, which a readable literal is not.
+            "now() - CAST(:age_days AS double precision) * interval '1 day')"
+        ),
+        {
+            "id": doc_id,
+            "org": org_id,
+            "src": source_id,
+            "ext": title,
+            "title": title,
+            "age_days": age_days,
+        },
+    )
+    await db_session.execute(
+        text(
+            "INSERT INTO document_acl (document_id, principal_type, principal_id, "
+            "org_id, permission) VALUES (:doc, 'user', :pid, :org, 'read')"
+        ),
+        {"doc": doc_id, "pid": principal, "org": org_id},
+    )
+    for ordinal, body in passages:
+        await db_session.execute(
+            text(
+                "INSERT INTO chunks (id, document_id, org_id, ordinal, text, "
+                "char_start, char_end, token_count) "
+                "VALUES (gen_random_uuid(), :doc, :org, :ordinal, :text, 0, :end, 5)"
+            ),
+            {
+                "doc": doc_id,
+                "org": org_id,
+                "ordinal": ordinal,
+                "text": body,
+                "end": len(body),
+            },
+        )
+    return doc_id
 
 
 class TestLifecycle:
@@ -670,6 +749,202 @@ class TestKtDocuments:
         )
         response = await client.get(f"/v1/kt/{package['kt_code']}/documents")
         assert response.status_code == 403
+
+
+class TestKtDocumentReader:
+    """Opening one document from the bibliography. The listing proves a document exists
+    and is authorised; this is the same window read, under the same gates."""
+
+    async def open_package(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        *,
+        period_days: int | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """Owner, subject, package, recipient — the standing setup, returning the package
+        and the organisation id the caller then seeds documents into."""
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject, period_days=period_days)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New Hire")
+        return package, org_id
+
+    async def test_a_readable_in_window_document_returns_its_chunks_in_order(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        package, org_id = await self.open_package(client, mailbox)
+        source_id = await seed_source(db_session, org_id=org_id)
+        doc_id = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Runbook",
+            principal="local:newhire@example.com",
+            passages=((2, "third passage"), (0, "first passage"), (1, "second passage")),
+        )
+        await db_session.commit()
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        response = await client.get(f"/v1/kt/{package['kt_code']}/documents/{doc_id}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["title"] == "Runbook"
+        assert body["source_system"] == "local"
+        assert body["total_chunks"] == 3
+        assert body["next_ordinal"] is None
+        # Inserted 2, 0, 1 — returned 0, 1, 2. The order is the ORDER BY, not the heap.
+        assert [c["ordinal"] for c in body["chunks"]] == [0, 1, 2]
+        assert [c["text"] for c in body["chunks"]] == [
+            "first passage",
+            "second passage",
+            "third passage",
+        ]
+        # The reader shows masked text; a span against it would index the original body.
+        assert "char_start" not in body["chunks"][0]
+
+    async def test_a_long_document_is_read_a_page_at_a_time(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        package, org_id = await self.open_package(client, mailbox)
+        source_id = await seed_source(db_session, org_id=org_id)
+        doc_id = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Handbook",
+            principal="local:newhire@example.com",
+            passages=tuple((n, f"passage {n}") for n in range(5)),
+        )
+        await db_session.commit()
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        first = (
+            await client.get(f"/v1/kt/{package['kt_code']}/documents/{doc_id}", params={"limit": 2})
+        ).json()
+        assert [c["ordinal"] for c in first["chunks"]] == [0, 1]
+        assert first["next_ordinal"] == 2
+        assert first["total_chunks"] == 5
+
+        rest = (
+            await client.get(
+                f"/v1/kt/{package['kt_code']}/documents/{doc_id}",
+                params={"from_ordinal": first["next_ordinal"], "limit": 100},
+            )
+        ).json()
+        # Continues rather than repeating: the cursor is the next ordinal, not the last.
+        assert [c["ordinal"] for c in rest["chunks"]] == [2, 3, 4]
+        assert rest["next_ordinal"] is None
+
+    async def test_a_document_the_recipient_cannot_read_is_a_404(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        """Non-negotiable 6, and the refusal says no more than "not available": a document
+        granted to somebody else answers exactly as one that never existed."""
+        package, org_id = await self.open_package(client, mailbox)
+        source_id = await seed_source(db_session, org_id=org_id)
+        hidden = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Board pack",
+            principal="local:somebody-else@example.com",
+            passages=((0, "the confidential numbers"),),
+        )
+        await db_session.commit()
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        refused = await client.get(f"/v1/kt/{package['kt_code']}/documents/{hidden}")
+        assert refused.status_code == 404
+        assert "confidential" not in refused.text
+
+        absent = await client.get(f"/v1/kt/{package['kt_code']}/documents/{uuid.uuid4()}")
+        assert absent.status_code == 404
+        # Identical sentences: the endpoint is not a probe for what the tenant holds.
+        assert refused.json()["error"]["message"] == absent.json()["error"]["message"]
+
+    async def test_a_document_outside_the_package_window_is_a_404(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        """The window narrows inside the same statement as the ACL predicate: a document
+        this recipient is fully authorised to read is still outside the handover's period,
+        and gets the identical refusal."""
+        package, org_id = await self.open_package(client, mailbox, period_days=1)
+        source_id = await seed_source(db_session, org_id=org_id)
+        inside = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="This quarter",
+            principal="local:newhire@example.com",
+            age_days=0.02,
+            passages=((0, "recent passage"),),
+        )
+        outside = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Two years ago",
+            principal="local:newhire@example.com",
+            age_days=730,
+            passages=((0, "ancient passage"),),
+        )
+        await db_session.commit()
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        assert (
+            await client.get(f"/v1/kt/{package['kt_code']}/documents/{inside}")
+        ).status_code == 200
+
+        aged = await client.get(f"/v1/kt/{package['kt_code']}/documents/{outside}")
+        assert aged.status_code == 404
+        assert "ancient passage" not in aged.text
+
+    async def test_a_revoked_package_is_the_packages_refusal_not_a_role_refusal(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
+    ) -> None:
+        """`_open_for` runs before the document is looked at, so a closed package answers
+        with its own 403 sentence — never a permission problem, which no role controls."""
+        package, org_id = await self.open_package(client, mailbox)
+        source_id = await seed_source(db_session, org_id=org_id)
+        doc_id = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Runbook",
+            principal="local:newhire@example.com",
+            passages=((0, "still readable a moment ago"),),
+        )
+        await db_session.commit()
+
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+        assert (
+            await client.get(f"/v1/kt/{package['kt_code']}/documents/{doc_id}")
+        ).status_code == 200
+
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
+
+        await sign_in(client, mailbox, email="newhire@example.com")
+        closed = await client.get(f"/v1/kt/{package['kt_code']}/documents/{doc_id}")
+        assert closed.status_code == 403
+        assert (
+            closed.json()["error"]["message"] == "This Knowledge Transfer package has been revoked."
+        )
+        assert "still readable" not in closed.text
 
 
 class TestKtInsights:

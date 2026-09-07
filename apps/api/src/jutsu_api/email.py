@@ -274,7 +274,19 @@ class SmtpEmailSender:
         mime = MimeMessage()
         mime["From"] = self._settings.sender
         mime["To"] = message.to
-        mime["Subject"] = message.subject
+        # **A header value may not contain a line break, and `MimeMessage` raises
+        # rather than folding one.** Four of the six subjects interpolate text a
+        # customer typed — the company name on the registration mail, the
+        # organisation name on the rest — and nothing on the way in rejects a
+        # newline. `"Acme\nCorp"` therefore raised inside the transport, which no
+        # caller catches: the invitation rolled back and the tenant could not invite
+        # anybody again until the name was changed. Development never saw it,
+        # because `ConsoleEmailSender` builds no MIME message at all.
+        #
+        # `split()` with no argument splits on the whole Unicode whitespace set, so
+        # this also covers U+0085, U+2028 and U+2029 — which a regex on `[\r\n]`
+        # would let through and `email` would then fold in surprising ways.
+        mime["Subject"] = " ".join(message.subject.split())
         # An automated one-time code should not generate an out-of-office reply, and it
         # should not be filed as a conversation to reply into.
         mime["Auto-Submitted"] = "auto-generated"

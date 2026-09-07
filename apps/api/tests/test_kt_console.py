@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.deps import get_db, get_email_sender
 from jutsu_api.email import RecordingEmailSender
@@ -154,7 +154,13 @@ async def create_kt(
     return dict(response.json())
 
 
-async def claim(client: AsyncClient, code: str) -> object:
+async def claim(client: AsyncClient, code: str) -> Response:
+    """The claim call, typed as what it is.
+
+    It used to be annotated `object`, which made every assertion on the result a mypy
+    error and put a `type: ignore[attr-defined]` on twenty-five lines of this file —
+    noise that hides a real one. The helper knows the type; saying so removes them all.
+    """
     return await client.post("/v1/kt/claim", json={"kt_code": code}, headers=csrf(client))
 
 
@@ -187,15 +193,15 @@ class TestTheDoorIsBudgeted:
         second = await claim(client, "KT-JUTSU-00000002")
         third = await claim(client, "KT-JUTSU-00000003")
 
-        assert first.status_code == 404  # type: ignore[attr-defined]
-        assert second.status_code == 404  # type: ignore[attr-defined]
-        assert third.status_code == 429, third.text  # type: ignore[attr-defined]
-        assert third.headers["retry-after"] == "60"  # type: ignore[attr-defined]
-        body = third.json()  # type: ignore[attr-defined]
+        assert first.status_code == 404
+        assert second.status_code == 404
+        assert third.status_code == 429, third.text
+        assert third.headers["retry-after"] == "60"
+        body = third.json()
         assert body["error"]["code"] == "rate_limited"
         assert "package" in body["error"]["message"]
         # Never the code that was tried: the message is configuration, not data.
-        assert "00000003" not in third.text  # type: ignore[attr-defined]
+        assert "00000003" not in third.text
 
     async def test_a_refused_guess_spends_the_budget_the_right_code_needed(
         self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
@@ -205,9 +211,9 @@ class TestTheDoorIsBudgeted:
         package = await owner_with_package(client, mailbox)
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
 
-        assert (await claim(client, "KT-JUTSU-00000001")).status_code == 404  # type: ignore[attr-defined]
+        assert (await claim(client, "KT-JUTSU-00000001")).status_code == 404
         blocked = await claim(client, str(package["kt_code"]))
-        assert blocked.status_code == 429  # type: ignore[attr-defined]
+        assert blocked.status_code == 429
 
     async def test_the_claim_budget_is_not_the_search_budget(
         self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
@@ -217,8 +223,8 @@ class TestTheDoorIsBudgeted:
         await owner_with_package(client, mailbox)
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
 
-        assert (await claim(client, "KT-JUTSU-00000001")).status_code == 404  # type: ignore[attr-defined]
-        assert (await claim(client, "KT-JUTSU-00000002")).status_code == 429  # type: ignore[attr-defined]
+        assert (await claim(client, "KT-JUTSU-00000001")).status_code == 404
+        assert (await claim(client, "KT-JUTSU-00000002")).status_code == 429
 
         search = await client.post("/v1/search", json={"query": "anything"}, headers=csrf(client))
         assert search.status_code == 200, search.text
@@ -238,7 +244,7 @@ class TestBindingBeforeState:
         code = str(package["kt_code"])
 
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, code)).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 200
 
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         revoked = await client.post(f"/v1/kt/{package['id']}/revoke", headers=csrf(client))
@@ -247,15 +253,15 @@ class TestBindingBeforeState:
         # A third person, in the same organisation, holding the code.
         await invite_and_accept(client, mailbox, email="other@example.com", full_name="Other")
         wrong_holder = await claim(client, code)
-        assert wrong_holder.status_code == 404, wrong_holder.text  # type: ignore[attr-defined]
-        assert "revoked" not in wrong_holder.text.lower()  # type: ignore[attr-defined]
+        assert wrong_holder.status_code == 404, wrong_holder.text
+        assert "revoked" not in wrong_holder.text.lower()
 
         # The recipient it was bound to sees exactly why it is closed.
         await sign_in(client, mailbox, email="newhire@example.com")
         recipient = await claim(client, code)
-        assert recipient.status_code == 403  # type: ignore[attr-defined]
+        assert recipient.status_code == 403
         assert (
-            recipient.json()["error"]["message"]  # type: ignore[attr-defined]
+            recipient.json()["error"]["message"]
             == "This Knowledge Transfer package has been revoked."
         )
 
@@ -279,7 +285,7 @@ class TestBindingBeforeState:
         await db_session.commit()
 
         await invite_and_accept(client, mailbox, email="other@example.com", full_name="Other")
-        assert (await claim(client, str(package["kt_code"]))).status_code == 404  # type: ignore[attr-defined]
+        assert (await claim(client, str(package["kt_code"]))).status_code == 404
 
 
 class TestTheTrailNamesTheRequest:
@@ -294,8 +300,8 @@ class TestTheTrailNamesTheRequest:
 
         first = await claim(client, code)
         again = await claim(client, code)
-        assert first.status_code == 200 and again.status_code == 200  # type: ignore[attr-defined]
-        request_id = again.headers["x-request-id"]  # type: ignore[attr-defined]
+        assert first.status_code == 200 and again.status_code == 200
+        request_id = again.headers["x-request-id"]
 
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         claimed = (await client.get("/v1/audit", params={"action": "kt.claimed"})).json()
@@ -328,7 +334,7 @@ class TestTheTrailNamesTheRequest:
         package = await owner_with_package(client, mailbox)
         code = str(package["kt_code"])
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, code)).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 200
 
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         before = (await client.get(f"/v1/kt/{package['id']}")).json()["last_activity_at"]
@@ -353,7 +359,7 @@ class TestTheSummaryHasACeiling:
         package = await owner_with_package(client, mailbox, scope=["decisions", "projects"])
         code = str(package["kt_code"])
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, code)).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 200
 
         first = await client.get(f"/v1/kt/{code}/handover-summary")
         second = await client.get(f"/v1/kt/{code}/handover-summary")
@@ -372,7 +378,7 @@ class TestTheSummaryHasACeiling:
         package = await owner_with_package(client, mailbox)
         code = str(package["kt_code"])
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, code)).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 200
 
         for _ in range(3):
             response = await client.get(f"/v1/kt/{code}/handover-summary")
@@ -429,7 +435,7 @@ class TestAdminUpdates:
         assert response.json()["status"] == "active"
 
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, str(package["kt_code"]))).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, str(package["kt_code"]))).status_code == 200
 
     async def test_extension_is_bounded_a_year_from_today(
         self, client: AsyncClient, mailbox: RecordingEmailSender
@@ -457,18 +463,18 @@ class TestAdminUpdates:
         assert moved.json()["recipient_email"] == "second@example.com"
 
         await invite_and_accept(client, mailbox, email="first@example.com", full_name="First")
-        assert (await claim(client, code)).status_code == 404  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 404
 
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         await invite_and_accept(client, mailbox, email="second@example.com", full_name="Second")
-        assert (await claim(client, code)).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, code)).status_code == 200
 
     async def test_a_claimed_package_keeps_its_recipient(
         self, client: AsyncClient, mailbox: RecordingEmailSender
     ) -> None:
         package = await self.owner_package(client, mailbox)
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
-        assert (await claim(client, str(package["kt_code"]))).status_code == 200  # type: ignore[attr-defined]
+        assert (await claim(client, str(package["kt_code"]))).status_code == 200
 
         await sign_in(client, mailbox, email=OWNER_EMAIL)
         refused = await client.patch(
@@ -508,3 +514,90 @@ async def scope_to_caller(client: AsyncClient, session: AsyncSession) -> None:
     await session.execute(
         text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
     )
+
+
+class TestTheSiblingRoutesAreWalledToo:
+    """The claim door was walled and the twelve routes beside it were not.
+
+    Every KT route takes a caller-supplied code and reaches the same lookup through
+    `_open_for`, so guessing against `GET /v1/kt/{code}/documents` cost nothing while
+    `POST /v1/kt/claim` was refused after ten attempts a minute. These tests pin the
+    second wall, and — as much — pin the two things that make it a wall rather than a
+    hint: it is a *different* bucket from the claim door, and it is charged before the
+    lookup so a hit and a miss cost the same.
+    """
+
+    async def test_guessing_through_a_sibling_route_runs_out_of_budget(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KT_OPEN_RATE_LIMIT", "2")
+        await owner_with_package(client, mailbox)
+        await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
+
+        first = await client.get("/v1/kt/KT-JUTSU-00000001/documents")
+        second = await client.get("/v1/kt/KT-JUTSU-00000002/documents")
+        third = await client.get("/v1/kt/KT-JUTSU-00000003/documents")
+
+        assert first.status_code == 404
+        assert second.status_code == 404
+        assert third.status_code == 429, third.text
+        assert third.json()["error"]["code"] == "rate_limited"
+        # Configuration, never the code that was tried.
+        assert "00000003" not in third.text
+
+    async def test_a_real_code_costs_the_same_as_a_wrong_one(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Charging only on a miss would build the oracle the 404 exists to refuse.
+
+        If a hit were free, then once the budget was spent a 429 would mean "no such
+        package" and any other status would mean "there is one" — which makes probing
+        cheaper rather than dearer. So the allowance is spent before the lookup, and a
+        recipient opening their own package spends it too.
+        """
+        monkeypatch.setenv("KT_OPEN_RATE_LIMIT", "1")
+        package = await owner_with_package(client, mailbox)
+        await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
+        code = str(package["kt_code"])
+
+        assert (await client.get(f"/v1/kt/{code}/documents")).status_code == 200
+        assert (await client.get(f"/v1/kt/{code}/documents")).status_code == 429
+
+    async def test_the_claim_door_keeps_its_own_allowance(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two buckets, because one person's reading is not one prober's guessing.
+
+        A KT session mounts several queries per panel and would spend the claim
+        allowance in seconds if the two shared a bucket — which is what makes this a
+        separate `Bucket` rather than a wider limit on the existing one.
+        """
+        monkeypatch.setenv("KT_OPEN_RATE_LIMIT", "1")
+        monkeypatch.setenv("KT_CLAIM_RATE_LIMIT", "5")
+        await owner_with_package(client, mailbox)
+        await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
+
+        assert (await client.get("/v1/kt/KT-JUTSU-00000001/documents")).status_code == 404
+        assert (await client.get("/v1/kt/KT-JUTSU-00000002/documents")).status_code == 429
+
+        # The door is untouched: exhausting one bucket must not close the other.
+        assert (await claim(client, "KT-JUTSU-00000003")).status_code == 404
+
+    async def test_one_claim_attempt_costs_exactly_one_allowance(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression this class was written for.
+
+        `claim` spends `KT_CLAIM` before its lookup and then calls `_open_for`. When
+        that function grew its own charge, one attempt cost two — so a limit of five
+        refused the third guess, and the stated allowance was quietly halved.
+        """
+        monkeypatch.setenv("KT_CLAIM_RATE_LIMIT", "3")
+        await owner_with_package(client, mailbox)
+        await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
+
+        for attempt in range(3):
+            response = await claim(client, f"KT-JUTSU-0000000{attempt + 1}")
+            assert response.status_code == 404, f"attempt {attempt + 1}: {response.text}"
+
+        assert (await claim(client, "KT-JUTSU-00000009")).status_code == 429

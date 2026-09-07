@@ -54,20 +54,35 @@ class JsonFormatter(logging.Formatter):
         self._context_fields = tuple(context_fields)
 
     def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {"level": record.levelname, "logger": record.name}
+        # **`severity` and `message`, because those are the two keys the destination
+        # reads.** Cloud Logging promotes a fixed set of fields out of a structured
+        # payload and treats everything else as opaque data: without `severity` every
+        # line — including a stack trace from a failed drain — is ingested at DEFAULT,
+        # so `severity>=ERROR` matches nothing, error reporting sees nothing, and an
+        # alerting policy built on log severity is silent by construction. `message` is
+        # what it renders as the line's summary in the log viewer; `msg` renders as
+        # `{...}`. Both spellings are kept so a query, a dashboard or a `grep` written
+        # against the old names still resolves.
+        payload: dict[str, object] = {
+            "severity": record.levelname,
+            "level": record.levelname,
+            "logger": record.name,
+        }
         for field in self._context_fields:
             payload[field] = str(getattr(record, field, UNBOUND))
 
         rendered = record.getMessage()
         structured = self._structured_args(record)
         if structured is None:
-            payload["msg"] = rendered
+            summary = rendered
         else:
             # A readable summary AND queryable fields. `event` is this codebase's label
             # for what happened, so it stands in for the message when one is present.
-            payload["msg"] = str(structured.get("event", rendered))
+            summary = str(structured.get("event", rendered))
             for key, value in structured.items():
                 payload.setdefault(str(key), value)
+        payload["message"] = summary
+        payload["msg"] = summary
 
         if record.exc_info:
             exc_type = record.exc_info[0]
