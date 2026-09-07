@@ -18,6 +18,8 @@ import pytest
 from google.api_core.exceptions import AlreadyExists, PermissionDenied
 from jutsu_core.doorbell import (
     DEFAULT_DELAY_SECONDS,
+    DEFAULT_WINDOW_SECONDS,
+    DISPATCH_DEADLINE_SECONDS,
     ENV_DRAIN_URL,
     ENV_QUEUE,
     ENV_SERVICE_ACCOUNT,
@@ -115,8 +117,54 @@ class TestTheTask:
         assert json.loads(task.http_request.body) == {"org_id": str(org)}
         assert task.http_request.oidc_token.service_account_email == SA
         assert task.http_request.oidc_token.audience == "https://jutsu-worker-abc-el.a.run.app"
-        # Past the caller's commit — never at once.
-        assert task.schedule_time.timestamp() == 1002
+        # The END of window 200 (1005), then the delay. Never `now + delay` (1002):
+        # that fires while the window is still open and tombstones the name every
+        # later ring in it would coalesce onto.
+        assert task.schedule_time.timestamp() == 1007
+        assert task.dispatch_deadline.seconds == DISPATCH_DEADLINE_SECONDS
+
+
+class TestTheSchedulingInvariant:
+    """Every ring in a window is covered by a dispatch that happens after it.
+
+    The defect this pins: `schedule_time = now + delay` with `delay < window` fires the
+    task for window w while w is still open. Cloud Tasks tombstones an executed name for
+    about an hour, so every later ring in that window got ALREADY_EXISTS — which `ring`
+    reports as success — and nothing was coming for the row that rang.
+    """
+
+    def test_no_ring_in_a_window_is_scheduled_before_that_ring(self) -> None:
+        org = uuid.uuid4()
+        window, delay = DEFAULT_WINDOW_SECONDS, DEFAULT_DELAY_SECONDS
+        base = 1000.0  # a window boundary
+        for offset in (0.0, 0.5, 2.5, window - 0.001):
+            now = base + offset
+            task = doorbell().build_task(
+                org, bucket="drain", delay_seconds=delay, window_seconds=window, now=now
+            )
+            assert task.schedule_time.timestamp() > now, offset
+            # And late enough that the window it is named for has closed.
+            assert task.schedule_time.timestamp() >= base + window, offset
+
+    def test_every_ring_in_one_window_coalesces_onto_one_dispatch(self) -> None:
+        org = uuid.uuid4()
+        names = {
+            doorbell()
+            .build_task(org, bucket="drain", delay_seconds=2, window_seconds=5, now=1000.0 + o)
+            .name
+            for o in (0.0, 1.0, 4.9)
+        }
+        assert len(names) == 1
+
+    def test_the_latency_a_ring_pays_is_bounded_by_the_window_plus_the_delay(self) -> None:
+        org = uuid.uuid4()
+        window, delay = DEFAULT_WINDOW_SECONDS, DEFAULT_DELAY_SECONDS
+        for offset in (0.0, 2.5, window - 0.001):
+            now = 1000.0 + offset
+            task = doorbell().build_task(
+                org, bucket="drain", delay_seconds=delay, window_seconds=window, now=now
+            )
+            assert task.schedule_time.timestamp() - now <= window + delay
 
 
 class TestRinging:

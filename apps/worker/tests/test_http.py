@@ -9,6 +9,8 @@ prod.
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -122,6 +124,85 @@ class TestTheDoor:
         assert ring["delay_seconds"] == FOLLOW_UP_NOW_SECONDS
         assert captured["doorbell"].drain_url == "https://jutsu-worker.example/drain"
 
+    async def test_a_lease_a_crashed_worker_still_holds_rings_when_it_expires(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A job left in a working state by a killed worker is claimable by nobody until
+        its lease lapses, so neither of the first two counters sees it. Without this
+        third follow-up the row waits for an unrelated doorbell that may never come."""
+
+        async def fake_drain(org_id: uuid.UUID) -> DrainReport:
+            return DrainReport(
+                counts=COUNTS,
+                claimable_now=0,
+                retries_waiting=0,
+                follow_up="lease",
+                leases_held=1,
+                lease_seconds=131,
+            )
+
+        doorbell = RecordingDoorbell("https://jutsu-worker.example/drain")
+        monkeypatch.setattr(worker_http, "drain_and_report", fake_drain)
+        monkeypatch.setattr(worker_http, "_doorbell_for", lambda request: doorbell)
+
+        response = await client.post("/drain", json={"org_id": str(ORG)})
+
+        assert response.status_code == 200
+        assert response.json()["follow_up"] == "lease"
+        assert response.json()["leases_held"] == 1
+        (ring,) = doorbell.rings
+        assert ring["bucket"] == "drain-lease"
+        assert ring["delay_seconds"] == 131
+
+    async def test_a_configuration_broken_after_startup_still_answers_200(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain has already committed. Raising here would make the queue re-run the
+        whole drain, up to ten times, over a configuration error."""
+
+        async def fake_drain(org_id: uuid.UUID) -> DrainReport:
+            return _report("now", claimable_now=1)
+
+        def broken(request: Any) -> None:
+            raise MisconfiguredDoorbell("half a queue")
+
+        monkeypatch.setattr(worker_http, "drain_and_report", fake_drain)
+        monkeypatch.setattr(worker_http, "_doorbell_for", broken)
+
+        response = await client.post("/drain", json={"org_id": str(ORG)})
+
+        assert response.status_code == 200
+        assert response.json()["rung"] is False
+
+    async def test_a_drain_that_raises_is_reported_by_class_and_never_by_message(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An exception's text is where content leaks (§4.9): this one carries an
+        address on purpose. The event names the class; the queue gets its 500."""
+
+        async def exploding_drain(org_id: uuid.UUID) -> DrainReport:
+            raise RuntimeError("alice@example.com could not be written")
+
+        monkeypatch.setattr(worker_http, "drain_and_report", exploding_drain)
+
+        with caplog.at_level(logging.ERROR, logger="jutsu.worker"), pytest.raises(RuntimeError):
+            # Starlette re-raises after the handler builds the response, so the test
+            # client sees the exception; production sees the 500 uvicorn sends first,
+            # which is what makes Cloud Tasks retry the task.
+            await client.post("/drain", json={"org_id": str(ORG)})
+
+        failures = [
+            entry.args
+            for entry in caplog.records
+            if isinstance(entry.args, dict) and entry.args.get("event") == "drain_failed"
+        ]
+        assert len(failures) == 1
+        assert failures[0]["reason"] == "RuntimeError"
+        assert "alice@example.com" not in str(failures[0])
+
     async def test_only_waiting_retries_ring_after_the_shortest_backoff(
         self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -168,6 +249,23 @@ class TestTheDoor:
         )
         assert allowed.status_code == 200
         assert drained == [ORG]
+
+
+def _startup_transport(captured: str) -> str | None:
+    """The transport out of the JSON startup line.
+
+    Read as JSON rather than as a substring: the formatter emits one object per record
+    (`jutsu_core.logs`), and a substring assertion would keep passing if the line stopped
+    being parseable — which is the defect that formatter replaced.
+    """
+    for line in captured.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        entry = json.loads(stripped)
+        if entry.get("event") == "worker_started":
+            return str(entry["transport"])
+    return None
 
 
 def _request_to(host: str) -> Request:
@@ -254,7 +352,7 @@ class TestStartup:
         async with worker_http._lifespan(worker_http.app):
             pass
 
-        assert "'transport': 'none'" in capsys.readouterr().out
+        assert _startup_transport(capsys.readouterr().out) == "none"
 
     async def test_a_configured_worker_needs_no_drain_url_of_its_own(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -269,7 +367,7 @@ class TestStartup:
         async with worker_http._lifespan(worker_http.app):
             pass
 
-        assert "'transport': 'cloud_tasks'" in capsys.readouterr().out
+        assert _startup_transport(capsys.readouterr().out) == "cloud_tasks"
 
     async def test_a_half_configured_worker_refuses_to_start(
         self, monkeypatch: pytest.MonkeyPatch
@@ -289,6 +387,25 @@ class TestOneDecisionTwoTransports:
         assert follow_up_delay("now") == FOLLOW_UP_NOW_SECONDS
         assert follow_up_delay("retry") == FOLLOW_UP_RETRY_SECONDS
         assert follow_up_delay(None) is None
+
+    def test_a_lease_follow_up_carries_its_own_delay(self) -> None:
+        """`now` and `retry` are fixed; `lease` is however long the earliest lease has
+        left, so it rides on the report rather than being derived from the label."""
+        report = DrainReport(
+            counts=COUNTS,
+            claimable_now=0,
+            retries_waiting=0,
+            follow_up="lease",
+            leases_held=1,
+            lease_seconds=118,
+        )
+        assert follow_up_delay("lease") is None, "the label alone cannot say"
+        assert report.follow_up_seconds == 118
+
+    def test_the_two_fixed_follow_ups_still_come_off_the_report(self) -> None:
+        assert _report("now", claimable_now=1).follow_up_seconds == FOLLOW_UP_NOW_SECONDS
+        assert _report("retry", retries_waiting=1).follow_up_seconds == FOLLOW_UP_RETRY_SECONDS
+        assert _report(None).follow_up_seconds is None
 
     async def test_the_arq_handler_drains_through_the_same_report_and_rings_redis(
         self, monkeypatch: pytest.MonkeyPatch

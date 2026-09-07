@@ -290,7 +290,7 @@ jobs:
             --min-instances 0 \
             --max-instances 3 \
             --concurrency 1 \
-            --timeout 600 \
+            --timeout 1800 \
             --memory 1Gi \
             --no-allow-unauthenticated \
             --quiet
@@ -323,6 +323,15 @@ jobs:
           WORKER_URL="$(gcloud run services describe "${WORKER_SERVICE}" --region "${REGION}" --format 'value(status.url)')"
           test -n "${WORKER_URL}" || { echo "no worker URL resolved"; exit 1; }
           echo "api will ring ${WORKER_URL}/drain"
+
+          # The revision serving BEFORE this deploy, so the readiness check below can
+          # actually roll back. `--to-revisions LATEST=0` cannot: after a deploy LATEST
+          # *is* the new revision, and gcloud refuses to send a service to zero traffic.
+          # An unready API therefore kept 100% of traffic while the step exited 1.
+          API_PREV="$(gcloud run services describe "${API_SERVICE}" --region "${REGION}" --format json \
+            | jq -r '[.status.traffic[]? | select(.percent == 100)][0].revisionName // empty')"
+          echo "API_PREV=${API_PREV}" >> "$GITHUB_ENV"
+          echo "rollback target: ${API_PREV:-<none, first deploy>}"
           gcloud run deploy "${API_SERVICE}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/api:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
@@ -378,6 +387,13 @@ jobs:
           test -n "${API_URL}" || { echo "no API URL resolved"; exit 1; }
           echo "web will proxy to ${API_URL}"
 
+          # Before the deploy, for the reason the API step records: after one, LATEST is
+          # the new revision and there is nothing to roll back TO. Resolving this in the
+          # verify step would hand the rollback the very revision it is replacing.
+          WEB_PREV="$(gcloud run services describe "${WEB_SERVICE}" --region "${REGION}" --format json \
+            | jq -r '[.status.traffic[]? | select(.percent == 100)][0].revisionName // empty')"
+          echo "WEB_PREV=${WEB_PREV}" >> "$GITHUB_ENV"
+
           gcloud run deploy "${WEB_SERVICE}" \
             --image "${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/web:${{ needs.build.outputs.image_tag }}" \
             --region "${REGION}" \
@@ -402,8 +418,13 @@ jobs:
           ready="$(curl -sS "${api_url}/readyz" || true)"
           echo "api readyz: ${ready}"
           if ! echo "${ready}" | grep -q '"status":"ready"'; then
-            echo "api is not ready — rolling back"
-            gcloud run services update-traffic "${API_SERVICE}" --region "${REGION}" --to-revisions LATEST=0 --quiet
+            if [ -n "${API_PREV:-}" ]; then
+              echo "api is not ready — rolling back to ${API_PREV}"
+              gcloud run services update-traffic "${API_SERVICE}" --region "${REGION}" \
+                --to-revisions "${API_PREV}=100" --quiet
+            else
+              echo "api is not ready, and there is no earlier revision to roll back to"
+            fi
             exit 1
           fi
           # The worker is private, so its readiness is Cloud Run's own Ready condition
@@ -423,5 +444,10 @@ jobs:
             sleep 6
           done
           echo "web never returned 200 — rolling back"
-          gcloud run services update-traffic "${WEB_SERVICE}" --region "${REGION}" --to-revisions LATEST=0 --quiet
+          if [ -n "${WEB_PREV:-}" ]; then
+            gcloud run services update-traffic "${WEB_SERVICE}" --region "${REGION}" \
+              --to-revisions "${WEB_PREV}=100" --quiet
+          else
+            echo "no earlier revision to roll back to"
+          fi
           exit 1

@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 __all__ = [
     "DEFAULT_LEASE_SECONDS",
     "DEFAULT_MAX_ATTEMPTS",
+    "WORKING",
     "FailureKind",
     "Job",
     "JobKind",
@@ -116,6 +117,14 @@ CLAIMABLE: Final = (JobState.PENDING, JobState.RETRY_SCHEDULED)
 
 #: States that mean the job is over, whatever the outcome.
 TERMINAL: Final = (JobState.COMPLETED, JobState.FAILED, JobState.DEAD_LETTER)
+
+#: States that mean a worker holds this row *now*: neither claimable nor finished. A
+#: process killed mid-job leaves one here until its lease expires, which is the only
+#: signal that it needs picking up again — so anything deciding "is there work left"
+#: has to count these, not just the claimable ones.
+WORKING: Final = tuple(
+    state for state in JobState if state not in TERMINAL and state not in CLAIMABLE
+)
 
 
 class FailureKind(StrEnum):
@@ -491,9 +500,7 @@ async def reclaim_expired_leases(
     mechanism rather than the open transaction.
     """
     selected = [kind.value for kind in (kinds or tuple(JobKind))]
-    working = [
-        state.value for state in JobState if state not in TERMINAL and state not in CLAIMABLE
-    ]
+    working = [state.value for state in WORKING]
 
     rows = (
         await session.execute(

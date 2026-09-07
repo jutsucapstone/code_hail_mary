@@ -1,0 +1,129 @@
+"""The shared JSON log formatter: one parseable line, whatever the record carries.
+
+Each test here is a defect that reached a deployed service. A quote in a message broke
+the line; a dict message became an unqueryable Python repr; `LOG_LEVEL=debug` raised at
+startup; and uvicorn's own loggers never went through any of it, so an exception
+escaping the ASGI app was logged as plain text outside the JSON stream.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+import pytest
+from jutsu_core.logs import UNBOUND, JsonFormatter, configure, level_from_env
+
+
+def record(msg: object = "hello", *args: object, name: str = "jutsu.test") -> logging.LogRecord:
+    return logging.LogRecord(name, logging.INFO, __file__, 1, msg, args or None, None)
+
+
+class TestOneParseableLine:
+    def test_a_plain_message_carries_level_logger_and_msg(self) -> None:
+        line = json.loads(JsonFormatter().format(record("kt.opened")))
+        assert line == {"level": "INFO", "logger": "jutsu.test", "msg": "kt.opened"}
+
+    def test_a_message_containing_quotes_and_newlines_still_parses(self) -> None:
+        """The old format string interpolated the message into JSON it had already
+        written, so this produced a line Cloud Logging could not parse."""
+        hostile = 'he said "no", then\nnewline \\ backslash'
+        line = json.loads(JsonFormatter().format(record(hostile)))
+        assert line["msg"] == hostile
+
+    def test_a_dict_message_becomes_queryable_fields(self) -> None:
+        """`logger.info("%s", {...})` is the convention everywhere in this codebase."""
+        line = json.loads(
+            JsonFormatter().format(record("%s", {"event": "drain_complete", "jobs": 4}))
+        )
+        assert line["event"] == "drain_complete"
+        assert line["jobs"] == 4
+        # The summary stays readable: `event` stands in for the message.
+        assert line["msg"] == "drain_complete"
+
+    def test_a_dict_without_an_event_keeps_the_rendered_message(self) -> None:
+        line = json.loads(JsonFormatter().format(record("%s", {"jobs": 1})))
+        assert line["jobs"] == 1
+        assert "jobs" in line["msg"]
+
+    def test_a_value_json_cannot_encode_renders_as_a_string(self) -> None:
+        import uuid
+
+        identifier = uuid.uuid4()
+        line = json.loads(JsonFormatter().format(record("%s", {"org_id": identifier})))
+        assert line["org_id"] == str(identifier)
+
+    def test_context_fields_render_as_a_dash_when_nothing_bound_them(self) -> None:
+        line = json.loads(JsonFormatter(context_fields=("request_id",)).format(record()))
+        assert line["request_id"] == UNBOUND
+
+
+class TestExceptions:
+    def test_a_traceback_is_a_json_string_field_not_a_second_line(self) -> None:
+        """`logging.Formatter` appends the traceback after the formatted record, which
+        put non-JSON text on the line following every error."""
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            import sys
+
+            entry = logging.LogRecord(
+                "jutsu.test", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
+            )
+        line = json.loads(JsonFormatter().format(entry))
+        assert line["error"] == "RuntimeError"
+        assert "RuntimeError: boom" in line["traceback"]
+
+
+class TestLevel:
+    def test_a_lowercase_level_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LOG_LEVEL", "debug")
+        assert level_from_env() == logging.DEBUG
+
+    def test_an_unknown_level_falls_back_rather_than_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`logging.basicConfig(level="verbose")` raises ValueError; a worker that did
+        that at lifespan start never became Ready."""
+        monkeypatch.setenv("LOG_LEVEL", "verbose")
+        assert level_from_env() == logging.INFO
+
+    def test_unset_is_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        assert level_from_env() == logging.INFO
+
+
+class TestConfigure:
+    def test_uvicorns_own_loggers_are_taken_over(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """uvicorn sets `propagate = False` and installs its own plain-text handler, so
+        an exception escaping the ASGI app bypassed every formatter configured here."""
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        noisy = logging.getLogger("uvicorn.error")
+        noisy.handlers = [logging.StreamHandler()]
+        noisy.propagate = False
+
+        root_handlers_before = logging.getLogger().handlers
+        try:
+            configure()
+            assert noisy.handlers == []
+            assert noisy.propagate is True
+            assert isinstance(logging.getLogger().handlers[0].formatter, JsonFormatter)
+        finally:
+            logging.getLogger().handlers = root_handlers_before
+
+    def test_filters_reach_the_handler(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        stamped: list[str] = []
+
+        class Stamp(logging.Filter):
+            def filter(self, entry: logging.LogRecord) -> bool:
+                stamped.append(entry.name)
+                return True
+
+        root_handlers_before = logging.getLogger().handlers
+        try:
+            handler = configure(filters=(Stamp(),))
+            handler.handle(record())
+            assert stamped == ["jutsu.test"]
+        finally:
+            logging.getLogger().handlers = root_handlers_before

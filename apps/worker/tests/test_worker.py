@@ -128,8 +128,24 @@ class TestDoorbellNameContract:
         return match.group(1)
 
     def test_the_name_the_api_rings_is_registered_here(self) -> None:
-        registered = {getattr(fn, "__name__", None) for fn in WorkerSettings.functions}
+        # `arq.func(...)` wraps the coroutine to carry settings (the drain sets
+        # `keep_result=0`), and the wrapper names itself `.name`, not `__name__`.
+        registered = {
+            getattr(fn, "name", None) or getattr(fn, "__name__", None)
+            for fn in WorkerSettings.functions
+        }
         assert self._drain_job_name() in registered
+
+    def test_the_drain_keeps_no_result(self) -> None:
+        """arq refuses an `_job_id` whose result key still exists — 3600 s by default —
+        so with a deterministic follow-up id every later follow-up for an organisation
+        was silently dropped for an hour after the first one ran."""
+        drain = next(
+            fn for fn in WorkerSettings.functions if getattr(fn, "name", None) == "drain_org_jobs"
+        )
+        # arq names the field `keep_result_s` on the wrapper; `keep_result` is the
+        # keyword that sets it.
+        assert drain.keep_result_s == 0  # type: ignore[attr-defined]
 
 
 class TestReaperSchedule:

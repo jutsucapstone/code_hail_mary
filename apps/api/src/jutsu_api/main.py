@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -21,9 +20,10 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from jutsu_core import InternalError, JutsuError, RateLimited, ValidationFailed
+from jutsu_core.logs import configure as configure_logging
 from jutsu_db.engine import ping as postgres_ping
 
-from jutsu_api.logging_context import RequestContextFilter, bind, clear
+from jutsu_api.logging_context import FIELDS, RequestContextFilter, bind, clear
 from jutsu_api.queue import transport as doorbell_transport
 from jutsu_api.routers import auth as auth_router
 from jutsu_api.routers import connections as connections_router
@@ -56,21 +56,15 @@ def _configure_logging() -> None:
     unrecognised falls back to INFO rather than raising — a typo in an env var must not
     take the service down, and must not silence it either.
     """
-    handler = logging.StreamHandler(sys.stdout)
     # The filter stamps request_id / org_id / user_id (opaque ids, never PII) from the
     # per-request context onto every record, whichever module emitted it, and the
     # formatter names them — see `logging_context`. Unbound fields render as "-".
-    handler.addFilter(RequestContextFilter())
-    handler.setFormatter(
-        logging.Formatter(
-            '{"level":"%(levelname)s","logger":"%(name)s","request_id":"%(request_id)s",'
-            '"org_id":"%(org_id)s","user_id":"%(user_id)s","msg":"%(message)s"}'
-        )
-    )
-    root = logging.getLogger()
-    root.handlers = [handler]
-    requested = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
-    root.setLevel(logging.getLevelNamesMapping().get(requested, logging.INFO))
+    #
+    # The formatter is shared with the worker (`jutsu_core.logs`) because both had the
+    # same two defects: a format string cannot escape the message it interpolates, so a
+    # quote in a message produced a line that is not JSON; and uvicorn's own loggers do
+    # not propagate, so its tracebacks went out as plain text beside the JSON stream.
+    configure_logging(context_fields=FIELDS, filters=(RequestContextFilter(),))
 
 
 def create_app() -> FastAPI:

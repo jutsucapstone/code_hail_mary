@@ -16,6 +16,15 @@ burst of rings inside one window collapses into a single dispatch and ALREADY_EX
 success. The window is short because Cloud Tasks tombstones a used name for about an
 hour after the task runs: a name without the window would ring once and then be refused
 for an hour, which is a doorbell that works exactly once (ADR 0017).
+
+**A task is scheduled from the end of its window, never from the ring.** That is the
+invariant coalescing rests on, and it is not obvious: with `schedule_time = now + delay`
+and a window longer than the delay, the task named for window *w* fires while *w* is
+still open, and every later ring in that window is answered ALREADY_EXISTS against a
+name Cloud Tasks has already tombstoned — reported as success, with no dispatch coming
+for the row that rang. Scheduling at `(w + 1) * window + delay` puts the dispatch after
+every ring the window can contain, so "already scheduled" is always true when it is
+claimed. The cost is bounded and small: at most `window + delay` seconds of latency.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from uuid import UUID
 __all__ = [
     "DEFAULT_DELAY_SECONDS",
     "DEFAULT_WINDOW_SECONDS",
+    "DISPATCH_DEADLINE_SECONDS",
     "ENV_DRAIN_URL",
     "ENV_QUEUE",
     "ENV_SERVICE_ACCOUNT",
@@ -60,6 +70,15 @@ DEFAULT_DELAY_SECONDS = 2
 DEFAULT_WINDOW_SECONDS = 5
 #: A request must not wait on the queue. The row is durable either way.
 _CREATE_TIMEOUT_S = 5.0
+
+#: How long Cloud Tasks waits for `/drain` before calling the attempt failed. Set on the
+#: task rather than left to the queue's default (600 s for an HTTP target), because a
+#: drain is bounded at 480 s of *starting* work and the last job it started runs on: one
+#: embedding job obeying five 120 s `Retry-After` hints is ~600 s by itself. 1800 s is
+#: the maximum an HTTP target accepts, and matches the worker's Cloud Run request
+#: timeout — under both, the queue would retry a drain that is merely slow, and two
+#: drains for one organisation would then race for the same leases.
+DISPATCH_DEADLINE_SECONDS = 1800
 
 
 class MisconfiguredDoorbell(RuntimeError):
@@ -160,10 +179,11 @@ class CloudTasksDoorbell:
         now: float,
     ) -> Any:
         """The task as Cloud Tasks will deliver it: a POST of `{"org_id"}` to the drain
-        URL, signed with an OIDC token for the runtime service account, scheduled past
-        the caller's commit, named so a burst inside one window is one dispatch."""
+        URL, signed with an OIDC token for the runtime service account, named so a burst
+        inside one window is one dispatch, and scheduled from the END of that window so
+        the dispatch cannot precede a ring it is supposed to cover."""
         from google.cloud import tasks_v2
-        from google.protobuf import timestamp_pb2
+        from google.protobuf import duration_pb2, timestamp_pb2
 
         request = tasks_v2.HttpRequest(
             http_method=tasks_v2.HttpMethod.POST,
@@ -175,11 +195,17 @@ class CloudTasksDoorbell:
                 audience=audience_for(self.drain_url),
             ),
         )
+        window_index = int(now // window_seconds)
         name = task_id(bucket, org_id, window_seconds=window_seconds, now=now)
+        # The end of this window, then the delay. Never `now + delay` — see the module
+        # docstring: that fires inside the window it is named for and tombstones the
+        # name while rings are still coalescing onto it.
+        scheduled = (window_index + 1) * window_seconds + delay_seconds
         return tasks_v2.Task(
             name=f"{self.queue}/tasks/{name}",
             http_request=request,
-            schedule_time=timestamp_pb2.Timestamp(seconds=int(now) + delay_seconds),
+            schedule_time=timestamp_pb2.Timestamp(seconds=scheduled),
+            dispatch_deadline=duration_pb2.Duration(seconds=DISPATCH_DEADLINE_SECONDS),
         )
 
     async def ring(
@@ -207,7 +233,20 @@ class CloudTasksDoorbell:
             creator = client if client is not None else await _shared_client()
             await creator.create_task(parent=self.queue, task=task, timeout=_CREATE_TIMEOUT_S)
         except google_exceptions.AlreadyExists:
-            # A ring inside this window is already scheduled; it will drain this too.
+            # A dispatch for this window is already scheduled, and it fires after the
+            # window closes, so it will drain what this ring is about. Logged rather
+            # than silent: coalescing and a lost doorbell look identical from the
+            # caller, and only this line tells them apart afterwards.
+            logger.info(
+                "%s",
+                {
+                    "event": "doorbell_coalesced",
+                    "transport": "cloud_tasks",
+                    "org_id": str(org_id),
+                    "bucket": bucket,
+                    "task": task.name.rsplit("/", 1)[-1],
+                },
+            )
             return True
         except google_exceptions.GoogleAPICallError as error:
             # The class, never the message: a Cloud Tasks error names resource paths

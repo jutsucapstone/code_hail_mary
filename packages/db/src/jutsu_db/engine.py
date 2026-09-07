@@ -66,6 +66,14 @@ def get_engine() -> AsyncEngine:
             # Set echo via env rather than a literal: SQL text can contain document
             # content, and §4.9 forbids that reaching logs in a deployed environment.
             echo=os.environ.get("SQL_ECHO") == "1",
+            # And the parameters never appear at all. A SQLAlchemy error renders the
+            # failing statement's bound values into its own message — for the documents
+            # INSERT that is the title, the author's address and 300 characters of the
+            # body — and that message reaches two places §4.9 forbids: `jobs.error`,
+            # which `record_failure` persists, and the traceback uvicorn logs when a
+            # drain raises. One flag closes both; nothing in this codebase debugs from
+            # logged parameter values, and `SQL_ECHO` still shows the statements.
+            hide_parameters=True,
         )
     return _engine
 

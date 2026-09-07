@@ -20,7 +20,7 @@ import uuid
 from datetime import timedelta
 from typing import Any, ClassVar
 
-from arq import cron
+from arq import cron, func
 from arq.connections import RedisSettings
 from jutsu_db import unscoped_session
 from jutsu_retrieval.client import VertexTransport
@@ -28,7 +28,7 @@ from jutsu_retrieval.config import get_embedding_settings
 from jutsu_retrieval.embeddings import Embedder
 from sqlalchemy import text
 
-from jutsu_worker.drain import drain_and_report, follow_up_delay
+from jutsu_worker.drain import drain_and_report
 from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.runner import (
     process_connector_sync,
@@ -123,6 +123,12 @@ async def extract_document_job(
     return result if isinstance(result, int) else None
 
 
+#: arq job ids for the three follow-ups, deterministic so a burst collapses into one
+#: each. `drain-more` rather than `drain-now` for the first: it is the name already in
+#: use, and renaming it would orphan whatever is queued across a deploy.
+_ARQ_FOLLOW_UP_IDS = {"now": "drain-more", "retry": "drain-retry", "lease": "drain-lease"}
+
+
 async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
     """Dispatch entry point for the per-org drain — the doorbell the API rings.
 
@@ -139,15 +145,21 @@ async def drain_org_jobs(ctx: dict[str, Any], org_id: str) -> dict[str, int]:
     report = await drain_and_report(uuid.UUID(org_id))
 
     redis = ctx.get("redis")
-    delay = follow_up_delay(report.follow_up)
-    if redis is not None and delay is not None:
-        job_id = f"drain-more:{org_id}" if report.follow_up == "now" else f"drain-retry:{org_id}"
-        await redis.enqueue_job(
+    delay = report.follow_up_seconds
+    if redis is not None and delay is not None and report.follow_up is not None:
+        job_id = f"{_ARQ_FOLLOW_UP_IDS[report.follow_up]}:{org_id}"
+        queued = await redis.enqueue_job(
             "drain_org_jobs",
             org_id,
             _defer_by=timedelta(seconds=delay),
             _job_id=job_id,
         )
+        if queued is None:
+            # arq returns None when that job id is already queued OR its result key is
+            # still around. `keep_result=0` below is what stops the second case from
+            # swallowing every follow-up for an hour; this line is how anyone would
+            # find out if it came back.
+            logger.info("%s", {"event": "follow_up_not_queued", "job_id": job_id})
     return report.counts
 
 
@@ -179,6 +191,11 @@ class WorkerSettings:
     """arq settings. Queue access is behind this one interface so the prod swap to
     Cloud Tasks (§5) touches nothing else."""
 
+    #: `keep_result=0` on the drain, and it is load-bearing rather than tidiness. The
+    #: follow-up is enqueued under a deterministic id (`drain-more:{org}`), and arq
+    #: refuses an id whose *result* key still exists — default 3600 s — so after one
+    #: follow-up ran, every later one for that organisation was silently dropped for an
+    #: hour. The drain's return value is observability; the job rows are the record.
     functions: ClassVar[list[object]] = [
         ping,
         ingest_source,
@@ -186,7 +203,7 @@ class WorkerSettings:
         embed_document,
         sync_connection,
         extract_document_job,
-        drain_org_jobs,
+        func(drain_org_jobs, keep_result=0),
     ]
 
     #: `run_at_startup` so a deploy clears whatever accumulated while nothing was

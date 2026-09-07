@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
+
+from jutsu_core.logs import configure as configure_logging
 
 from jutsu_worker.main import reap_expired_registrations
 
@@ -34,11 +35,7 @@ logger = logging.getLogger("jutsu.worker")
 
 def main() -> int:
     """Exit code is the job's result: Cloud Run retries a non-zero, and should."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
-        stream=sys.stdout,
-    )
+    configure_logging()
     try:
         removed = asyncio.run(reap_expired_registrations({}))
     except Exception:
