@@ -65,6 +65,15 @@ export function KtShell({ code, children }: { code: string; children: React.Reac
     staleTime: 0,
     gcTime: 0,
     retry: false,
+    // **Not on window focus.** This query is `POST /v1/kt/claim`, which spends the
+    // `KT_CLAIM` allowance — the anti-probe wall that turns a 32^8 code space into
+    // something no guess finishes, and which is deliberately small (ten a minute). This
+    // shell is a layout, so it does not remount as the recipient moves between tabs;
+    // the only thing that re-ran it was alt-tabbing, and eleven of those in a minute
+    // spent a wall meant for attackers on somebody reading their own handover, closing
+    // the whole console with a 429. A page load still re-checks, which is what §39 asks
+    // for.
+    refetchOnWindowFocus: false,
   });
 
   const router = useRouter();
@@ -154,16 +163,26 @@ export function KtShell({ code, children }: { code: string; children: React.Reac
       </header>
 
       <main id={MAIN_CONTENT_ID} className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
-        {claim.data ? (
-          <KtContext.Provider value={{ pkg: claim.data, code: claim.data.kt_code }}>
-            {children}
-          </KtContext.Provider>
-        ) : expired ? (
+        {/*
+          **The refusal is tested before the data, and the order is the whole point.**
+          TanStack keeps the last successful `data` through a failed refetch, so a
+          package revoked while somebody had it open kept rendering: the re-open 403'd,
+          `claim.error` was set, and `claim.data` still held the view from before. The
+          console went on showing names, decisions and citations derived from evidence
+          the recipient may no longer read — which is the one thing §39 and the KT trap
+          in CLAUDE.md exist to prevent. Reading `error` first means the next request
+          after a revocation closes the workspace, not the next cache eviction.
+        */}
+        {expired ? (
           <LoadingRegion label="Your session has expired. Sending you to sign in.">
             <Skeleton className="h-40" />
           </LoadingRegion>
         ) : claim.error ? (
           <KtRefusal error={claim.error} />
+        ) : claim.data ? (
+          <KtContext.Provider value={{ pkg: claim.data, code: claim.data.kt_code }}>
+            {children}
+          </KtContext.Provider>
         ) : (
           <LoadingRegion label="Opening the knowledge-transfer package.">
             <div className="flex flex-col gap-4">

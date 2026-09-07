@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
@@ -28,6 +28,7 @@ const subscribeNever = () => () => {};
 
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   // `false` on the server, `true` after hydration, with no setState-in-effect.
   const mounted = useSyncExternalStore(
     subscribeNever,
@@ -45,7 +46,7 @@ export function ThemeToggle({ className }: { className?: string }) {
         className,
       )}
     >
-      {OPTIONS.map(({ value, label, Icon }) => {
+      {OPTIONS.map(({ value, label, Icon }, index) => {
         const selected = mounted && theme === value;
         return (
           <button
@@ -55,9 +56,30 @@ export function ThemeToggle({ className }: { className?: string }) {
             aria-checked={selected}
             aria-label={label}
             title={`${label} theme`}
+            ref={(node) => {
+              buttons.current[index] = node;
+            }}
             // Keep exactly one tab stop for the group, as a radiogroup should.
             tabIndex={selected || (!mounted && value === "system") ? 0 : -1}
             onClick={() => setTheme(value)}
+            // **The arrow keys are not a nicety here, they are the only way in.**
+            // A roving tabindex gives the group one tab stop, so Tab reaches the
+            // selected option and nothing else. Without a key handler the other two
+            // options were unreachable by keyboard entirely — WCAG 2.1.1, on the
+            // control that decides whether the whole product is legible to someone who
+            // needs a dark or a light ground.
+            onKeyDown={(event) => {
+              const forward = event.key === "ArrowRight" || event.key === "ArrowDown";
+              const back = event.key === "ArrowLeft" || event.key === "ArrowUp";
+              if (!forward && !back) return;
+              event.preventDefault();
+              const step = forward ? 1 : -1;
+              const next = (index + step + OPTIONS.length) % OPTIONS.length;
+              // Selection follows focus, which is the radiogroup pattern: moving
+              // through the options previews each theme as it is reached.
+              setTheme(OPTIONS[next].value);
+              buttons.current[next]?.focus();
+            }}
             className={cn(
               "inline-flex size-7 items-center justify-center rounded-md transition-colors duration-200",
               "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",

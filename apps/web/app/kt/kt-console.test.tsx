@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -126,6 +126,36 @@ describe("the KT console shell", () => {
     expect(screen.queryByText("Workspace body")).not.toBeInTheDocument();
     // Never the role-permission sentence: a revoked package is not a rank problem.
     expect(screen.queryByText(/your role does not include/i)).not.toBeInTheDocument();
+  });
+
+  it("closes the workspace when a package is revoked while it is open", async () => {
+    // The regression this ordering exists for. TanStack keeps the last successful
+    // `data` through a failed refetch, so a shell that tested `claim.data` first went
+    // on rendering names, decisions and citations derived from evidence the recipient
+    // may no longer read — the exact thing §39 forbids. Refetching against a 403 puts
+    // the query into the one state that tells the two orderings apart: data AND error.
+    scriptFetch(
+      { status: 200, body: recipientPackage() },
+      {
+        status: 403,
+        body: envelope("permission_denied", "This Knowledge Transfer package has been revoked."),
+      },
+    );
+    const { client } = renderWithQuery(
+      <KtShell code="KT-JUTSU-AAAA0001">
+        <p>Workspace body</p>
+      </KtShell>,
+    );
+    expect(await screen.findByText("Workspace body")).toBeInTheDocument();
+
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["kt", "open", "KT-JUTSU-AAAA0001"] });
+    });
+
+    expect(
+      await screen.findByText("This Knowledge Transfer package has been revoked."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Workspace body")).not.toBeInTheDocument();
   });
 
   it("renders an expired package with the server's sentence", async () => {

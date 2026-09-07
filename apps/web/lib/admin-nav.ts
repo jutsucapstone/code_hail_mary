@@ -156,7 +156,11 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     slug: "roles",
     name: "Roles & permissions",
     description: "Who can do what, and why.",
-    permission: "member:assign_role",
+    // `org:read`, which is what the page and `GET /v1/roles` actually require —
+    // assigning a role needs `member:assign_role`, and the page gates that control
+    // separately. Gating the *entry* on the write permission hid a readable screen from
+    // the IT Admin, the Analyst and the Viewer, all of whom hold `org:read`.
+    permission: "org:read",
     status: "live",
     slice: "P2",
     group: "Access",

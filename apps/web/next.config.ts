@@ -33,20 +33,45 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   async headers() {
-    return [
+    const headers = [
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      { key: "X-Frame-Options", value: "SAMEORIGIN" },
       {
-        source: "/:path*",
-        headers: [
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "X-Frame-Options", value: "SAMEORIGIN" },
-          {
-            key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
-          },
-        ],
+        key: "Permissions-Policy",
+        value: "camera=(), microphone=(), geolocation=()",
       },
     ];
+
+    // **HSTS, and only on a production build.**
+    //
+    // This is the origin a browser actually talks to: every API call goes through the
+    // same-origin proxy at `/api/jutsu/*`, so the session cookie and every request the
+    // product makes are covered by the policy set here. The API's own `*.a.run.app`
+    // host is never a browser origin for a user, and it sits under a Google-owned
+    // domain where `includeSubDomains` would not be ours to assert.
+    //
+    // `includeSubDomains` is included on evidence rather than by reflex: the deployment
+    // has exactly two hostnames, `jutsu.co.in` (200) and `www.jutsu.co.in` (301), and
+    // both serve HTTPS — checked, not assumed. Everything is behind Cloud Run with
+    // Google-managed certificates, so a future subdomain arrives HTTPS-first too.
+    //
+    // `preload` is deliberately absent. It requires submission to a browser-shipped
+    // list and is slow and awkward to reverse, which makes it a decision about the
+    // domain rather than about this file.
+    //
+    // Guarded on the build so `next dev` over `http://localhost:3210` never sends it.
+    // A browser ignores the header on a plain-HTTP response anyway (RFC 6797 §7.2), so
+    // this is about not asserting a policy the dev server cannot honour rather than
+    // about a live risk.
+    if (process.env.NODE_ENV === "production") {
+      headers.push({
+        key: "Strict-Transport-Security",
+        value: "max-age=31536000; includeSubDomains",
+      });
+    }
+
+    return [{ source: "/:path*", headers }];
   },
 };
 

@@ -339,11 +339,14 @@ export function KtInsightsList({
 
 /** The chronological view: every in-scope claim type, date-ordered by the backend. */
 export function KtTimeline() {
-  const { code } = useKtPackage();
+  const { pkg, code } = useKtPackage();
 
   const insights = useQuery({
-    queryKey: ["kt", code, "insights", null],
-    queryFn: () => api.ktInsights(code, {}),
+    queryKey: ["kt", code, "insights", null, KT_INSIGHT_LIMIT],
+    // The same bound the knowledge tabs ask for. Without it the Timeline took the
+    // endpoint's default of 100 while rendering a `TruncationNote` that only fires
+    // at the limit — so it truncated silently and the notice could never appear.
+    queryFn: () => api.ktInsights(code, { limit: KT_INSIGHT_LIMIT }),
   });
 
   return (
@@ -360,9 +363,17 @@ export function KtTimeline() {
         </LoadingRegion>
       ) : insights.data.items.length === 0 ? (
         <EmptyState title="Nothing on the timeline yet">
+          {/*
+            The scope is named rather than assumed. The old copy promised "decisions,
+            meetings and project events ... as extraction runs", which is a promise a
+            package scoped to, say, responsibilities alone can never keep — extraction
+            will never produce the categories it was not scoped for, so the reader was
+            told to wait for something that was never coming.
+          */}
           <p>
-            The timeline is built from extracted decisions, meetings and project events
-            you are authorised to read. It fills as extraction runs over the
+            The timeline is built from dated events in this package&apos;s scope
+            {pkg.scope.length > 0 ? ` — ${pkg.scope.join(", ")}` : ""}, and only from
+            evidence you are authorised to read. It fills as extraction runs over the
             package&apos;s documents.
           </p>
         </EmptyState>
