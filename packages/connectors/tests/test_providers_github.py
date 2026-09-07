@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -204,3 +205,59 @@ class TestARepositoryWithNoReadme:
             with pytest.raises(ProviderApiError) as raised:
                 await connector.fetch("readme:acme/tooling")
         assert raised.value.transient is True
+
+
+class TestARevokedGrantIsNotAMissingReadme:
+    """The laundering this class exists to prevent.
+
+    `ProviderAuthError` subclasses `ProviderApiError` with `transient=False`, so a branch
+    that converted every non-transient error into `DocumentGone` turned a revoked grant
+    into "this repository has no README": the job completed, the connection went on
+    calling itself connected, and the employee was never asked to reconnect. Only a
+    genuine 404 may convert.
+    """
+
+    def _repo_then(self, status: int) -> Callable[[httpx.Request], httpx.Response]:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/acme/tooling":
+                return httpx.Response(200, json={"html_url": "https://github.com/acme/tooling"})
+            return httpx.Response(status, json={"message": "nope"})
+
+        return handler
+
+    async def test_a_403_stays_an_auth_error(self) -> None:
+        from jutsu_connectors.providers.base import DocumentGone, ProviderAuthError
+
+        connector, client = connector_over(self._repo_then(403))
+        async with client:
+            with pytest.raises(ProviderAuthError) as raised:
+                await connector.fetch("readme:acme/tooling")
+        assert not isinstance(raised.value, DocumentGone)
+
+    async def test_a_401_stays_an_auth_error(self) -> None:
+        from jutsu_connectors.providers.base import DocumentGone, ProviderAuthError
+
+        connector, client = connector_over(self._repo_then(401))
+        async with client:
+            with pytest.raises(ProviderAuthError) as raised:
+                await connector.fetch("readme:acme/tooling")
+        assert not isinstance(raised.value, DocumentGone)
+
+    async def test_another_permanent_4xx_is_not_an_absence_either(self) -> None:
+        """A 422 is the provider refusing the request, not saying the file is missing."""
+        from jutsu_connectors.providers.base import DocumentGone, ProviderApiError
+
+        connector, client = connector_over(self._repo_then(422))
+        async with client:
+            with pytest.raises(ProviderApiError) as raised:
+                await connector.fetch("readme:acme/tooling")
+        assert not isinstance(raised.value, DocumentGone)
+        assert raised.value.status == 422
+
+    async def test_only_a_404_converts(self) -> None:
+        from jutsu_connectors.providers.base import DocumentGone
+
+        connector, client = connector_over(self._repo_then(404))
+        async with client:
+            with pytest.raises(DocumentGone):
+                await connector.fetch("readme:acme/tooling")

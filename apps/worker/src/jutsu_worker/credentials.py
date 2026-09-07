@@ -76,13 +76,32 @@ class _StoredCredential:
 
 
 async def _load(session: AsyncSession, connection_id: UUID) -> _StoredCredential:
+    """The stored credential, with the row locked for the caller's transaction.
+
+    **`FOR UPDATE` is what makes refreshing safe, and it is not optional here.**
+    Reading, deciding the token is stale, POSTing a refresh and writing the result is
+    a read-modify-write, and Atlassian rotates its refresh token: the moment they
+    answer, the token used in the request is dead at their end. Two workers that read
+    the same row both refresh, and the second one presents a token the provider has
+    already burned — so a perfectly healthy Jira or Confluence connection is marked
+    `reauth_required` and the employee is asked to reconnect for nothing.
+
+    That is not a rare interleaving in this deployment: the drain queue dispatches
+    three at a time, the worker scales to three instances at one request each, and
+    the doorbell coalescing window is five seconds against a drain that runs for up
+    to eight minutes and re-rings itself. `ConnectionTokenSource`'s cache does not
+    help — it is per object and per process.
+
+    The lock is taken on `connection_credentials`, the row actually written, so a
+    second worker blocks here and then re-reads the token the first one stored.
+    """
     row = (
         await session.execute(
             text(
                 "SELECT c.provider, cc.access_token_enc, cc.refresh_token_enc, "
                 "cc.token_expires_at FROM connections c "
                 "JOIN connection_credentials cc ON cc.connection_id = c.id "
-                "WHERE c.id = :id"
+                "WHERE c.id = :id FOR UPDATE OF cc"
             ),
             {"id": connection_id},
         )
@@ -230,10 +249,22 @@ async def mark_reauth_required(session: AsyncSession, *, connection_id: UUID) ->
     `mark_sync_unavailable` — the job ledger is the authority, this is the owner-facing
     annotation.
     """
+    # **Only a connection that is still connected can need reconnecting.**
+    #
+    # A job outlives the click that disconnects it: the employee presses Disconnect,
+    # the credential is deleted, and an in-flight sync then fails to mint a token and
+    # lands here. Without this predicate the row is dragged back to
+    # `reauth_required` — so a connection the person deliberately removed reappears
+    # on their integrations page asking them to reconnect it, and the same happens to
+    # a connection an administrator revoked.
+    #
+    # `connecting` is excluded for the same reason: a fresh attempt in flight must
+    # not be overwritten by the failure of the previous grant.
     await session.execute(
         text(
             "UPDATE connections SET status = 'reauth_required', "
-            "last_error_kind = 'reauth_required', updated_at = now() WHERE id = :id"
+            "last_error_kind = 'reauth_required', updated_at = now() "
+            "WHERE id = :id AND status IN ('connected', 'error')"
         ),
         {"id": connection_id},
     )

@@ -127,7 +127,14 @@ class GitHubConnector:
             # do not have one. `list_since` cannot know in advance — the repositories
             # listing carries no such field — so the absence is discovered here and
             # is an ordinary outcome rather than a failure.
-            if error.transient:
+            #
+            # **Only a 404.** `ProviderAuthError` subclasses this exception with
+            # `transient=False`, so a `not error.transient` test alone swallowed a
+            # revoked grant and reported it as "this repository has no README" — the
+            # job completed, the connection went on calling itself connected, and the
+            # employee was never asked to reconnect. Every other 4xx is a real
+            # refusal and must keep its own classification.
+            if error.status != 404:
                 raise
             raise DocumentGone(f"{full_name} has no README") from error
         return RawDocument(

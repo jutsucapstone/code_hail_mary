@@ -105,10 +105,22 @@ class ProviderApiError(RuntimeError):
     and the request carries the token.
     """
 
-    def __init__(self, message: str, *, transient: bool, retry_after: float | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        transient: bool,
+        retry_after: float | None = None,
+        status: int | None = None,
+    ):
         super().__init__(message)
         self.transient = transient
         self.retry_after = retry_after
+        #: The HTTP status, when there was one. Carried as a field because callers
+        #: need to branch on it — GitHub has to tell a missing README (404) from a
+        #: revoked grant (403) — and parsing it back out of the message is the kind
+        #: of thing that works until somebody rewords the message.
+        self.status = status
 
 
 class ProviderAuthError(ProviderApiError):
@@ -223,6 +235,7 @@ class ProviderHttp:
             raise ProviderApiError(
                 f"the provider rejected the request (HTTP {response.status_code})",
                 transient=False,
+                status=response.status_code,
             )
         return response
 

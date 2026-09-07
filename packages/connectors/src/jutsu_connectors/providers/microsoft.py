@@ -271,6 +271,16 @@ class OneDriveConnector:
                 )
         raise ProviderApiError("unrecognised onedrive external id shape", transient=False)
 
+    async def aclose(self) -> None:
+        """Release the HTTP client.
+
+        `close_connector` looks this method up with `getattr` and silently does
+        nothing when it is absent — so a connector without one leaked its httpx
+        client, and with it a connection pool, once per job. Two of the nine
+        defined it; the rest inherited a no-op that read like cleanup.
+        """
+        await self._http.aclose()
+
     async def acls(self, external_id: str) -> list[AclEntry]:
         return owner_acl(self._context)
 
@@ -355,6 +365,10 @@ class TeamsConnector:
             self._topics[chat_id] = topic if isinstance(topic, str) and topic else None
         return self._topics[chat_id]
 
+    async def aclose(self) -> None:
+        """Release the HTTP client — see `OneDriveConnector.aclose`."""
+        await self._http.aclose()
+
     async def acls(self, external_id: str) -> list[AclEntry]:
         return owner_acl(self._context)
 
@@ -415,6 +429,10 @@ class SharePointConnector:
                     raw_metadata={"kind": "sharepoint_file", "site_id": site_id},
                 )
         raise ProviderApiError("unrecognised sharepoint external id shape", transient=False)
+
+    async def aclose(self) -> None:
+        """Release the HTTP client — see `OneDriveConnector.aclose`."""
+        await self._http.aclose()
 
     async def acls(self, external_id: str) -> list[AclEntry]:
         return owner_acl(self._context)

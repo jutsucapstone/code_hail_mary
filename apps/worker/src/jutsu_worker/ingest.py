@@ -411,10 +411,26 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
         raw = await connector.fetch(external_id)
     except DocumentGone:
         # Not a failure: the identifier was listed and the document is not there.
-        # The job completes having written nothing, so it stops occupying the
-        # administrator's failed-jobs view — and, because the key is left completed
-        # rather than failed, a later walk reopens it if the document appears.
+        #
+        # **`complete_job` is what makes that true.** Returning without it left the
+        # row in a working state holding a lease; the reaper moved it to
+        # `retry_scheduled`, the next drain claimed it, fetched the same missing
+        # document, and returned here again — an unbounded loop of provider calls,
+        # one per README-less repository, for ever. A terminal state is not a
+        # tidiness detail, it is the thing that ends the work.
+        #
+        # Completed rather than failed, so a later walk reopens the key if the
+        # document ever appears.
         await record_state(session, job_id=job.id, state=JobState.NORMALIZED)
+        await complete_job(session, job_id=job.id)
+        logger.info(
+            "%s",
+            {
+                "event": "document_absent",
+                "org_id": str(org_id),
+                "source_id": str(source_id),
+            },
+        )
         return IngestOutcome.ABSENT
     finally:
         await close_connector(connector)
