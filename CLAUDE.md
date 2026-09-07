@@ -424,6 +424,134 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   "gate PASSED" over any run with an unmeasured clause.
 
 
+### Scheduled sync and the clock (`sched` schema, `jutsu_worker.schedule`)
+
+- **No role in this deployment can enumerate organisations, and that is the whole design
+  problem.** `orgs` is `ENABLE` + `FORCE` RLS; `jutsu_app` sees zero rows without the GUC;
+  and production's migration role is `postgres` with `rolsuper = false` and
+  `rolbypassrls = false`, so it sees zero too — measured against production, not assumed.
+  Dev disagrees, because the Compose bootstrap role IS a superuser, so a migration that
+  reads `orgs` backfills twelve rows locally and nothing at all in production. Anything a
+  clock needs to know about tenants comes from an org-less index (`sched.org_sync_schedules`,
+  seeded from `auth.identity_memberships`), never from `orgs` (ADR 0018).
+- **`sched` is contained by privilege, not by RLS, because it holds no tenant content.**
+  `jutsu_app` has `USAGE` on the schema and `EXECUTE` on five functions and *no table
+  privilege at all* — a direct `SELECT` from a request path is "permission denied", which
+  a test asserts. `read_schedule()` and `write_schedule()` take no `org_id`: they read
+  `app.current_org_id`, so no call site can name a tenant. Adding a parameter there is the
+  regression, exactly as it would be in `scoped_acl_principals`.
+- **`due_organisations()` is the one deliberate cross-tenant read in the system.** Three
+  columns, no content, one caller. Same trust shape as `auth.reap_expired_registrations()`.
+  If a second caller appears, that is an ADR, not a convenience.
+- **A schedule is stored as an IANA name and resolved with `AT TIME ZONE`, never as an
+  offset.** An offset is wrong for half the year in any zone that observes daylight saving,
+  and "01:00" has to keep meaning 01:00. Test due-ness against a real zone (`Asia/Kolkata`
+  is +05:30, so 01:30 IST is 20:00 UTC the day before): a schedule tested only at UTC passes
+  with the timezone ignored entirely.
+- **`zoneinfo` reads the operating system's tz database, and Windows has none — nor does a
+  slim container.** `ZoneInfo("Asia/Kolkata")` raises `ZoneInfoNotFoundError` on this dev
+  machine. `tzdata` is therefore an explicit dependency of `apps/api`; removing it as
+  "unused" breaks every schedule read at runtime and nothing at import time.
+- **The nightly job shares `sync_now`'s idempotency key**, `connector.sync:{org}:{connection}`.
+  That is what stops a nightly run and a person pressing "Sync now" a second earlier from
+  producing two walks of one connection. A fourth enqueue site must use it too.
+
+### Provider connector traps found in the production pass
+
+- **A bounded listing loop must raise, not return.** Every connector pages inside
+  `for _ in range(_MAX_PAGES)`, and falling out of that loop used to be indistinguishable
+  from the provider having no more pages. `run_source_walk` then advanced
+  `last_sync_cursor` to the moment the walk *started*, so every document past the bound
+  was filtered out of the next listing by that very cursor and never seen again — a first
+  sync of a large mailbox indexed the newest few thousand messages, reported success, and
+  lost the rest. The loops now raise `ListingIncomplete`; the walk keeps what it
+  enqueued, leaves the cursor alone, and records `listing_complete: false`. **A walk that
+  hits the bound therefore re-lists the same window next time and does not advance** —
+  honest, but not yet resumable. Resuming a truncated first sync needs a backfill cursor
+  (a second, downward bound); it is not built, and that is the residue.
+- **The proven subject is a per-provider field, never a ladder.** `sub or account_id or
+  user_id or id` reads Zoom's `GET /v2/users/me` — which carries the employee's `id` and
+  the whole account's `account_id` — and picks the account. Every colleague then minted
+  the same `zoom:<account_id>` ACL principal: the first to connect received everyone's
+  recordings and the rest received none, because linking is fail-closed on conflict.
+  `Provider.subject_fields` declares it; the same key is correct for Atlassian, where
+  `account_id` IS the person, which is exactly why a shared ladder cannot work.
+- **`classify()` must name the connectors' own errors.** `ProviderAuthError` and
+  `ProviderApiError` used to fall through to `INTERNAL, retryable`, so a grant the
+  employee revoked at Google was recorded as an internal bug, retried five times, and
+  never flipped the connection to "reconnect". `mark_reauth_required` fires on
+  `ProviderAuthError` as well as `ReauthRequired` — the first is the provider refusing a
+  token, the second is the credential layer failing to mint one.
+- **`GET /rest/api/3/search` no longer exists.** Atlassian removed the offset-paged Jira
+  search along with `startAt` and `total`; `/rest/api/3/search/jql` is token-paged and
+  returns `isLast`/`nextPageToken` and no count. A connector still calling the old path
+  gets a permanent rejection on its first call and lists nothing, for ever.
+- **A document that is not there is not a failure.** Listing and fetching are two calls,
+  and GitHub forces the case: `/user/repos` says nothing about whether a repository has a
+  README, so most `readme:` identifiers 404 on fetch. `DocumentGone` -> `IngestOutcome.ABSENT`
+  completes the job having written nothing, instead of a permanently failed row per
+  README-less repository sitting in the administrator's Jobs view.
+- **Confluence's `_links.next` carries a cursor, and recomputing `start` is not the
+  same.** Deep offsets over a CQL search are documented as unstable, so a walk counting
+  its own way through can repeat a page or step over one — and a repeat is deduplicated
+  by content hash while a skip is simply absent. Only the link's *query* is replayed; the
+  path is rebuilt from the resolved cloud id, so a link pointing elsewhere cannot
+  redirect an authenticated call.
+- **Zoom's listing is filtered by whole DATES and a recording appears only once Zoom has
+  processed it.** With the window floored to the cursor's own date, a meeting whose
+  recording finished processing after the next walk fell in the seam and was never
+  listed. `_LATE_ARRIVAL_DAYS` re-opens the window a little; the cost is re-listing
+  identifiers whose idempotency keys already exist.
+
+### Logging and transport traps
+
+- **Cloud Logging reads `severity` and `message`, and nothing else is promoted.** The
+  formatter emitted `level` and `msg`, so every line — including a drain's traceback —
+  was ingested at DEFAULT: `severity>=ERROR` matched nothing and no alert built on it
+  could fire. Both spellings are emitted now; do not "tidy away" the duplicate.
+- **A Subject header may not contain a line break, and `MimeMessage` raises rather than
+  folding one.** Four subjects interpolate a customer-typed name and nothing on the way
+  in rejects a newline, so `"Acme\nCorp"` raised *inside the transport* — a 500 with no
+  mail sent, invisible in development because `ConsoleEmailSender` builds no MIME message
+  at all. `_render` collapses whitespace with `str.split()`, which covers U+0085, U+2028
+  and U+2029 that a `[\r\n]` filter would pass. `subject_name()` additionally bounds
+  what free text from the *public* registration endpoint can put in a subject.
+- **A `__Host-` cookie without `Secure` is rejected outright, deletions included.**
+  `delete_cookie(..., path="/")` takes Starlette's `secure=False`, so the browser threw
+  the deletion away and the cookie lived out its full lifetime. Pass
+  `secure=settings.cookies_secure` on every `__Host-` cookie, including when clearing it.
+  No test in this suite can see it: httpx's cookie jar implements no prefix rule.
+
+### The clock's own traps
+
+- **A lease has to be written in both places.** `sched.mark_started` has always carried
+  the takeover branch for an unfinished claim older than an hour, but
+  `sched.due_organisations` is the only thing that ever offers an organisation to it —
+  and it excluded anything started today, finished or not. The branch was unreachable
+  from its only caller, so a run killed mid-flight cost the whole local day in silence.
+  The two predicates must say the same thing.
+- **The schedule's default is 01:00 `Asia/Kolkata`, and it is a column default.** `UTC`
+  put an untouched tenant's first sync at 06:30 local — inside the working day, against
+  the accounts its people were using. `sync_schedule.DEFAULT_TIMEZONE` must match
+  `sched.org_sync_schedules.timezone`'s default; a test pins the two together.
+- **`sync:schedule_manage`, not `org:update`.** The clock's owners are Owner, Super
+  Admin, IT Admin and HR Admin; `org:update` does not reach HR, and widening it would
+  have granted HR the organisation's profile and its connection policies too. Gate the
+  form on the same permission the route requires, or an HR Admin reads a schedule they
+  may set and is given no control.
+
+### Postgres driver traps (asyncpg, via SQLAlchemy)
+
+- **One statement per `op.execute`.** asyncpg prepares every statement, and a prepared
+  statement cannot carry several commands — a migration with a multi-line `GRANT …; GRANT …;`
+  block fails with "cannot insert multiple commands into a prepared statement". Loop over a
+  tuple of statements instead.
+- **A parameter bound to two columns of different types cannot be deduced.** Reusing `:org`
+  for both `audit_log.org_id` (uuid) and `audit_log.resource_id` (text) raises
+  "inconsistent types deduced for parameter $1". Bind the same value twice under two names.
+- **A `timestamptz` parameter must be a `datetime`, not a string with a `CAST`.** asyncpg
+  encodes by Python type before Postgres ever sees the cast.
+
 ### Postgres / RLS traps (`packages/db`)
 
 - **A superuser bypasses RLS unconditionally, and `FORCE` does not change that** — FORCE only
@@ -544,6 +672,24 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   time window (`{bucket}-{org}-{window}`) so a burst coalesces AND the next ring has a
   fresh name. A deterministic name without the window rings exactly once, then is
   refused for an hour with ALREADY_EXISTS — which the code treats as success.
+- **A task is scheduled from the END of its window, never from the ring.** With
+  `schedule_time = now + delay` and a window longer than the delay, the task for window
+  *w* fires while *w* is still open; every later ring in that window is then ALREADY_EXISTS
+  against a tombstoned name, reported as success, with no dispatch coming for the row that
+  rang. `(w + 1) * window + delay` puts the dispatch after every ring the window can hold.
+- **A job left in a WORKING state by a killed worker is counted by neither leftover.**
+  It is not claimable (the lease has not lapsed) and not `retry_scheduled`, so a drain that
+  reported only those two re-rang for nothing and the row waited for an unrelated doorbell.
+  `DrainReport.leases_held` is the third one; it rings just after the earliest lease expires.
+- **SQLAlchemy renders bound parameters into its exception text**, and for the documents
+  INSERT that is the title, the author's address and 300 characters of the body — reaching
+  both `jobs.error` and the traceback uvicorn logs. `create_async_engine(hide_parameters=True)`
+  in `jutsu_db.engine` closes both; do not remove it to debug a query.
+- **uvicorn's loggers do not propagate.** `uvicorn.error` and `uvicorn.access` install their
+  own plain-text handlers, so an exception escaping an ASGI app was logged outside the JSON
+  stream whatever the app configured. `jutsu_core.logs.configure` takes them over by name.
+  It also merges a dict message (`logger.info("%s", {...})` — the convention here) into the
+  JSON object, so `jsonPayload.event` is a filter rather than a substring search.
 - **`claimable_now` counts rows in a claimable *state*, not work the drain can do.**
   `drain_org` skips `embed.document` entirely when no embedding provider is configured,
   so those rows stay `pending` — correct and documented — and a follow-up decision made
