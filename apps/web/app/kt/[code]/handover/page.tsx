@@ -130,10 +130,24 @@ function ExecutiveSummary({ code }: { code: string }) {
           </button>
         </>
       ) : composed.error ? (
-        <KtFailure
-          failure={classifyApiError(composed.error)}
-          onRetry={() => void composed.refetch()}
-        />
+        (() => {
+          const failure = classifyApiError(composed.error);
+          // A 503 here is the deployment saying it has no answer model configured, and
+          // the API's own sentence says exactly that. Rendering it through the generic
+          // error notice titled "That did not load" with a Try again button describes a
+          // transient fault and offers a control that cannot ever succeed — the two
+          // things §34 says a failure state must not do.
+          if (failure.kind === "unavailable") {
+            return (
+              <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
+                {failure.message}
+              </p>
+            );
+          }
+          return (
+            <KtFailure failure={failure} onRetry={() => void composed.refetch()} />
+          );
+        })()
       ) : composed.isPending ? (
         <p aria-live="polite" className="text-sm text-muted-foreground">
           Composing from the evidence you can read — this takes a moment.

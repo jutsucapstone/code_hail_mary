@@ -157,6 +157,8 @@ export type JobStats =
   paths["/v1/jobs/stats"]["get"]["responses"][200]["content"]["application/json"];
 export type SourcePage =
   paths["/v1/sources"]["get"]["responses"][200]["content"]["application/json"];
+type SourceSyncQueued =
+  paths["/v1/sources/{source_id}/sync"]["post"]["responses"][202]["content"]["application/json"];
 export type InvitationPage =
   paths["/v1/invitations"]["get"]["responses"][200]["content"]["application/json"];
 type RoleChangeBody =
@@ -185,6 +187,10 @@ type OrgRenameResponse =
   paths["/v1/orgs/current"]["patch"]["responses"][200]["content"]["application/json"];
 export type OrgOverview =
   paths["/v1/orgs/current/overview"]["get"]["responses"][200]["content"]["application/json"];
+export type SyncSchedule =
+  paths["/v1/orgs/current/sync-schedule"]["get"]["responses"][200]["content"]["application/json"];
+type SyncScheduleBody =
+  paths["/v1/orgs/current/sync-schedule"]["put"]["requestBody"]["content"]["application/json"];
 export type RoleCatalogue =
   paths["/v1/roles"]["get"]["responses"][200]["content"]["application/json"];
 
@@ -210,6 +216,8 @@ export type KtAdminPage =
 export type KtAdmin = KtAdminPage["items"][number];
 export type KtRecipient =
   paths["/v1/kt/claim"]["post"]["responses"][200]["content"]["application/json"];
+export type KtDocumentDetail =
+  paths["/v1/kt/{kt_code}/documents/{document_id}"]["get"]["responses"][200]["content"]["application/json"];
 export type KtDocumentPage =
   paths["/v1/kt/{kt_code}/documents"]["get"]["responses"][200]["content"]["application/json"];
 type KtCreateBody = paths["/v1/kt"]["post"]["requestBody"]["content"]["application/json"];
@@ -478,6 +486,19 @@ export const api = {
   /** Knowledge sources with sync state. Requires `integration:read`. */
   sources: () => call<SourcePage>("/v1/sources", { method: "GET" }),
 
+  /**
+   * Queue a walk of one source into the durable job queue. Requires
+   * `integration:connect` — reading a source's health and acting on it are separate
+   * privileges, so an Analyst keeps the watch and cannot press this.
+   *
+   * Returns the job that will actually run: clicking twice while one is queued names
+   * the same row rather than starting a second walk.
+   */
+  resyncSource: (sourceId: string) =>
+    call<SourceSyncQueued>(`/v1/sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+    }),
+
   /** Every invitation and what happened to it. Requires `member:invite`. */
   invitations: (params: { cursor?: string | null } = {}) => {
     const search = new URLSearchParams();
@@ -537,6 +558,28 @@ export const api = {
 
   /** Dashboard counts, each a real aggregate. Requires `org:read`. */
   overview: () => call<OrgOverview>("/v1/orgs/current/overview", { method: "GET" }),
+
+  /**
+   * When this organisation's connected providers are re-read (ADR 0018).
+   *
+   * Requires `integration:self_manage`, which every role holds: an employee who can
+   * connect a tool is entitled to know when it will be read again. The run history —
+   * `last_started_at` and the four fields beside it — arrives as **nulls** for a caller
+   * without `org:read`, so a surface must not read a null there as "it has never run".
+   */
+  syncSchedule: () => call<SyncSchedule>("/v1/orgs/current/sync-schedule", { method: "GET" }),
+
+  /**
+   * Set the schedule. Requires `org:update`. The body carries the whole schedule, not a
+   * patch, and nothing else — the endpoint rejects unknown fields outright. A timezone
+   * the server does not recognise comes back as a 422 naming the zone, which the caller
+   * is expected to show rather than translate.
+   */
+  updateSyncSchedule: (body: SyncScheduleBody) =>
+    call<SyncSchedule>("/v1/orgs/current/sync-schedule", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 
   /**
    * The readiness probe. Public on the API itself — the platform polls it with no
@@ -651,6 +694,19 @@ export const api = {
     }),
 
   /** Documents in the package window the RECIPIENT may already read (their own ACL). */
+  /** One document in the package window the recipient may read, as ordered masked
+   *  chunks. A document outside the window, or one their own ACL does not admit, is the
+   *  same 404 as one that does not exist — the server never distinguishes them. */
+  ktDocument: (ktCode: string, documentId: string, params: { fromOrdinal?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.fromOrdinal) search.set("from_ordinal", String(params.fromOrdinal));
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtDocumentDetail>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/documents/${encodeURIComponent(documentId)}${suffix}`,
+      { method: "GET" },
+    );
+  },
+
   ktDocuments: (ktCode: string, params: { cursor?: string | null } = {}) => {
     const search = new URLSearchParams();
     if (params.cursor) search.set("cursor", params.cursor);
@@ -685,9 +741,13 @@ export const api = {
    * Extracted, quote-gated claims the recipient may read. `type` narrows to one
    * claim type; omitted, every in-scope type arrives date-ordered — the timeline.
    */
-  ktInsights: (ktCode: string, params: { type?: string | null } = {}) => {
+  ktInsights: (
+    ktCode: string,
+    params: { type?: string | null; limit?: number } = {},
+  ) => {
     const search = new URLSearchParams();
     if (params.type) search.set("type", params.type);
+    if (params.limit) search.set("limit", String(params.limit));
     const suffix = search.size ? `?${search}` : "";
     return call<KtInsights>(
       `/v1/kt/${encodeURIComponent(ktCode)}/insights${suffix}`,

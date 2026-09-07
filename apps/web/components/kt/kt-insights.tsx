@@ -224,6 +224,35 @@ function InsightCard({
   );
 }
 
+/**
+ * The most the insights endpoint will return in one call.
+ *
+ * The list used to take the endpoint's default of 100 while the Overview beside it
+ * showed uncapped `GROUP BY` counts — so a package with 240 decisions said 240 in one
+ * panel and showed 100 in the other, with nothing on screen accounting for the
+ * difference. Asking for the endpoint's maximum shrinks the gap; `TruncationNote` is
+ * what stops the remaining gap being silent.
+ */
+const KT_INSIGHT_LIMIT = 200;
+
+/**
+ * Says so when a list is showing everything it was given and there is more.
+ *
+ * A full page is the only signal available: the endpoint returns no total and no
+ * cursor. That makes this honest rather than precise — it claims there may be more,
+ * never how much more — and it is the difference between a reader who knows to narrow
+ * the tab and one who believes they have read everything.
+ */
+function TruncationNote({ shown }: { shown: number }) {
+  if (shown < KT_INSIGHT_LIMIT) return null;
+  return (
+    <p className="text-pretty text-xs leading-relaxed text-muted-foreground">
+      Showing the first {KT_INSIGHT_LIMIT}. This package has more than fit in one
+      view — the counts on Overview are the complete figures.
+    </p>
+  );
+}
+
 export function KtInsightsList({
   claimType,
   title,
@@ -239,8 +268,8 @@ export function KtInsightsList({
   const inScope = claimType === null || (category !== null && pkg.scope.includes(category));
 
   const insights = useQuery({
-    queryKey: ["kt", code, "insights", claimType],
-    queryFn: () => api.ktInsights(code, { type: claimType }),
+    queryKey: ["kt", code, "insights", claimType, KT_INSIGHT_LIMIT],
+    queryFn: () => api.ktInsights(code, { type: claimType, limit: KT_INSIGHT_LIMIT }),
     enabled: inScope,
   });
   // One request for the whole list; each card is handed its own mark. A failure here
@@ -301,6 +330,7 @@ export function KtInsightsList({
               />
             ))}
           </ul>
+          <TruncationNote shown={insights.data.items.length} />
         </>
       )}
     </div>
@@ -337,6 +367,7 @@ export function KtTimeline() {
           </p>
         </EmptyState>
       ) : (
+        <>
         <ol className="relative flex flex-col gap-5 border-l border-hairline pl-6">
           {insights.data.items.map((insight) => (
             <li key={insight.id} className="relative">
@@ -359,6 +390,8 @@ export function KtTimeline() {
             </li>
           ))}
         </ol>
+        <TruncationNote shown={insights.data.items.length} />
+        </>
       )}
     </div>
   );

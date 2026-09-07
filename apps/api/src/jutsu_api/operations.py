@@ -17,11 +17,18 @@ organisation, changing a member's role). The read queries share three rules:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ValidationFailed
+from jutsu_core.errors import (
+    Conflict,
+    NotFound,
+    PermissionDenied,
+    ServiceUnavailable,
+    ValidationFailed,
+)
 from jutsu_core.rbac import Role, outranks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +48,7 @@ __all__ = [
     "org_overview",
     "read_job_stats",
     "rename_organisation",
+    "request_source_sync",
 ]
 
 
@@ -294,7 +302,20 @@ async def read_job_stats(session: AsyncSession) -> JobStats:
 @dataclass(frozen=True, slots=True)
 class SourceRow:
     id: UUID
+    #: The ACL namespace, which is NOT the provider: all four Google products are
+    #: `gmail` and the three Microsoft ones are `m365`. Kept because the ACL
+    #: namespace is a real fact about the row, but never the thing to show alone.
     system: str
+    #: The provider registry id from `config_json->>'provider'` — `google_drive`,
+    #: `gmail`, `jira` — or None for a local source, which has no provider. Without
+    #: it an administrator looking at four rows reading "gmail" cannot tell which is
+    #: Drive and which is Calendar, and a Re-sync button beside them names the wrong
+    #: thing.
+    provider: str | None
+    #: Whose account this source reads, as the provider labelled it at connect time
+    #: (an address or a login). None for a local source or a connection since
+    #: deleted. It is what distinguishes two rows for the same provider.
+    account_label: str | None
     status: str
     last_sync_at: datetime | None
     #: Current document versions only — superseded versions are history, not inventory.
@@ -320,6 +341,7 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
         await session.execute(
             text(
                 "SELECT s.id, s.system, s.status, s.last_sync_at, s.stats_json, "
+                "s.config_json->>'provider' AS provider, c.account_label, "
                 "count(d.id) FILTER (WHERE d.superseded_by IS NULL) AS document_count, "
                 # Document jobs carry deterministic keys prefixed by their source, which
                 # is what makes this join possible without a source_id column on jobs.
@@ -333,7 +355,9 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
                 " 'ingest.document:' || s.org_id || ':' || s.id || ':%' "
                 " AND j.state IN ('failed', 'dead_letter')) AS jobs_failed "
                 "FROM sources s LEFT JOIN documents d ON d.source_id = s.id "
-                "GROUP BY s.id, s.system, s.status, s.last_sync_at, s.stats_json "
+                "LEFT JOIN connections c ON c.id = (s.config_json->>'connection_id')::uuid "
+                "GROUP BY s.id, s.system, s.status, s.last_sync_at, s.stats_json, "
+                "c.account_label "
                 "ORDER BY s.system, s.id"
             )
         )
@@ -342,6 +366,8 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
         SourceRow(
             id=r.id,
             system=r.system,
+            provider=r.provider,
+            account_label=r.account_label,
             status=r.status,
             last_sync_at=r.last_sync_at,
             document_count=r.document_count,
@@ -352,6 +378,107 @@ async def list_sources(session: AsyncSession) -> list[SourceRow]:
         )
         for r in rows
     ]
+
+
+#: The worker's `source_job_key` — one walk per source, org-qualified. Duplicated as a
+#: literal rather than imported because `apps/api` and `apps/worker` are separate
+#: applications and neither may depend on the other; `test_the_key_is_the_workers_own`
+#: imports the worker's function and asserts the two spell the same string, so a change
+#: on either side fails a test instead of quietly enqueueing a row nothing claims.
+_SOURCE_JOB_KIND = "ingest.source"
+
+
+async def request_source_sync(
+    session: AsyncSession, *, org_id: UUID, actor_user_id: UUID, source_id: UUID
+) -> UUID:
+    """Queue a walk of one knowledge source, and return the id of the row that will run it.
+
+    An administrator watching a stalled source could read its counters and do nothing
+    about them. This is the act: a real row in the durable queue the worker already
+    drains (`ingest.source`), followed by a doorbell at the call site. Nothing here
+    fetches, and nothing here touches `sources.status` — the worker owns that column, and
+    writing "syncing" from the API would put a state on the page that nothing ever clears
+    (§4.11: no faked state behind a surface).
+
+    Three properties, all inherited from `connectors.sync_now`:
+
+    * **A source in another tenant is a 404, never a 403.** The lookup carries no
+      `org_id` predicate: row-level security supplies the tenant, so another
+      organisation's id simply finds nothing, and the refusal cannot distinguish "not
+      yours" from "not real". A 403 here would confirm that the id exists.
+    * **One pending walk per source.** The idempotency key is the source's identity, so
+      a second click while a walk is queued or running returns the id of the job already
+      doing the work rather than enqueueing a rival that would race it on the cursor.
+    * **A finished walk is reopened, never duplicated.** Including a failed one — the
+      infinite-retry loop that makes `reopen_completed_job` refuse failures cannot happen
+      when a person's click is the loop, and an administrator who has fixed the source
+      needs some way to say so.
+    """
+    exists = (
+        await session.execute(
+            text("SELECT 1 FROM sources WHERE id = :id"),
+            {"id": source_id},
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        raise NotFound("That knowledge source was not found.")
+
+    key = f"{_SOURCE_JOB_KIND}:{org_id}:{source_id}"
+    inserted = (
+        await session.execute(
+            text(
+                "INSERT INTO jobs (id, org_id, kind, state, idempotency_key, payload_json) "
+                "VALUES (:id, :org, :kind, 'pending', :key, cast(:payload AS jsonb)) "
+                "ON CONFLICT (idempotency_key) DO NOTHING RETURNING id"
+            ),
+            {
+                "id": uuid4(),
+                "org": str(org_id),
+                "kind": _SOURCE_JOB_KIND,
+                "key": key,
+                "payload": json.dumps({"source_id": str(source_id)}),
+            },
+        )
+    ).first()
+    if inserted is not None:
+        job_id = UUID(str(inserted.id))
+    else:
+        reopened = (
+            await session.execute(
+                text(
+                    "UPDATE jobs SET state = 'pending', attempts = 0, locked_until = NULL, "
+                    "next_attempt_at = NULL, error = NULL, failure_kind = NULL, "
+                    "updated_at = now() "
+                    "WHERE idempotency_key = :key "
+                    "AND state IN ('completed', 'failed', 'dead_letter') "
+                    "RETURNING id"
+                ),
+                {"key": key},
+            )
+        ).first()
+        if reopened is not None:
+            job_id = UUID(str(reopened.id))
+        else:
+            # Queued or in flight: that job IS this re-sync, so name it rather than
+            # pretending a second one was created.
+            existing = (
+                await session.execute(
+                    text("SELECT id FROM jobs WHERE idempotency_key = :key"), {"key": key}
+                )
+            ).first()
+            if existing is None:  # pragma: no cover - insert/update/select race
+                raise ServiceUnavailable("The sync queue is briefly contended. Try again.")
+            job_id = UUID(str(existing.id))
+
+    await session.execute(
+        text(
+            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+            "resource_id, outcome) "
+            "VALUES (:org, :actor, 'user', 'source.sync_requested', 'source', :rid, 'success')"
+        ),
+        {"org": str(org_id), "actor": str(actor_user_id), "rid": str(source_id)},
+    )
+    return job_id
 
 
 # ----------------------------------------------------------------------- invitations

@@ -6,7 +6,7 @@ import AuditPage from "@/app/admin/audit/page";
 import EmployeesPage from "@/app/admin/employees/page";
 import HealthPage from "@/app/admin/health/page";
 import SettingsPage from "@/app/admin/settings/page";
-import { calledMethod, calledUrl, callIndexFor, capabilities, envelope, scriptFetch, sentBody, type Json } from "@/test-support/api";
+import { calledMethod, calledUrl, callIndexFor, capabilities, envelope, routeFetch, scriptFetch, sentBody, type Json, type RoutedResponse } from "@/test-support/api";
 import { renderWithQuery } from "@/test-support/render";
 
 /**
@@ -125,6 +125,32 @@ describe("audit page", () => {
 });
 
 describe("settings page", () => {
+  /**
+   * Routed rather than positional: the page also reads the nightly sync schedule at
+   * mount, and effects flush children before parents, so which of the two GETs reaches
+   * `fetch` first is React's business. The schedule route is listed FIRST because
+   * `/v1/orgs/current` is a prefix of `/v1/orgs/current/sync-schedule` and the broader
+   * match would otherwise answer it. The schedule's own behaviour is covered in
+   * `app/admin/settings/page.test.tsx`.
+   */
+  function scheduleRoute(): RoutedResponse {
+    return {
+      match: "/v1/orgs/current/sync-schedule",
+      status: 200,
+      body: {
+        timezone: "Asia/Kolkata",
+        hour_local: 1,
+        enabled: true,
+        next_sync_at: "2026-09-08T19:30:00Z",
+        last_started_at: null,
+        last_finished_at: null,
+        last_outcome: null,
+        last_connections: null,
+        last_enqueued: null,
+      },
+    };
+  }
+
   function orgProfile(): Json {
     return {
       id: "55555555-5555-4555-8555-555555555555",
@@ -137,50 +163,61 @@ describe("settings page", () => {
     };
   }
 
+  function orgRoute(body: Json = orgProfile()): RoutedResponse {
+    return { match: "/v1/orgs/current", status: 200, body };
+  }
+
   it("renames through the API and not through local state", async () => {
-    const fetchMock = scriptFetch(
-      { status: 200, body: orgProfile() },
-      { status: 200, body: { name: "Northwind Industries" } },
-      { status: 200, body: { ...orgProfile(), name: "Northwind Industries" } },
+    const fetchMock = routeFetch(
+      scheduleRoute(),
+      orgRoute(),
+      orgRoute({ name: "Northwind Industries" }),
+      orgRoute({ ...orgProfile(), name: "Northwind Industries" }),
     );
     renderWithQuery(<SettingsPage />);
 
     const input = await screen.findByLabelText(/organisation name/i);
     await userEvent.clear(input);
     await userEvent.type(input, "Northwind Industries");
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
-    expect(calledUrl(fetchMock, 1)).toBe("/api/jutsu/v1/orgs/current");
-    expect(calledMethod(fetchMock, 1)).toBe("PATCH");
-    expect(sentBody(fetchMock, 1)).toEqual({ name: "Northwind Industries" });
+    // Both mount-time GETs are issued before anything is typed, so the mutation is the
+    // third call whichever order they went out in.
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(calledUrl(fetchMock, 2)).toBe("/api/jutsu/v1/orgs/current");
+    expect(calledMethod(fetchMock, 2)).toBe("PATCH");
+    expect(sentBody(fetchMock, 2)).toEqual({ name: "Northwind Industries" });
   });
 
   it("shows the API's refusal instead of swallowing it", async () => {
-    scriptFetch(
-      { status: 200, body: orgProfile() },
-      { status: 422, body: envelope("validation_failed", "The organisation needs a name.") },
-    );
+    routeFetch(scheduleRoute(), orgRoute(), {
+      match: "/v1/orgs/current",
+      status: 422,
+      body: envelope("validation_failed", "The organisation needs a name."),
+    });
     renderWithQuery(<SettingsPage />);
 
     const input = await screen.findByLabelText(/organisation name/i);
     await userEvent.clear(input);
     await userEvent.type(input, "x");
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(await screen.findByText(/needs a name/i)).toBeInTheDocument();
   });
 
-  it("denies without org:update", () => {
+  it("denies without org:update", async () => {
     caps.current = capabilities({ permissions: ["org:read", "profile:self_read"] });
-    scriptFetch();
+    routeFetch(scheduleRoute());
     renderWithQuery(<SettingsPage />);
 
     expect(screen.getByRole("heading", { name: /do not have access/i })).toBeInTheDocument();
+    // The sync schedule below the denial is readable by every role; awaiting it also
+    // settles the query inside the test rather than after it.
+    expect(await screen.findByText(/^Runs at$/)).toBeInTheDocument();
   });
 
   it("renders the domain as fixed fact, never as a field", async () => {
-    scriptFetch({ status: 200, body: orgProfile() });
+    routeFetch(scheduleRoute(), orgRoute());
     renderWithQuery(<SettingsPage />);
 
     expect(await screen.findByText("northwind.example")).toBeInTheDocument();

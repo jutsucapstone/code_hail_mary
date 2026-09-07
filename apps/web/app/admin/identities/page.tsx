@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { SourceIdentities } from "@/components/admin/source-identities";
@@ -40,15 +40,28 @@ export default function IdentitiesPage() {
   // Search is server-side for the same reason it is on the employees page: one fetched
   // page of 25 is not the organisation, and a client-side filter over it would say
   // "nobody" while the person sat on page two.
+  // **A response is only allowed to win if it is still the latest one asked for.**
+  //
+  // The search box is not debounced, so every keystroke starts a request and they
+  // resolve in whatever order the network returns them. Typing `ada` fast could leave
+  // the page showing the results for `ad`, indefinitely — the wrong list, with no
+  // spinner and nothing to retry, because as far as the page is concerned the request
+  // it made succeeded. The counter is a ref rather than state precisely because
+  // bumping it must not itself cause a render.
+  const latestRequest = useRef(0);
+
   const load = useCallback((search: string) => {
+    const ticket = ++latestRequest.current;
     api
       .employees({ q: search || null })
       .then((page) => {
+        if (ticket !== latestRequest.current) return;
         setEmployees(page.items);
         setSelected((current) => current ?? page.items[0] ?? null);
         setFailure(null);
       })
       .catch((error: unknown) => {
+        if (ticket !== latestRequest.current) return;
         setEmployees([]);
         setFailure({
           message: error instanceof ApiError ? error.message : "That did not load.",

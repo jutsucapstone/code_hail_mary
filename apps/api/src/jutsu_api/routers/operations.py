@@ -1,14 +1,18 @@
 """Operational surfaces: the audit trail, the job queue, and knowledge sources.
 
-Three read-only routers' worth of endpoints in one file, because they share a shape:
-org-scoped lists over tables the ingestion and identity slices write, paginated by
-keyset, gated by the permission the admin console's navigation already names for them.
+Three routers' worth of endpoints in one file, because they share a shape: org-scoped
+lists over tables the ingestion and identity slices write, paginated by keyset, gated by
+the permission the admin console's navigation already names for them.
 
 Permissions differ deliberately:
 
-  GET /v1/audit    audit:read        the trail names people and actions
-  GET /v1/jobs     org:read          queue state is organisational telemetry
-  GET /v1/sources  integration:read  connector state is the integration surface
+  GET  /v1/audit               audit:read           the trail names people and actions
+  GET  /v1/jobs                org:read             queue state is organisational telemetry
+  GET  /v1/sources             integration:read     connector state is the integration surface
+  POST /v1/sources/{id}/sync   integration:connect  re-running ingestion is an integration act
+
+The one write here is the last line: reading a source's health and *acting* on it are
+separate privileges, so an Analyst keeps the watch and the IT Admin keeps the button.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, status
 from jutsu_core.rbac import Permission, Role, role_label
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -29,6 +33,7 @@ from jutsu_api.operations import (
     list_jobs,
     list_sources,
     read_job_stats,
+    request_source_sync,
 )
 from jutsu_api.queue import ring_doorbell
 from jutsu_api.security import GuardedAPIRoute, requires
@@ -77,7 +82,14 @@ class JobStatsOut(BaseModel):
 
 class SourceEntry(BaseModel):
     id: UUID
+    #: The ACL namespace. Four Google products share `gmail` and three Microsoft ones
+    #: share `m365`, so this identifies a family, never a source.
     system: str
+    #: The provider registry id, or None for a local source. This is what a person
+    #: recognises — "Google Drive", not "gmail".
+    provider: str | None
+    #: Whose account it reads, as the provider labelled it. None for a local source.
+    account_label: str | None
     status: str
     last_sync_at: datetime | None
     document_count: int
@@ -89,6 +101,12 @@ class SourceEntry(BaseModel):
 
 class SourcePageOut(BaseModel):
     items: list[SourceEntry]
+
+
+class SourceSyncQueued(BaseModel):
+    #: The row that will actually run — never a fresh id that names nothing, so the Jobs
+    #: page can be asked about it.
+    job_id: UUID
 
 
 @router.get("/audit")
@@ -171,6 +189,31 @@ async def read_sources(principal: CurrentPrincipal, session: Db) -> SourcePageOu
     """
     rows = await list_sources(session)
     return SourcePageOut(items=[SourceEntry(**asdict(row)) for row in rows])
+
+
+@router.post("/sources/{source_id}/sync", status_code=status.HTTP_202_ACCEPTED)
+@requires(Permission.INTEGRATION_CONNECT)
+async def resync_source(
+    source_id: UUID, principal: CurrentPrincipal, session: Db
+) -> SourceSyncQueued:
+    """Re-run ingestion for one source. 202, because the walk happens elsewhere.
+
+    Gated on `integration:connect` rather than on `integration:read`: an Analyst may
+    watch a stalled source, and only the roles that configure connectors may act on one.
+    A source belonging to another organisation is a 404 — the service never asks whose
+    it is, and RLS answers that question by finding nothing.
+    """
+    job_id = await request_source_sync(
+        session,
+        org_id=principal.org_id,
+        actor_user_id=principal.user_id,
+        source_id=source_id,
+    )
+    # Wake the worker for this organisation. Best-effort by contract: the job row is
+    # durable, and the message is deferred past this request's commit so the drain
+    # cannot arrive before the row it is coming for.
+    await ring_doorbell(principal.org_id)
+    return SourceSyncQueued(job_id=job_id)
 
 
 class RoleDescription(BaseModel):

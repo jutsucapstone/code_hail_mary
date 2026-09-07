@@ -344,6 +344,224 @@ class TestSourcesEndpoint:
         assert other["jobs_completed"] == 0
 
 
+async def add_source(
+    session: AsyncSession, *, org_id: str, source_id: uuid.UUID, system: str = "local"
+) -> None:
+    """Write a source the way a connector would, under that organisation's scope."""
+    await session.execute(
+        text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+    )
+    await session.execute(
+        text(
+            "INSERT INTO sources (id, org_id, system, config_json, status) "
+            "VALUES (:id, :org, CAST(:system AS source_system), '{}'::jsonb, 'idle')"
+        ),
+        {"id": source_id, "org": org_id, "system": system},
+    )
+    await session.commit()
+
+
+class TestSourceResync:
+    """Re-running ingestion for one source, from the admin console.
+
+    The counters were readable before this and nothing on any screen could act on them.
+    What these pin is that the act is a real durable row, that clicking twice is not two
+    walks, and that the button reaches exactly one organisation's sources.
+    """
+
+    @pytest.fixture
+    def rung(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        """Record doorbell rings rather than publishing to Redis from a test."""
+        calls: list[object] = []
+
+        async def _record(org_id: object) -> bool:
+            calls.append(org_id)
+            return True
+
+        monkeypatch.setattr("jutsu_api.routers.operations.ring_doorbell", _record)
+        return calls
+
+    async def test_one_click_enqueues_one_walk_and_rings_the_doorbell(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        source_id = uuid.uuid4()
+        await add_source(db_session, org_id=org_id, source_id=source_id)
+
+        response = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+        assert response.status_code == 202, response.text
+
+        row = (
+            await inspector.execute(
+                text("SELECT id::text, state, payload_json FROM jobs WHERE kind = 'ingest.source'")
+            )
+        ).one()
+        assert row.id == response.json()["job_id"], "the reported id names the row that will run"
+        assert row.state == "pending"
+        # `process_source` reads this key; a payload the walk cannot parse is a job that
+        # only fails once a worker claims it.
+        assert row.payload_json["source_id"] == str(source_id)
+        assert len(rung) == 1
+
+    async def test_the_key_is_the_workers_own(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        """The API spells the idempotency key itself, because it cannot import the worker.
+
+        So the two copies are pinned against each other here, from the worker's own
+        function. Drift would not fail anything else: the row would be enqueued under a
+        key the walk's own `enqueue_job` does not recognise, and a second walk would
+        happily queue a rival.
+        """
+        from jutsu_worker.ingest import source_job_key
+
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        source_id = uuid.uuid4()
+        await add_source(db_session, org_id=org_id, source_id=source_id)
+
+        await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+
+        key = (
+            await inspector.execute(
+                text("SELECT idempotency_key FROM jobs WHERE kind = 'ingest.source'")
+            )
+        ).scalar_one()
+        assert key == source_job_key(uuid.UUID(org_id), source_id)
+
+    async def test_a_second_click_while_one_is_pending_does_not_duplicate(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        """Two walks of one source would enqueue every document twice and race the cursor."""
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        source_id = uuid.uuid4()
+        await add_source(db_session, org_id=org_id, source_id=source_id)
+
+        first = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+        second = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+
+        assert second.status_code == 202
+        assert second.json()["job_id"] == first.json()["job_id"]
+        count = (
+            await inspector.execute(text("SELECT count(*) FROM jobs WHERE kind = 'ingest.source'"))
+        ).scalar_one()
+        assert count == 1
+
+    async def test_a_finished_walk_is_reopened_rather_than_shadowed(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        """A failed walk must not hold the key against every future click.
+
+        The walk itself refuses to reopen failures because an automatic loop would retry
+        them for ever. Here the loop is a person clicking, and an administrator who has
+        just fixed the source needs a way to say so.
+        """
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        source_id = uuid.uuid4()
+        await add_source(db_session, org_id=org_id, source_id=source_id)
+
+        first = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+        job_id = first.json()["job_id"]
+        await inspector.execute(
+            text(
+                "UPDATE jobs SET state = 'failed', attempts = 5, "
+                "failure_kind = 'source_unavailable' WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+        await inspector.commit()
+
+        again = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+        assert again.status_code == 202
+        assert again.json()["job_id"] == job_id, "the same row, made runnable again"
+
+        row = (
+            await inspector.execute(
+                text("SELECT state, attempts, failure_kind FROM jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+        ).one()
+        assert row.state == "pending"
+        assert row.attempts == 0
+        assert row.failure_kind is None
+
+    async def test_another_tenants_source_is_a_404_and_enqueues_nothing(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        """404, not 403: a refusal that confirms the id exists is a tenant disclosure."""
+        await register_owner(client, mailbox)
+        other_org = uuid.uuid4()
+        foreign_source = uuid.uuid4()
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": str(other_org)}
+        )
+        await db_session.execute(
+            text("INSERT INTO orgs (id, name) VALUES (:id, 'Other Tenant')"), {"id": other_org}
+        )
+        await add_source(db_session, org_id=str(other_org), source_id=foreign_source)
+
+        response = await client.post(f"/v1/sources/{foreign_source}/sync", headers=csrf(client))
+        assert response.status_code == 404, response.text
+
+        # The inspector bypasses RLS, so "no job anywhere" is a real assertion rather
+        # than the tenant scope hiding one that was written.
+        count = (
+            await inspector.execute(text("SELECT count(*) FROM jobs WHERE kind = 'ingest.source'"))
+        ).scalar_one()
+        assert count == 0
+        assert rung == [], "a refused request wakes nobody"
+
+    async def test_a_member_may_not_request_a_sync(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        rung: list[object],
+    ) -> None:
+        """Watching a source and acting on one are different privileges."""
+        await register_owner(client, mailbox)
+        org_id = (await client.get("/v1/orgs/current")).json()["id"]
+        source_id = uuid.uuid4()
+        await add_source(db_session, org_id=org_id, source_id=source_id)
+        await invite_and_accept(client, mailbox, email="member@example.com")
+
+        response = await client.post(f"/v1/sources/{source_id}/sync", headers=csrf(client))
+        assert response.status_code == 403
+
+
+# --------------------------------------------------------------------------------------
+# Invitations
+# --------------------------------------------------------------------------------------
+
+
 class TestInvitationList:
     async def test_a_pending_invitation_is_listed_as_pending(
         self, client: AsyncClient, mailbox: RecordingEmailSender

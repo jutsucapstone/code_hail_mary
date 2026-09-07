@@ -836,6 +836,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Document
+         * @description One document from the listing, opened: its masked passages in document order.
+         *
+         *     The same permission and the same gates as the listing — `_open_for`, the package's
+         *     scope, then retrieval's own predicate and the package's period ANDed together inside
+         *     the SQL. A document that does not exist, one this recipient may not read and one
+         *     outside the window are the identical 404; a closed package is the package's 403.
+         *
+         *     Read a page at a time (`from_ordinal`, `next_ordinal`) because a document has no
+         *     bounded size and a whole handbook in one response helps nobody.
+         */
+        get: operations["read_kt_document_v1_kt__kt_code__documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{kt_code}/handover-summary": {
         parameters: {
             query?: never;
@@ -1249,6 +1277,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/orgs/current/sync-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Current Sync Schedule
+         * @description When the nightly sync runs, and — for an administrator — how the last one went.
+         *
+         *     Gated on `integration:self_manage` rather than `org:read`, which `member` does not
+         *     hold: an employee who can connect a tool is entitled to know when it will be read
+         *     again, and telling them is the difference between "we sync automatically" and a
+         *     promise with no time attached. The run history is redacted for them; changing the
+         *     schedule needs `sync:schedule_manage`.
+         */
+        get: operations["read_current_sync_schedule_v1_orgs_current_sync_schedule_get"];
+        /**
+         * Update Current Sync Schedule
+         * @description Set the schedule. The organisation is the session's own — there is no `{org_id}`
+         *     variant, for the same reason `PATCH /current` has none.
+         *
+         *     `sync:schedule_manage` rather than `org:update`: the four roles that own this clock
+         *     are Owner, Super Admin, IT Admin and HR Admin, and `org:update` does not reach HR.
+         *     Adding HR to `org:update` instead would also have handed them the organisation's
+         *     profile and its connection policies — see the permission's own note in `rbac.py`.
+         */
+        put: operations["update_current_sync_schedule_v1_orgs_current_sync_schedule_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/register": {
         parameters: {
             query?: never;
@@ -1402,6 +1466,31 @@ export interface paths {
         get: operations["read_sources_v1_sources_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sources/{source_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resync Source
+         * @description Re-run ingestion for one source. 202, because the walk happens elsewhere.
+         *
+         *     Gated on `integration:connect` rather than on `integration:read`: an Analyst may
+         *     watch a stalled source, and only the roles that configure connectors may act on one.
+         *     A source belonging to another organisation is a 404 — the service never asks whose
+         *     it is, and RLS answers that question by finding nothing.
+         */
+        post: operations["resync_source_v1_sources__source_id__sync_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2165,6 +2254,36 @@ export interface components {
             /** Validity Days */
             validity_days: number;
         };
+        /** KtDocumentChunkOut */
+        KtDocumentChunkOut: {
+            /** Ordinal */
+            ordinal: number;
+            /** Text */
+            text: string;
+        };
+        /** KtDocumentDetailOut */
+        KtDocumentDetailOut: {
+            /** Chunks */
+            chunks: components["schemas"]["KtDocumentChunkOut"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Next Ordinal */
+            next_ordinal: number | null;
+            /** Source System */
+            source_system: string;
+            /** Title */
+            title: string;
+            /** Total Chunks */
+            total_chunks: number;
+        };
         /** KtDocumentOut */
         KtDocumentOut: {
             /**
@@ -2447,7 +2566,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
+        Permission: "org:read" | "org:update" | "org:delete" | "sync:schedule_manage" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
         /** PoliciesOut */
         PoliciesOut: {
             /** Items */
@@ -2632,7 +2751,7 @@ export interface components {
             /** Code */
             code: string;
             /** Token */
-            token: string;
+            token?: string | null;
         };
         /**
          * RegistrationAccepted
@@ -2784,6 +2903,8 @@ export interface components {
         };
         /** SourceEntry */
         SourceEntry: {
+            /** Account Label */
+            account_label: string | null;
             /** Document Count */
             document_count: number;
             /**
@@ -2803,6 +2924,8 @@ export interface components {
             last_walk: {
                 [key: string]: number;
             };
+            /** Provider */
+            provider: string | null;
             /** Status */
             status: string;
             /** System */
@@ -2844,6 +2967,14 @@ export interface components {
         SourcePageOut: {
             /** Items */
             items: components["schemas"]["SourceEntry"][];
+        };
+        /** SourceSyncQueued */
+        SourceSyncQueued: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
         };
         /**
          * SourceSystem
@@ -2904,6 +3035,42 @@ export interface components {
              * @default queued
              */
             status: string;
+        };
+        /**
+         * SyncScheduleOut
+         * @description When this organisation's connected providers are re-read.
+         *
+         *     `next_sync_at` is computed, never stored: "01:00 local" moves in UTC twice a year,
+         *     and this is the number a person checks against their own clock.
+         */
+        SyncScheduleOut: {
+            /** Enabled */
+            enabled: boolean;
+            /** Hour Local */
+            hour_local: number;
+            /** Last Connections */
+            last_connections: number | null;
+            /** Last Enqueued */
+            last_enqueued: number | null;
+            /** Last Finished At */
+            last_finished_at: string | null;
+            /** Last Outcome */
+            last_outcome: string | null;
+            /** Last Started At */
+            last_started_at: string | null;
+            /** Next Sync At */
+            next_sync_at: string | null;
+            /** Timezone */
+            timezone: string;
+        };
+        /** SyncSchedulePayload */
+        SyncSchedulePayload: {
+            /** Enabled */
+            enabled: boolean;
+            /** Hour Local */
+            hour_local: number;
+            /** Timezone */
+            timezone: string;
         };
         /**
          * Taxonomy
@@ -2968,7 +3135,7 @@ export interface components {
             /** Code */
             code: string;
             /** Token */
-            token: string;
+            token?: string | null;
         };
         /** VerifyResult */
         VerifyResult: {
@@ -4198,6 +4365,41 @@ export interface operations {
             };
         };
     };
+    read_kt_document_v1_kt__kt_code__documents__document_id__get: {
+        parameters: {
+            query?: {
+                from_ordinal?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                kt_code: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtDocumentDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_kt_handover_summary_v1_kt__kt_code__handover_summary_get: {
         parameters: {
             query?: never;
@@ -4827,6 +5029,59 @@ export interface operations {
             };
         };
     };
+    read_current_sync_schedule_v1_orgs_current_sync_schedule_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncScheduleOut"];
+                };
+            };
+        };
+    };
+    update_current_sync_schedule_v1_orgs_current_sync_schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncSchedulePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncScheduleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     register_v1_orgs_register_post: {
         parameters: {
             query?: never;
@@ -4982,6 +5237,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourcePageOut"];
+                };
+            };
+        };
+    };
+    resync_source_v1_sources__source_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceSyncQueued"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

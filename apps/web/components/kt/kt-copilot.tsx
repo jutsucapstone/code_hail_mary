@@ -36,6 +36,10 @@ import { classifyApiError, type Failure } from "@/lib/api-error";
 
 /** The API's own limit on a question, mirrored so the field refuses before a round trip. */
 const MAX_QUESTION_CHARS = 4000;
+//: The search endpoint's own bound. Sharing the question's 4000 let a recipient
+//: type 3800 characters the server refuses with a 422 they did not cause — the
+//: control has to say what the contract is, not discover it afterwards.
+const MAX_SEARCH_CHARS = 200;
 
 const SUGGESTED = [
   "What should I understand first?",
@@ -559,7 +563,7 @@ export function KtCopilot({
                 type="search"
                 value={searchDraft}
                 onChange={(event) => setSearchDraft(event.target.value)}
-                maxLength={MAX_QUESTION_CHARS}
+                maxLength={MAX_SEARCH_CHARS}
                 placeholder="Search what was said…"
                 className="w-full rounded-lg border border-hairline bg-surface/40 py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground/80 focus-visible:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               />

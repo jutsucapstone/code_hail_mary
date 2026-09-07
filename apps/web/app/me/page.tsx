@@ -1,18 +1,29 @@
 "use client";
 
-import { IdCard, ShieldCheck, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { IdCard, Plug, Search, ShieldCheck, Sparkles } from "lucide-react";
 
 import { useMemberCapabilities } from "@/components/member/member-shell";
-import { ROLE_LABELS } from "@/lib/permissions";
+import { Button } from "@/components/ui/button";
+import { can, ROLE_LABELS } from "@/lib/permissions";
 
 /**
  * Where onboarding ends for everyone who is not an administrator.
  *
- * Its job is confirmation, not features. Someone has just typed a six-digit code and
- * been redirected; the first question they have is "did that work, and what am I now".
- * So it answers with the two facts that are true and theirs — the JUTSU ID that was
- * issued to them, and the role it was issued under — and then says plainly what does
- * and does not exist yet.
+ * It confirms first: someone has just typed a six-digit code and been redirected, and
+ * the first question they have is "did that work, and what am I now". So it answers
+ * with the two facts that are true and theirs — the JUTSU ID that was issued to them,
+ * and the role it was issued under.
+ *
+ * Then it hands over the next step rather than describing one. This page used to name
+ * Integrations in prose and offer no way to get there, which leaves the reader to find
+ * the sidebar entry the sentence is talking about; the two things a new employee can
+ * actually do on day one are now the two controls under that sentence, and both point
+ * at routes that exist and are live in `MEMBER_SECTIONS`.
+ *
+ * Asking is offered only to a caller who holds `retrieval:query`. Rendering it
+ * regardless would be a door onto a 403 — and `can()` here decides what to draw, never
+ * what is allowed: `/v1/ask` re-checks server-side whatever this believed.
  *
  * Everything rendered comes from `GET /v1/me`, which is the only endpoint a bare Member
  * may call. No organisation name, because that needs `org:read` and a Member does not
@@ -22,6 +33,7 @@ import { ROLE_LABELS } from "@/lib/permissions";
 export default function MePage() {
   const capabilities = useMemberCapabilities();
   const roleLabel = ROLE_LABELS[capabilities.role] ?? capabilities.role;
+  const canAsk = can(capabilities, "retrieval:query");
 
   return (
     <div className="flex flex-col gap-10 [@media(max-height:820px)]:gap-6">
@@ -85,11 +97,46 @@ export default function MePage() {
             What happens next
           </h2>
           <p className="mt-2 max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            Connect your own work tools under Integrations — nothing is connected on
-            your behalf, and nothing is read from a tool until you connect it yourself.
-            What you can connect is governed by your organisation&apos;s policies, and you
-            can disconnect at any time.
+            Connect your own work tools — nothing is connected on your behalf, and
+            nothing is read from a tool until you connect it yourself. What you can
+            connect is governed by your organisation&apos;s policies, and you can
+            disconnect at any time.
           </p>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Button
+              asChild
+              size="lg"
+              className="h-10 rounded-xl bg-brand px-4 font-semibold text-brand-foreground hover:bg-brand/90 focus-visible:ring-brand/40"
+            >
+              <Link href="/me/integrations">
+                <Plug aria-hidden="true" />
+                Connect a tool
+              </Link>
+            </Button>
+
+            {canAsk ? (
+              <Button
+                asChild
+                size="lg"
+                variant="outline"
+                className="h-10 rounded-xl border-hairline-strong bg-transparent px-4 hover:border-brand/40 hover:bg-brand/5 dark:bg-transparent dark:hover:bg-brand/5"
+              >
+                <Link href="/ask">
+                  <Search aria-hidden="true" />
+                  Ask a question
+                </Link>
+              </Button>
+            ) : null}
+          </div>
+
+          {canAsk ? (
+            <p className="mt-3 max-w-prose text-pretty text-xs leading-relaxed text-muted-foreground">
+              You can ask before you connect anything. Ask JUTSU searches only the
+              documents you are already authorised to read, so a new account with nothing
+              connected will simply find less.
+            </p>
+          ) : null}
         </div>
       </section>
     </div>

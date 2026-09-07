@@ -1,9 +1,9 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
-import { Field } from "@/components/pilot/field";
+import { CodeInput } from "@/components/pilot/code-input";
 import { FormShell } from "@/components/pilot/form-shell";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
@@ -17,18 +17,32 @@ import { ApiError, api } from "@/lib/api";
  * recipient clicked — and a redeemed link sitting in a scanner's logs is a credential
  * somebody else already used. So the token is read from the query string and submitted.
  *
- * One input, not six boxes. Six single-character fields break paste, fight password
- * managers and `autocomplete="one-time-code"`, and are a well-known screen-reader
- * nuisance for the sake of looking modern.
+ * **The token is no longer something a person has to produce.** It used to be a required
+ * field, and the only place to obtain one was the emailed link — so the six-digit code,
+ * the entire point of this screen, could not be used on its own: the browser refused to
+ * submit on a field whose value nobody had been shown. `POST /v1/auth/request` now leaves
+ * the token in an httpOnly `__Host-` cookie that expires with the challenge, so asking
+ * for the code is enough. The link's token still wins when there is one, which keeps the
+ * emailed link working on a device that never asked for a code.
  */
+
+/** How long before the same address may ask for another code. */
+const RESEND_SECONDS = 45;
 
 function VerifyForm() {
   const router = useRouter();
   const params = useSearchParams();
+
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(
     null,
   );
+  // Remounts the code field after a rejection: a fresh, empty, focused set of boxes is
+  // what a person expects to type into, and it means the failed code cannot be
+  // half-edited into the next attempt.
+  const [attempt, setAttempt] = useState(0);
+  const [resendIn, setResendIn] = useState(0);
+  const [resent, setResent] = useState(false);
 
   // All three arrive in the URL: `token` from the emailed link, `to` from the previous
   // step so this page can say where the code went, and `flow` so it knows which endpoint
@@ -41,18 +55,21 @@ function VerifyForm() {
   const sentTo = params.get("to");
   const registering = params.get("flow") === "register";
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setTimeout(() => setResendIn((seconds) => seconds - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendIn]);
+
+  async function submit(code: string) {
+    if (pending) return;
     setPending(true);
     setFailure(null);
 
-    const form = new FormData(event.currentTarget);
-
     try {
-      const credentials = {
-        token: String(form.get("token") ?? ""),
-        code: String(form.get("code") ?? ""),
-      };
+      // An empty token is omitted rather than sent: the server reads the cookie when the
+      // body carries nothing, and sending "" would look like a supplied-but-wrong token.
+      const credentials = { token: token || null, code };
       // Completing a registration is what creates the organisation — nothing exists
       // until this call succeeds.
       const result = registering
@@ -72,7 +89,38 @@ function VerifyForm() {
         message,
         requestId: error instanceof ApiError ? error.requestId : undefined,
       });
+      setAttempt((n) => n + 1);
       setPending(false);
+    }
+  }
+
+  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await submit(String(form.get("code") ?? ""));
+  }
+
+  async function onResend() {
+    if (!sentTo || resendIn > 0) return;
+    setFailure(null);
+    setResent(false);
+    try {
+      await api.requestChallenge({ email: sentTo, jutsu_id: null });
+      // The countdown starts whatever the server said. `POST /v1/auth/request` answers
+      // 202 for an address with no account as well, deliberately, so a countdown that
+      // only ran on "success" would answer the question that endpoint refuses to.
+      setResent(true);
+      setResendIn(RESEND_SECONDS);
+      setAttempt((n) => n + 1);
+    } catch (error) {
+      setFailure({
+        message:
+          error instanceof ApiError
+            ? error.message
+            : "We could not send another code. Please try again.",
+        requestId: error instanceof ApiError ? error.requestId : undefined,
+      });
+      setResendIn(RESEND_SECONDS);
     }
   }
 
@@ -89,48 +137,64 @@ function VerifyForm() {
       backLabel="Start again"
     >
       <form onSubmit={onSubmit} className="flex flex-col gap-5">
-        {/* Present when the person followed the emailed link, empty when they typed the
-            code manually. Editable rather than hidden so a paste of the whole link still
-            works, and so the field is not a silent, unexplained requirement. */}
-        <Field
-          id="token"
-          name="token"
-          label="Sign-in token"
-          hint="Filled in automatically if you opened the link from your email."
-          defaultValue={token}
-          required
-          minLength={16}
-          maxLength={128}
-          className="font-mono"
-        />
+        {/* Present only when the person followed the emailed link. Hidden rather than
+            editable now that the cookie covers the typed path: a visible field for a
+            value nobody can produce is what made this screen impossible to complete. */}
+        {token ? <input type="hidden" name="token" value={token} /> : null}
 
-        <Field
+        <CodeInput
+          key={attempt}
           id="code"
           name="code"
           label="Six-digit code"
-          inputMode="numeric"
-          pattern="[0-9]{6}"
-          autoComplete="one-time-code"
+          hint="Type it or paste it — the whole code lands in one go."
           autoFocus
-          required
-          minLength={6}
-          maxLength={6}
-          placeholder="000000"
-          className="font-mono"
+          disabled={pending}
+          invalid={Boolean(failure)}
+          describedBy={failure ? "verify-error" : undefined}
+          onComplete={(code) => {
+            void submit(code);
+          }}
         />
 
         {failure ? (
-          <FormError message={failure.message} requestId={failure.requestId} />
+          <FormError
+            id="verify-error"
+            message={failure.message}
+            requestId={failure.requestId}
+          />
         ) : null}
 
         <SubmitButton pending={pending} pendingLabel="Checking your code…">
           Continue
         </SubmitButton>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Codes expire after ten minutes and allow five attempts. If you run out, request a
-          new one from the start of the flow.
-        </p>
+        <div className="flex flex-col gap-2">
+          {sentTo && !registering ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {"Didn't get it? "}
+              <button
+                type="button"
+                onClick={() => void onResend()}
+                disabled={resendIn > 0 || pending}
+                className="font-medium text-brand underline underline-offset-4 disabled:no-underline disabled:opacity-60"
+              >
+                {resendIn > 0 ? `Send a new code in ${resendIn}s` : "Send a new code"}
+              </button>
+            </p>
+          ) : null}
+
+          {/* Polite, not assertive: it confirms something the person asked for and must
+              not interrupt them mid-code. */}
+          <p aria-live="polite" className="text-xs leading-relaxed text-muted-foreground">
+            {resent ? `A new code is on its way to ${sentTo}.` : ""}
+          </p>
+
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Codes expire after ten minutes and allow five attempts. Check your spam folder
+            if it has not arrived.
+          </p>
+        </div>
       </form>
     </FormShell>
   );
@@ -152,8 +216,7 @@ export default function VerifyPage() {
           backLabel="Start again"
         >
           <div aria-hidden="true" className="flex flex-col gap-5">
-            <div className="h-20 rounded-xl border border-hairline bg-surface/40" />
-            <div className="h-20 rounded-xl border border-hairline bg-surface/40" />
+            <div className="h-14 rounded-xl border border-hairline bg-surface/40" />
             <div className="h-12 rounded-xl bg-surface/40" />
           </div>
           <p className="sr-only">Loading the verification form.</p>

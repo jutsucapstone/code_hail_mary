@@ -57,9 +57,19 @@ export function SubmitButton({
  * it is the one thing that makes a support conversation tractable, and it identifies a
  * request rather than a person.
  */
-export function FormError({ message, requestId }: { message: string; requestId?: string }) {
+export function FormError({
+  id,
+  message,
+  requestId,
+}: {
+  /** Set when a control points at this message through `aria-describedby`. */
+  id?: string;
+  message: string;
+  requestId?: string;
+}) {
   return (
     <div
+      id={id}
       role="alert"
       className="rounded-xl border border-destructive/40 bg-destructive/8 p-4 text-sm text-foreground"
     >

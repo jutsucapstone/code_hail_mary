@@ -2067,6 +2067,79 @@
         "title": "KtCreatePayload",
         "type": "object"
       },
+      "KtDocumentChunkOut": {
+        "properties": {
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ordinal",
+          "text"
+        ],
+        "title": "KtDocumentChunkOut",
+        "type": "object"
+      },
+      "KtDocumentDetailOut": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/KtDocumentChunkOut"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "next_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Ordinal"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "source_system",
+          "created_at",
+          "chunks",
+          "total_chunks",
+          "next_ordinal"
+        ],
+        "title": "KtDocumentDetailOut",
+        "type": "object"
+      },
       "KtDocumentOut": {
         "properties": {
           "created_at": {
@@ -2769,6 +2842,7 @@
           "org:read",
           "org:update",
           "org:delete",
+          "sync:schedule_manage",
           "member:read",
           "member:invite",
           "member:update",
@@ -3329,14 +3403,20 @@
             "type": "string"
           },
           "token": {
-            "maxLength": 128,
-            "minLength": 16,
-            "title": "Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
         "required": [
-          "token",
           "code"
         ],
         "title": "RegisterVerifyPayload",
@@ -3673,6 +3753,17 @@
       },
       "SourceEntry": {
         "properties": {
+          "account_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Label"
+          },
           "document_count": {
             "title": "Document Count",
             "type": "integer"
@@ -3713,6 +3804,17 @@
             "title": "Last Walk",
             "type": "object"
           },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -3725,6 +3827,8 @@
         "required": [
           "id",
           "system",
+          "provider",
+          "account_label",
           "status",
           "last_sync_at",
           "document_count",
@@ -3818,6 +3922,20 @@
           "items"
         ],
         "title": "SourcePageOut",
+        "type": "object"
+      },
+      "SourceSyncQueued": {
+        "properties": {
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "SourceSyncQueued",
         "type": "object"
       },
       "SourceSystem": {
@@ -3985,6 +4103,133 @@
           "job_id"
         ],
         "title": "SyncQueued",
+        "type": "object"
+      },
+      "SyncScheduleOut": {
+        "description": "When this organisation's connected providers are re-read.\n\n`next_sync_at` is computed, never stored: \"01:00 local\" moves in UTC twice a year,\nand this is the number a person checks against their own clock.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "hour_local": {
+            "title": "Hour Local",
+            "type": "integer"
+          },
+          "last_connections": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Connections"
+          },
+          "last_enqueued": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Enqueued"
+          },
+          "last_finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Finished At"
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
+          "last_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Started At"
+          },
+          "next_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Sync At"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone",
+          "hour_local",
+          "enabled",
+          "next_sync_at",
+          "last_started_at",
+          "last_finished_at",
+          "last_outcome",
+          "last_connections",
+          "last_enqueued"
+        ],
+        "title": "SyncScheduleOut",
+        "type": "object"
+      },
+      "SyncSchedulePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "hour_local": {
+            "maximum": 23.0,
+            "minimum": 0.0,
+            "title": "Hour Local",
+            "type": "integer"
+          },
+          "timezone": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone",
+          "hour_local",
+          "enabled"
+        ],
+        "title": "SyncSchedulePayload",
         "type": "object"
       },
       "Taxonomy": {
@@ -4231,14 +4476,20 @@
             "type": "string"
           },
           "token": {
-            "maxLength": 128,
-            "minLength": 16,
-            "title": "Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
         "required": [
-          "token",
           "code"
         ],
         "title": "VerifyRequest",
@@ -6236,6 +6487,82 @@
         ]
       }
     },
+    "/v1/kt/{kt_code}/documents/{document_id}": {
+      "get": {
+        "description": "One document from the listing, opened: its masked passages in document order.\n\nThe same permission and the same gates as the listing \u2014 `_open_for`, the package's\nscope, then retrieval's own predicate and the package's period ANDed together inside\nthe SQL. A document that does not exist, one this recipient may not read and one\noutside the window are the identical 404; a closed package is the package's 403.\n\nRead a page at a time (`from_ordinal`, `next_ordinal`) because a document has no\nbounded size and a whole handbook in one response helps nobody.",
+        "operationId": "read_kt_document_v1_kt__kt_code__documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_ordinal",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "From Ordinal",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtDocumentDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Document",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
     "/v1/kt/{kt_code}/handover-summary": {
       "get": {
         "description": "\u00a729's executive summary: composed on demand from the recipient's own claim\nvisibility, grounded and citation-gated exactly like /v1/ask, never persisted.\n\nRefuses before any spend when no answer model is configured \u2014 the same honest 503\nthe ask surface gives, so the button in the KT console can say why.",
@@ -7098,6 +7425,68 @@
         ]
       }
     },
+    "/v1/orgs/current/sync-schedule": {
+      "get": {
+        "description": "When the nightly sync runs, and \u2014 for an administrator \u2014 how the last one went.\n\nGated on `integration:self_manage` rather than `org:read`, which `member` does not\nhold: an employee who can connect a tool is entitled to know when it will be read\nagain, and telling them is the difference between \"we sync automatically\" and a\npromise with no time attached. The run history is redacted for them; changing the\nschedule needs `sync:schedule_manage`.",
+        "operationId": "read_current_sync_schedule_v1_orgs_current_sync_schedule_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncScheduleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Current Sync Schedule",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "put": {
+        "description": "Set the schedule. The organisation is the session's own \u2014 there is no `{org_id}`\nvariant, for the same reason `PATCH /current` has none.\n\n`sync:schedule_manage` rather than `org:update`: the four roles that own this clock\nare Owner, Super Admin, IT Admin and HR Admin, and `org:update` does not reach HR.\nAdding HR to `org:update` instead would also have handed them the organisation's\nprofile and its connection policies \u2014 see the permission's own note in `rbac.py`.",
+        "operationId": "update_current_sync_schedule_v1_orgs_current_sync_schedule_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncSchedulePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncScheduleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Current Sync Schedule",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
     "/v1/orgs/register": {
       "post": {
         "description": "Stage the registration and send a code. Creates no organisation.\n\nA mismatch between the work address and the claimed domain is answered plainly \u2014 both\nvalues came from this request, so saying so discloses nothing \u2014 but whether the domain\nis already registered is not, and cannot be reached from here at all: that answer is\nonly produced after someone proves a mailbox at it.",
@@ -7285,6 +7674,50 @@
           }
         },
         "summary": "Read Sources",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/sources/{source_id}/sync": {
+      "post": {
+        "description": "Re-run ingestion for one source. 202, because the walk happens elsewhere.\n\nGated on `integration:connect` rather than on `integration:read`: an Analyst may\nwatch a stalled source, and only the roles that configure connectors may act on one.\nA source belonging to another organisation is a 404 \u2014 the service never asks whose\nit is, and RLS answers that question by finding nothing.",
+        "operationId": "resync_source_v1_sources__source_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceSyncQueued"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resync Source",
         "tags": [
           "operations"
         ]

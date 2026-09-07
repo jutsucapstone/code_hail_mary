@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Fragment } from "react";
 
@@ -108,9 +108,20 @@ export default function EmployeesPage() {
   const [level, setLevel] = useState("");
   const [onlyUnmapped, setOnlyUnmapped] = useState(false);
 
+  // **A response is only allowed to win if it is still the latest one asked for.**
+  //
+  // The search box is not debounced, so every keystroke starts a request and they
+  // resolve in whatever order the network returns them. Typing `ada` fast could leave
+  // the page showing the results for `ad`, indefinitely — the wrong list, with no
+  // spinner and nothing to retry, because as far as the page is concerned the request
+  // it made succeeded. The counter is a ref rather than state precisely because
+  // bumping it must not itself cause a render.
+  const latestRequest = useRef(0);
+
   const load = useCallback(
     (search: string) => {
       if (!mayRead) return;
+      const ticket = ++latestRequest.current;
       api
         .employees({
           q: search || null,
@@ -119,6 +130,7 @@ export default function EmployeesPage() {
           unmapped: onlyUnmapped,
         })
         .then((result) => {
+          if (ticket !== latestRequest.current) return;
           setPage(result);
           // A fresh head page starts a fresh walk; stale older pages belong to the
           // previous search.
@@ -128,6 +140,7 @@ export default function EmployeesPage() {
           setFailure(null);
         })
         .catch((error: unknown) => {
+          if (ticket !== latestRequest.current) return;
           setFailure({
             message:
               error instanceof ApiError ? error.message : "We could not reach the service.",

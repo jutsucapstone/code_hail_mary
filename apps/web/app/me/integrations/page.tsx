@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { Pill, When } from "@/components/admin/page-scaffold";
 import { EmptyState, FailureState, LoadingRegion, Skeleton } from "@/components/states";
 import { Field } from "@/components/pilot/field";
-import { api, type IntegrationEntry } from "@/lib/api";
+import { api, type IntegrationEntry, type SyncSchedule } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
 /**
@@ -27,7 +27,43 @@ import { classifyApiError } from "@/lib/api-error";
  * Connect NAVIGATES to the provider's authorize URL. Nothing OAuth-shaped happens in
  * this page beyond following the URL the backend minted — the state parameter, the
  * token exchange and the credential storage are all server-side.
+ *
+ * Both ends of that round trip come back here, and both are announced. The callback
+ * redirects to `?connected=<provider>` when the exchange succeeded and
+ * `?connect_error=<reason>` when it did not, and a page that renders nothing for the
+ * second one leaves somebody who pressed Deny staring at an unchanged screen wondering
+ * what they broke.
  */
+
+/** `GET /v1/orgs/current/sync-schedule`, keyed as the settings page keys it. */
+const SYNC_SCHEDULE_KEY = ["org", "sync-schedule"] as const;
+
+/**
+ * When these tools are read again, on the ORGANISATION's clock.
+ *
+ * The zone is named beside the time because the reader may be in another one, and "1:00
+ * AM" without it is a promise about an hour that never arrives for them. Only the two
+ * fields an employee is actually given: the run history is redacted to nulls for anyone
+ * without `org:read`, so there is nothing here to render from it.
+ */
+function syncSentence(schedule: SyncSchedule): string {
+  if (!schedule.enabled || !schedule.next_sync_at) {
+    return "Automatic syncing is switched off for your organisation. You can still sync any connected tool yourself.";
+  }
+  let when: string;
+  try {
+    when = new Intl.DateTimeFormat(undefined, {
+      timeZone: schedule.timezone,
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(schedule.next_sync_at));
+  } catch {
+    // A zone this browser cannot resolve. The reader's own clock would be the one
+    // definitely wrong answer, so show the instant as it arrived instead.
+    when = schedule.next_sync_at;
+  }
+  return `Your connected tools are read again automatically at ${when}, ${schedule.timezone}.`;
+}
 
 const STATUS_TONE: Record<string, "good" | "attention" | "bad" | "neutral"> = {
   connected: "good",
@@ -39,6 +75,22 @@ const STATUS_TONE: Record<string, "good" | "attention" | "bad" | "neutral"> = {
 
 function StatusPill({ status }: { status: string }) {
   return <Pill tone={STATUS_TONE[status] ?? "neutral"}>{status.replace("_", " ")}</Pill>;
+}
+
+/** What a stored `last_error_kind` means to the person who owns the connection. */
+const ERROR_SENTENCES: Record<string, string> = {
+  reauth_required:
+    "The provider no longer honours this authorisation. Reconnect to continue syncing.",
+  sync_unavailable: "Syncing is not available for this provider on this deployment yet.",
+  // Written by the callback when the browser came back without a code, so the attempt
+  // never got as far as a sync. Without its own sentence it falls to the one below and
+  // blames a run that never happened.
+  authorization_denied:
+    "The authorisation was not completed, so nothing was connected. Reconnect to try again.",
+};
+
+function errorSentence(kind: string): string {
+  return ERROR_SENTENCES[kind] ?? `Last sync problem: ${kind.replaceAll("_", " ")}.`;
 }
 
 function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
@@ -102,13 +154,7 @@ function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
       ) : null}
 
       {connection?.last_error_kind ? (
-        <p className="text-xs text-graph">
-          {connection.last_error_kind === "reauth_required"
-            ? "The provider no longer honours this authorisation. Reconnect to continue syncing."
-            : connection.last_error_kind === "sync_unavailable"
-              ? "Syncing is not available for this provider on this deployment yet."
-              : `Last sync problem: ${connection.last_error_kind.replaceAll("_", " ")}.`}
-        </p>
+        <p className="text-xs text-graph">{errorSentence(connection.last_error_kind)}</p>
       ) : null}
 
       {connection ? (
@@ -159,16 +205,28 @@ function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
           )
         ) : (
           <>
-            {(connection.status === "error" || connection.status === "reauth_required") &&
-            entry.configured &&
-            entry.allowed ? (
+            {/*
+              Every status that is not `connected` gets the primary action, not just the
+              two failure ones. A connection sits at `connecting` from the moment the
+              authorize URL is minted until the callback lands, so anyone who closed the
+              provider's consent screen, or whose callback failed, was left with a
+              "connecting" pill and a single Disconnect button — a dead end reachable by
+              doing nothing wrong, on the screen whose whole purpose is connecting.
+              Starting again is safe: the API mints a fresh state and PKCE pair, and the
+              stale attempt expires on its own.
+            */}
+            {connection.status !== "connected" && entry.configured && entry.allowed ? (
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => connect.mutate()}
                 className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60"
               >
-                Reconnect
+                {connect.isPending
+                  ? "Starting…"
+                  : connection.status === "connecting"
+                    ? "Continue connecting"
+                    : "Reconnect"}
               </button>
             ) : null}
             {connection.status === "connected" && entry.configured ? (
@@ -199,11 +257,20 @@ function ConnectorCard({ entry }: { entry: IntegrationEntry }) {
 export default function IntegrationsPage() {
   const searchParams = useSearchParams();
   const connectedParam = searchParams.get("connected");
+  const connectErrorParam = searchParams.get("connect_error");
   const [query, setQuery] = useState("");
 
   const catalogue = useQuery({
     queryKey: ["integrations"],
     queryFn: api.integrations,
+  });
+
+  // A supporting line, not the page's subject. It has no loading state and no failure
+  // state on purpose: a schedule that will not load must not put an error banner over
+  // the connections, which are what someone came here for and which load independently.
+  const schedule = useQuery({
+    queryKey: SYNC_SCHEDULE_KEY,
+    queryFn: api.syncSchedule,
   });
 
   useEffect(() => {
@@ -214,6 +281,32 @@ export default function IntegrationsPage() {
       window.history.replaceState(null, "", "/me/integrations");
     }
   }, [connectedParam]);
+
+  // `connect_error` carries the provider id when the abandoned attempt matched a row of
+  // the caller's own, and a sanitised provider code (`access_denied`, `denied`) when it
+  // matched nothing. Only the catalogue can tell those two apart, so the name is looked
+  // up rather than printed — an unmatched value is somebody else's error code, not a
+  // tool anybody here would recognise.
+  const refusedName = connectErrorParam
+    ? (catalogue.data?.items.find((item) => item.id === connectErrorParam)?.name ?? null)
+    : null;
+
+  useEffect(() => {
+    // Waits for the catalogue so the sentence can name the tool. The reason is NOT
+    // named: the callback takes this branch both when the person pressed Deny and when
+    // the provider refused for its own reasons, and it records one `last_error_kind`
+    // for both — so "you cancelled" would be a guess about which of the two happened.
+    // `isSuccess`, not `!isPending`: a catalogue that FAILED is also not pending,
+    // and firing here would stack an unrelated toast on top of the page's own
+    // failure state. The row's sentence still carries the refusal either way.
+    if (!connectErrorParam || !catalogue.isSuccess) return;
+    toast.error(
+      refusedName
+        ? `${refusedName} was not connected. The authorisation did not complete, and nothing was read from it.`
+        : "That connection was not completed. Nothing was connected and nothing was read.",
+    );
+    window.history.replaceState(null, "", "/me/integrations");
+  }, [connectErrorParam, refusedName, catalogue.isSuccess]);
 
   // The search filters the real catalogue; it never invents an entry. A term that
   // matches nothing gets an honest "not supported yet" state instead of a blank grid,
@@ -250,6 +343,11 @@ export default function IntegrationsPage() {
           part of organisational memory — connecting an application does not make
           everything in it searchable.
         </p>
+        {schedule.data ? (
+          <p className="mt-3 max-w-prose text-pretty text-sm leading-relaxed text-foreground">
+            {syncSentence(schedule.data)}
+          </p>
+        ) : null}
       </header>
 
       {catalogue.error ? (

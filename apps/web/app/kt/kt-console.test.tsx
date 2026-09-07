@@ -218,4 +218,72 @@ describe("the KT documents tab", () => {
     expect(calledUrl(fetchMock, 2)).toContain("cursor=cursor-2");
     expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument();
   });
+
+  it("opens a document into the reader, renders its passages in order, and comes back", async () => {
+    const fetchMock = scriptFetch(
+      { status: 200, body: recipientPackage() },
+      { status: 200, body: { items: [ktDocument()], next_cursor: null } },
+      {
+        status: 200,
+        body: {
+          ...ktDocument(),
+          chunks: [
+            { ordinal: 0, text: "The first passage of the handover plan." },
+            { ordinal: 1, text: "The second passage, with [EMAIL_A7] masked." },
+          ],
+          total_chunks: 2,
+          next_ordinal: null,
+        },
+      },
+    );
+    renderWithQuery(
+      <KtShell code="KT-JUTSU-AAAA0001">
+        <KtDocuments />
+      </KtShell>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /handover plan/i }));
+
+    expect(
+      await screen.findByText("The first passage of the handover plan."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/the second passage/i)).toBeInTheDocument();
+    expect(calledUrl(fetchMock, 2)).toBe(
+      "/api/jutsu/v1/kt/KT-JUTSU-AAAA0001/documents/11111111-1111-4111-8111-111111111111",
+    );
+    expect(calledMethod(fetchMock, 2)).toBe("GET");
+
+    // The way out is part of the surface, not the browser's back button.
+    await userEvent.click(screen.getByRole("button", { name: /back to documents/i }));
+    expect(await screen.findByRole("button", { name: /handover plan/i })).toBeInTheDocument();
+  });
+
+  it("renders the honest not-available state when the document 404s", async () => {
+    // A document the caller may no longer read, one outside the window and one that never
+    // existed are the same 404 by design — so the reader may not call any of them a fault.
+    scriptFetch(
+      { status: 200, body: recipientPackage() },
+      { status: 200, body: { items: [ktDocument()], next_cursor: null } },
+      {
+        status: 404,
+        body: envelope("not_found", "That document is not available in this package."),
+      },
+    );
+    renderWithQuery(
+      <KtShell code="KT-JUTSU-AAAA0001">
+        <KtDocuments />
+      </KtShell>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /handover plan/i }));
+
+    expect(
+      await screen.findByText(/this document is no longer available to you/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/that document is not available in this package/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/that did not load/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /back to documents/i })).toBeInTheDocument();
+  });
 });
