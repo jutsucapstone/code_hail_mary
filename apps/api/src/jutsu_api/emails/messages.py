@@ -446,8 +446,14 @@ def sign_in_code(*, to: str, app_url: str, minutes: int) -> EmailMessage:
                 points=[
                     "This code signs somebody in. JUTSU staff will never ask you for "
                     "it, by phone, chat or email.",
-                    "It works once and only from this message. Requesting another one "
-                    "immediately invalidates it.",
+                    # Says only what is true: the code is single-use and expires.
+                    # It previously claimed that requesting another code invalidated
+                    # this one, which nothing in `issue_challenge` does — an older code
+                    # stays usable until it is spent or expires. A security note that
+                    # is wrong is worse than no note, because it is the sentence a
+                    # careful reader relies on.
+                    "It works once, and only until it expires. A new code does not "
+                    "cancel this one — spend or ignore whichever you prefer.",
                     "If you did not ask to sign in, ignore this message — nothing "
                     "happens without the code, and nobody has access to your account.",
                 ],

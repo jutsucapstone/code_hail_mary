@@ -12,7 +12,13 @@ import json
 import logging
 
 import pytest
-from jutsu_core.logs import UNBOUND, JsonFormatter, configure, level_from_env
+from jutsu_core.logs import (
+    UNBOUND,
+    JsonFormatter,
+    RedactQueryString,
+    configure,
+    level_from_env,
+)
 
 
 def record(msg: object = "hello", *args: object, name: str = "jutsu.test") -> logging.LogRecord:
@@ -157,3 +163,57 @@ class TestConfigure:
             assert stamped == ["jutsu.test"]
         finally:
             logging.getLogger().handlers = root_handlers_before
+
+
+class TestTheAccessLineCarriesNoSecrets:
+    """Taking uvicorn's loggers over brought its access record into the JSON stream, and
+    that record's request target is the full one — query string included.
+
+    Two things ride there that §4.9 forbids in a log: the OAuth authorization `code` and
+    `state` on the connector callback, and the free-text `q` of a people search.
+    """
+
+    def _access(self, target: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:1", "GET", target, "1.1", 200),
+            None,
+        )
+
+    def test_an_oauth_callback_code_never_reaches_the_line(self) -> None:
+        record = self._access("/v1/connections/callback?code=SENTINEL-code&state=SENTINEL-state")
+        assert RedactQueryString().filter(record) is True
+
+        line = json.loads(JsonFormatter().format(record))
+
+        assert "SENTINEL" not in line["message"]
+        assert "/v1/connections/callback" in line["message"], "the path is still useful"
+        assert "<redacted>" in line["message"]
+
+    def test_a_search_term_never_reaches_the_line(self) -> None:
+        record = self._access("/v1/employees?q=ada%20lovelace&limit=50")
+        RedactQueryString().filter(record)
+
+        assert "lovelace" not in json.loads(JsonFormatter().format(record))["message"]
+
+    def test_a_target_with_no_query_is_untouched(self) -> None:
+        record = self._access("/v1/me")
+        RedactQueryString().filter(record)
+
+        assert "/v1/me" in json.loads(JsonFormatter().format(record))["message"]
+        assert "<redacted>" not in json.loads(JsonFormatter().format(record))["message"]
+
+    def test_it_leaves_every_other_logger_alone(self) -> None:
+        """The filter sits on the shared handler, so it must key on the logger name —
+        an application event whose message happens to contain a `?` is not an access
+        line and must not be rewritten."""
+        record = logging.LogRecord(
+            "jutsu.api", logging.INFO, __file__, 1, "who? nobody", None, None
+        )
+        RedactQueryString().filter(record)
+
+        assert json.loads(JsonFormatter().format(record))["message"] == "who? nobody"

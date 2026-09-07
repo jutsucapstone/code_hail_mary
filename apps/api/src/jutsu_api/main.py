@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from jutsu_core import InternalError, JutsuError, RateLimited, ValidationFailed
 from jutsu_core.logs import configure as configure_logging
 from jutsu_db.engine import ping as postgres_ping
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jutsu_api.logging_context import FIELDS, RequestContextFilter, bind, clear
 from jutsu_api.queue import transport as doorbell_transport
@@ -150,6 +151,54 @@ def create_app() -> FastAPI:
                 headers["retry-after"] = str(window)
         return JSONResponse(
             status_code=exc.status_code, content=exc.envelope(request_id), headers=headers
+        )
+
+    #: What the router answers for a path or a method it never matched. Written out
+    #: rather than reusing a `JutsuError` subclass because these are not application
+    #: failures — nothing refused the caller, there was simply nothing there — and
+    #: giving them a domain error class would invite a route to raise one.
+    _ROUTER_CODES: Final[dict[int, tuple[str, str]]] = {
+        404: ("not_found", "That endpoint does not exist."),
+        405: ("method_not_allowed", "That endpoint does not accept this method."),
+    }
+
+    @app.exception_handler(StarletteHTTPException)
+    async def router_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """A path or method the router never matched, in the one envelope (§15).
+
+        Starlette answers these itself with `{"detail": ...}`, which is a second error
+        shape that carries no `request_id` — so the failure a client hits most often, a
+        typo'd path or a wrong verb, is the one it cannot parse with the code path it
+        uses for every other error, and the one nobody can correlate to a log line.
+
+        `exc.headers` is forwarded deliberately: a 405 carries `Allow`, and dropping it
+        turns a correct refusal into an uninformative one.
+
+        `exc.detail` is never forwarded. It is Starlette's own English for the status,
+        and for a `HTTPException` raised elsewhere it could carry text this handler has
+        not vetted — the sentence is written here instead.
+        """
+        request_id = getattr(request.state, "request_id", "unknown")
+        code, message = _ROUTER_CODES.get(
+            exc.status_code, ("request_failed", "That request could not be completed.")
+        )
+        logger.warning(
+            "%s",
+            {
+                "event": "router_refused",
+                "code": code,
+                "status": exc.status_code,
+                "path": request.url.path,
+                "method": request.method,
+            },
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {"code": code, "message": message, "details": {}},
+                "request_id": request_id,
+            },
+            headers=dict(exc.headers or {}),
         )
 
     @app.exception_handler(RequestValidationError)

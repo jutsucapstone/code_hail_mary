@@ -31,7 +31,13 @@ import os
 import sys
 from collections.abc import Iterable, Sequence
 
-__all__ = ["UNBOUND", "JsonFormatter", "configure", "level_from_env"]
+__all__ = [
+    "UNBOUND",
+    "JsonFormatter",
+    "RedactQueryString",
+    "configure",
+    "level_from_env",
+]
 
 #: What a context field renders as when nothing bound it. Never an empty string, which
 #: is indistinguishable from "bound to nothing" in a log query.
@@ -106,6 +112,41 @@ class JsonFormatter(logging.Formatter):
         return None
 
 
+class RedactQueryString(logging.Filter):
+    """Keep uvicorn's access line, drop the part of it that carries secrets.
+
+    Taking uvicorn's loggers over put its access record into the JSON stream, and that
+    record's request target is the *full* one — query string included. Two things ride
+    there that must never reach a log (§4.9): the OAuth authorization `code` and `state`
+    on the connector callback, and the free-text `q` of a people or evidence search.
+
+    Silencing `uvicorn.access` outright would remove the only per-request line the
+    services emit on success, so the path is kept and everything after the `?` is
+    replaced. The record's args are uvicorn's own positional tuple —
+    `(client, method, target, http_version, status)` — and only the target is touched.
+
+    **This does not cover Cloud Run's own request log**, which Google writes outside the
+    container and which carries the full URL. Excluding that is a logging-sink
+    configuration, not something application code can reach.
+    """
+
+    _ACCESS_LOGGER = "uvicorn.access"
+    _TARGET = 2
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != self._ACCESS_LOGGER:
+            return True
+        args = record.args
+        if not isinstance(args, tuple) or len(args) <= self._TARGET:
+            return True
+        target = args[self._TARGET]
+        if not isinstance(target, str) or "?" not in target:
+            return True
+        path, _, _ = target.partition("?")
+        record.args = (*args[: self._TARGET], f"{path}?<redacted>", *args[self._TARGET + 1 :])
+        return True
+
+
 def level_from_env(default: int = logging.INFO) -> int:
     """`LOG_LEVEL`, matched case-insensitively against logging's own level names.
 
@@ -125,6 +166,7 @@ def configure(
 ) -> logging.Handler:
     """Point the root logger — and uvicorn's — at one JSON handler on stdout."""
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RedactQueryString())
     for log_filter in filters:
         handler.addFilter(log_filter)
     handler.setFormatter(JsonFormatter(context_fields=context_fields))

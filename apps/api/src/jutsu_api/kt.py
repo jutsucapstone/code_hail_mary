@@ -1246,12 +1246,23 @@ async def kt_handover_summary(
     # call and composes a narrative over somebody else's documents. The row says it
     # happened and how it went; the summary itself is never written down, here or
     # anywhere — a stored one would outlive the ACL state that grounded it.
+    # The package id, not the code. Every other kt_package audit row keys on the UUID,
+    # and the admin console's activity panel filters on exactly that — so keying this
+    # one differently made the single act that spends a model call over somebody else's
+    # documents the one act a package's own trail never showed. `_open_for` has already
+    # authorised this caller, so the lookup is scoped and cannot widen anything.
+    package_id = (
+        await session.execute(
+            text("SELECT id FROM kt_packages WHERE kt_code = :code"),
+            {"code": normalise_jutsu_id(kt_code)},
+        )
+    ).scalar_one_or_none()
     await _audit(
         session,
         org_id=org_id,
         actor_id=user_id,
         action="kt.handover_summary",
-        resource_id=normalise_jutsu_id(kt_code),
+        resource_id=package_id if package_id is not None else normalise_jutsu_id(kt_code),
         outcome="success",
         meta={
             "insufficient_evidence": outcome.insufficient_evidence,

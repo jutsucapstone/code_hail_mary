@@ -149,3 +149,42 @@ class TestUnhandledErrors:
 
         assert response.json()["request_id"] == "trace-me"
         assert response.headers["x-request-id"] == "trace-me"
+
+
+class TestTheRouterRefusesInTheOneEnvelope:
+    """A path or a verb the router never matched is still a §15 error.
+
+    Starlette answers `HTTPException` itself, before the application's own handlers see
+    it, and its shape is `{"detail": "Not Found"}` — no `code`, no `details`, and no
+    `request_id`. So the failure a client hits most often, a typo'd path or a wrong
+    verb, was the one it could not parse with the code path it uses for every other
+    error, and the one nobody could correlate to a log line. Verified against production
+    before it was fixed: `GET /v1/nope` returned exactly that.
+    """
+
+    def test_an_unmatched_path_is_the_envelope_with_a_request_id(self, client: TestClient) -> None:
+        response = client.get("/v1/nope")
+
+        assert response.status_code == 404
+        body = response.json()
+        assert body["error"]["code"] == "not_found"
+        assert body["error"]["details"] == {}
+        assert body["request_id"] == response.headers[REQUEST_ID_HEADER]
+        assert "detail" not in body
+
+    def test_a_wrong_method_keeps_the_allow_header(self, client: TestClient) -> None:
+        """The envelope must not cost the caller the one header that says what to do
+        instead — a 405 without `Allow` is a refusal with no way forward."""
+        response = client.delete("/readyz")
+
+        assert response.status_code == 405
+        assert response.json()["error"]["code"] == "method_not_allowed"
+        assert "allow" in {name.lower() for name in response.headers}
+
+    def test_it_never_forwards_starlettes_own_wording(self, client: TestClient) -> None:
+        """`exc.detail` is Starlette's English for the status, and for an
+        `HTTPException` raised elsewhere it could carry text this handler has not
+        vetted. The sentence is written by us."""
+        body = client.get("/v1/definitely-not-a-route").json()
+
+        assert body["error"]["message"] == "That endpoint does not exist."
