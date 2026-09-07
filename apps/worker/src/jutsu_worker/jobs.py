@@ -197,6 +197,12 @@ class Job:
         return str(self.id)
 
 
+#: The longest a provider's `Retry-After` may park a job. An hour is already far past
+#: any real quota window, and a header is attacker-adjacent input: a compromised or
+#: misbehaving provider must not be able to take a source offline for a day.
+MAX_RETRY_AFTER_SECONDS: Final = 3600.0
+
+
 def backoff_delay(attempts: int, *, rng: random.Random | None = None) -> float:
     """Exponential backoff with **full** jitter, in seconds.
 
@@ -419,6 +425,7 @@ async def fail_job(
     attempts: int,
     retryable: bool,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_after: float | None = None,
     rng: random.Random | None = None,
 ) -> JobState:
     """Record a failure and decide what happens next. Returns the state it landed in.
@@ -434,6 +441,15 @@ async def fail_job(
       * **retryable, attempts exhausted** -> `DEAD_LETTER`, which is a state a human is
         expected to look at rather than a loop that never ends.
 
+    `retry_after` is the provider's own answer to "when", in seconds, and it *wins* when
+    it is longer than the computed backoff. A 429 carrying `Retry-After: 300` means the
+    quota window has five minutes left in it; coming back after the ladder's few seconds
+    spends another attempt to be refused identically, and on a whole source's worth of
+    jobs that is a retry storm aimed at a provider that already said no. Shorter values
+    are ignored rather than obeyed — the ladder's jitter is what keeps a batch of jobs
+    from resynchronising, and a provider cannot ask us to come back sooner than that.
+    It is capped so a hostile or mistaken header cannot park a job for a day.
+
     `message` is an error *description* and must never carry document content, a chunk, a
     principal or a provider response body — it is stored and it is logged. Callers pass a
     classification and a shape, not a payload.
@@ -446,7 +462,10 @@ async def fail_job(
         next_attempt = None
     else:
         state = JobState.RETRY_SCHEDULED
-        next_attempt = datetime.now(UTC) + timedelta(seconds=backoff_delay(attempts, rng=rng))
+        delay = backoff_delay(attempts, rng=rng)
+        if retry_after is not None and retry_after > delay:
+            delay = min(retry_after, MAX_RETRY_AFTER_SECONDS)
+        next_attempt = datetime.now(UTC) + timedelta(seconds=delay)
 
     await session.execute(
         text(

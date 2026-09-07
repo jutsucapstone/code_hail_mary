@@ -60,6 +60,10 @@ class IngestOutcome(StrEnum):
     UPDATED = "updated"
     #: Byte-identical body. Nothing was written at all.
     UNCHANGED = "unchanged"
+    #: The provider has nothing at this identifier — deleted, unshared, or never
+    #: there. A normal result of listing and fetching being two calls, recorded so
+    #: the trail distinguishes it from both a change and a failure.
+    ABSENT = "absent"
 
 
 @dataclass(frozen=True, slots=True)

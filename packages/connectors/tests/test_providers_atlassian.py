@@ -147,15 +147,16 @@ def scripted(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path == "/oauth/token/accessible-resources":
         return httpx.Response(200, json=RESOURCES)
-    if path == f"/ex/jira/{CLOUD_ID}/rest/api/3/search":
-        start_at = int(request.url.params.get("startAt", "0"))
-        if start_at == 0:
+    if path == f"/ex/jira/{CLOUD_ID}/rest/api/3/search/jql":
+        # Token-paged, and no `total`: Atlassian removed the `startAt`/`total` search
+        # family, and the replacement says "there is more" only through nextPageToken.
+        token = request.url.params.get("nextPageToken", "")
+        if not token:
             return httpx.Response(
                 200,
                 json={
-                    "startAt": 0,
-                    "maxResults": 50,
-                    "total": 3,
+                    "isLast": False,
+                    "nextPageToken": "page-2",
                     "issues": [
                         {"key": "ENG-5", "fields": {"updated": "2026-08-27T08:00:00.000+0000"}},
                         {"key": "ENG-6", "fields": {"updated": "2026-08-28T08:00:00.000+0000"}},
@@ -165,9 +166,7 @@ def scripted(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
-                "startAt": start_at,
-                "maxResults": 50,
-                "total": 3,
+                "isLast": True,
                 "issues": [{"key": "ENG-7", "fields": {"updated": "2026-08-29T09:30:00.000+0000"}}],
             },
         )
@@ -223,13 +222,16 @@ class TestFlattening:
 
 
 class TestJiraListing:
-    async def test_lists_issue_keys_across_startat_pages(self) -> None:
+    async def test_lists_issue_keys_across_token_pages(self) -> None:
+        """Paging is by `nextPageToken` because `GET /rest/api/3/search` no longer
+        exists — Atlassian removed the offset-paged search along with `startAt` and
+        `total`, and a connector still calling it lists nothing at all."""
         seen: list[tuple[str, str]] = []
 
         def recording(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/rest/api/3/search"):
+            if request.url.path.endswith("/rest/api/3/search/jql"):
                 seen.append(
-                    (request.url.params.get("startAt", ""), request.url.params.get("jql", ""))
+                    (request.url.params.get("nextPageToken", ""), request.url.params.get("jql", ""))
                 )
             return scripted(request)
 
@@ -237,8 +239,23 @@ class TestJiraListing:
         async with client:
             ids = [i async for i in connector.list_since(None)]
         assert ids == ["issue:ENG-5", "issue:ENG-6", "issue:ENG-7"]
-        assert [start_at for start_at, _ in seen] == ["0", "2"]
+        assert [token for token, _ in seen] == ["", "page-2"]
         assert all(jql == "order by updated asc" for _, jql in seen)
+
+    async def test_it_never_calls_the_endpoint_atlassian_removed(self) -> None:
+        """The whole defect in one assertion. The removed path answers 410, which the
+        shared HTTP layer classifies as a permanent rejection, so every Jira sync failed
+        on its first call and no amount of retrying changed that."""
+        called: list[str] = []
+
+        def recording(request: httpx.Request) -> httpx.Response:
+            called.append(request.url.path)
+            return scripted(request)
+
+        connector, client = jira_over(recording)
+        async with client:
+            _ = [i async for i in connector.list_since(None)]
+        assert not any(path.endswith("/rest/api/3/search") for path in called)
 
     async def test_the_cursor_filters_issues_older_than_it(self) -> None:
         connector, client = jira_over(scripted)
@@ -252,7 +269,7 @@ class TestJiraListing:
         seen: list[str] = []
 
         def recording(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/rest/api/3/search"):
+            if request.url.path.endswith("/rest/api/3/search/jql"):
                 seen.append(request.url.params.get("jql", ""))
             return scripted(request)
 
@@ -291,21 +308,67 @@ class TestJiraFetch:
 
 class TestConfluenceListing:
     async def test_lists_page_ids_until_the_next_link_runs_out(self) -> None:
-        seen: list[tuple[str, str]] = []
+        """The first call opens the search; every later one replays the query
+        Confluence handed back in `_links.next`.
+
+        That link carries a `cursor` encoding the server's position. Recomputing a
+        `start` offset instead looks equivalent and is not: Confluence documents deep
+        offsets over a CQL search as unstable, so a walk that counts its own way through
+        can repeat a page or step over one, and nothing downstream would show it —
+        a repeat is deduplicated by content hash and a skip is simply absent.
+        """
+        seen: list[dict[str, str]] = []
 
         def recording(request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("/rest/api/content/search"):
-                seen.append(
-                    (request.url.params.get("start", ""), request.url.params.get("cql", ""))
-                )
+                seen.append(dict(request.url.params))
             return scripted(request)
 
         connector, client = confluence_over(recording)
         async with client:
             ids = [i async for i in connector.list_since(None)]
         assert ids == ["page:98305", "page:98306", "page:98307"]
-        assert [start for start, _ in seen] == ["0", "2"]
-        assert all(cql == "type=page order by lastmodified asc" for _, cql in seen)
+
+        assert seen[0]["cql"] == "type=page order by lastmodified asc"
+        assert seen[0]["start"] == "0"
+        # The second request is the link, replayed: the cursor is what positions it.
+        assert seen[1]["cursor"] == "synthetic"
+
+    async def test_the_next_link_cannot_move_the_request_off_this_site(self) -> None:
+        """Only the link's *query* is replayed. The path is rebuilt from the cloud id
+        this connector already resolved, so a `_links.next` pointing elsewhere — a
+        compromised or simply wrong response — cannot redirect an authenticated call."""
+        paths: list[str] = []
+
+        def hostile(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            if request.url.path == "/oauth/token/accessible-resources":
+                return httpx.Response(200, json=RESOURCES)
+            if "cursor" in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={"results": [], "start": 0, "limit": 2, "size": 0, "_links": {}},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "results": [{"id": "98305", "type": "page", "title": "One"}],
+                    "start": 0,
+                    "limit": 1,
+                    "size": 1,
+                    "_links": {"next": "https://evil.example/steal?cursor=abc"},
+                },
+            )
+
+        connector, client = confluence_over(hostile)
+        async with client:
+            _ = [i async for i in connector.list_since(None)]
+        assert all("evil.example" not in path for path in paths)
+        assert all(
+            path in ("/oauth/token/accessible-resources",)
+            or path.endswith("/wiki/rest/api/content/search")
+            for path in paths
+        )
 
     async def test_the_cursor_is_rendered_into_cql_verbatim(self) -> None:
         seen: list[str] = []

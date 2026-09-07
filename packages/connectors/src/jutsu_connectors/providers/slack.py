@@ -28,6 +28,7 @@ import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    ListingIncomplete,
     ProviderApiError,
     ProviderAuthError,
     ProviderContext,
@@ -89,17 +90,20 @@ class SlackConnector:
 
     async def _pages(self, url: str, params: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         cursor = ""
+        pages = 0
         for _ in range(_MAX_PAGES):
             page_params: dict[str, Any] = {**params, "limit": _PAGE_LIMIT}
             if cursor:
                 page_params["cursor"] = cursor
             payload = _unwrap(await self._http.get_json(url, params=page_params))
+            pages += 1
             yield payload
             metadata = payload.get("response_metadata") or {}
             next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else ""
             cursor = next_cursor if isinstance(next_cursor, str) else ""
             if not cursor:
                 return
+        raise ListingIncomplete(pages * _PAGE_LIMIT, pages=_MAX_PAGES)
 
     async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
         since = parse_cursor(cursor)

@@ -25,6 +25,8 @@ import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    DocumentGone,
+    ListingIncomplete,
     ProviderApiError,
     ProviderContext,
     ProviderHttp,
@@ -63,6 +65,7 @@ class GitHubConnector:
         await self._http.aclose()
 
     async def _pages(self, url: str, params: dict[str, Any]) -> AsyncIterator[list[Any]]:
+        seen = 0
         for page in range(1, _MAX_PAGES + 1):
             response = await self._http.request(
                 "GET", url, params={**params, "per_page": _PER_PAGE, "page": page}
@@ -73,9 +76,11 @@ class GitHubConnector:
                     "GitHub answered a list call without a list", transient=False
                 )
             if payload:
+                seen += len(payload)
                 yield payload
             if len(payload) < _PER_PAGE:
                 return
+        raise ListingIncomplete(seen, pages=_MAX_PAGES)
 
     async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
         since = parse_cursor(cursor)
@@ -112,10 +117,19 @@ class GitHubConnector:
 
     async def _fetch_readme(self, full_name: str) -> RawDocument:
         repo = await self._http.get_json(f"{_API}/repos/{full_name}")
-        body = await self._http.get_text(
-            f"{_API}/repos/{full_name}/readme",
-            headers={"Accept": "application/vnd.github.raw+json"},
-        )
+        try:
+            body = await self._http.get_text(
+                f"{_API}/repos/{full_name}/readme",
+                headers={"Accept": "application/vnd.github.raw+json"},
+            )
+        except ProviderApiError as error:
+            # A repository without a README answers 404 here, and most repositories
+            # do not have one. `list_since` cannot know in advance — the repositories
+            # listing carries no such field — so the absence is discovered here and
+            # is an ordinary outcome rather than a failure.
+            if error.transient:
+                raise
+            raise DocumentGone(f"{full_name} has no README") from error
         return RawDocument(
             external_id=f"readme:{full_name}",
             source_system=self.system,

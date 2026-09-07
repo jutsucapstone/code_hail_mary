@@ -162,3 +162,45 @@ class TestFailureTaxonomy:
             with pytest.raises(ProviderAuthError) as excinfo:
                 _ = [i async for i in connector.list_since(None)]
         assert "gh-token" not in json.dumps(str(excinfo.value))
+
+
+class TestARepositoryWithNoReadme:
+    """Most repositories do not have one, and the listing cannot tell in advance.
+
+    `list_since` yields `readme:<repo>` for every repository it sees, because
+    `GET /user/repos` carries no field saying whether a README exists. The fetch then
+    404s, which the shared HTTP layer classifies as a permanent rejection — so every
+    README-less repository became a job that failed for ever and sat in the view an
+    administrator reads to find real problems.
+    """
+
+    async def test_a_missing_readme_is_absence_rather_than_failure(self) -> None:
+        from jutsu_connectors.providers.base import DocumentGone
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/acme/tooling":
+                return httpx.Response(200, json={"html_url": "https://github.com/acme/tooling"})
+            if request.url.path == "/repos/acme/tooling/readme":
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(404, json={})
+
+        connector, client = connector_over(handler)
+        async with client:
+            with pytest.raises(DocumentGone):
+                await connector.fetch("readme:acme/tooling")
+
+    async def test_a_rate_limited_readme_is_still_a_retryable_failure(self) -> None:
+        """The absence branch must not swallow a transient refusal — a 429 here means
+        come back later, not "this repository has no README"."""
+        from jutsu_connectors.providers.base import ProviderApiError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/acme/tooling":
+                return httpx.Response(200, json={"html_url": "https://github.com/acme/tooling"})
+            return httpx.Response(429, headers={"Retry-After": "30"}, json={})
+
+        connector, client = connector_over(handler)
+        async with client:
+            with pytest.raises(ProviderApiError) as raised:
+                await connector.fetch("readme:acme/tooling")
+        assert raised.value.transient is True

@@ -244,13 +244,14 @@ class HttpOAuthTransport:
         payload = response.json()
         if payload.get("ok") is False:
             raise ServiceUnavailable("The provider did not answer for the account identity.")
-        subject = str(
-            payload.get("sub")
-            or payload.get("account_id")
-            or payload.get("user_id")  # Slack auth.test
-            or payload.get("id")
-            or ""
-        ).strip()
+        # The provider says which key holds *this employee*. Trying a generic ladder
+        # here is what made every Zoom colleague share one ACL principal.
+        subject = ""
+        for key in provider.subject_fields:
+            candidate = payload.get(key)
+            if isinstance(candidate, str | int) and str(candidate).strip():
+                subject = str(candidate).strip()
+                break
         label = str(
             payload.get("email")
             or payload.get("login")

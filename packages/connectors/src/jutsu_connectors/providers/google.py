@@ -29,6 +29,7 @@ import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    ListingIncomplete,
     ProviderApiError,
     ProviderContext,
     ProviderHttp,
@@ -89,8 +90,14 @@ class _GoogleConnector:
     async def _pages(
         self, url: str, params: dict[str, Any], *, items: str
     ) -> AsyncIterator[list[Any]]:
-        """Google's `pageToken`/`nextPageToken` walk, bounded by `_MAX_PAGES`."""
+        """Google's `pageToken`/`nextPageToken` walk, bounded by `_MAX_PAGES`.
+
+        Falling out of the bound raises rather than returning: a plain return here
+        is the same event as "the provider has no more pages", and the walk above
+        cannot tell the two apart. See `ListingIncomplete`.
+        """
         token: str | None = None
+        seen = 0
         for _ in range(_MAX_PAGES):
             merged = dict(params)
             if token:
@@ -98,11 +105,13 @@ class _GoogleConnector:
             payload = await self._http.get_json(url, params=merged)
             rows = payload.get(items)
             if isinstance(rows, list) and rows:
+                seen += len(rows)
                 yield rows
             next_token = payload.get("nextPageToken")
             if not isinstance(next_token, str) or not next_token:
                 return
             token = next_token
+        raise ListingIncomplete(seen, pages=_MAX_PAGES)
 
     async def acls(self, external_id: str) -> list[AclEntry]:
         return owner_acl(self._context)

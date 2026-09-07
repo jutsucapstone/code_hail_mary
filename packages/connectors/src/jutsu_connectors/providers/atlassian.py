@@ -24,11 +24,13 @@ import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 
 import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    ListingIncomplete,
     ProviderApiError,
     ProviderContext,
     ProviderHttp,
@@ -156,16 +158,26 @@ class JiraConnector(_AtlassianConnector):
         else:
             stamp = since.astimezone(UTC).strftime(_JQL_MINUTE)
             jql = f'updated >= "{stamp}" order by updated asc'
-        start_at = 0
+        # **`/rest/api/3/search` is gone, and `/rest/api/3/search/jql` replaced it.**
+        # Atlassian removed the offset-paged endpoint along with the rest of the
+        # `startAt`/`total` search family; calling it now answers 410, which
+        # `ProviderHttp` classifies as a permanent rejection — so the connector listed
+        # nothing, for ever, and every Jira sync failed on its first call. The
+        # replacement is token-paged and deliberately returns no `total`: there is no
+        # count to compare against, and `isLast`/`nextPageToken` is the whole
+        # termination signal.
+        listed = 0
+        next_token: str | None = None
         for _page in range(_MAX_PAGES):
+            params: dict[str, Any] = {
+                "jql": jql,
+                "fields": "updated",
+                "maxResults": _PAGE_SIZE,
+            }
+            if next_token:
+                params["nextPageToken"] = next_token
             payload = await self._http.get_json(
-                f"{_API}/ex/jira/{cloud}/rest/api/3/search",
-                params={
-                    "jql": jql,
-                    "fields": "updated",
-                    "maxResults": _PAGE_SIZE,
-                    "startAt": start_at,
-                },
+                f"{_API}/ex/jira/{cloud}/rest/api/3/search/jql", params=params
             )
             issues = payload.get("issues")
             if not isinstance(issues, list):
@@ -182,11 +194,15 @@ class JiraConnector(_AtlassianConnector):
                     updated = _instant((issue.get("fields") or {}).get("updated"))
                     if updated < since:
                         continue
+                listed += 1
                 yield f"issue:{key}"
-            total = payload.get("total")
-            start_at += len(issues)
-            if not issues or not isinstance(total, int) or start_at >= total:
+            raw_token = payload.get("nextPageToken")
+            next_token = raw_token if isinstance(raw_token, str) and raw_token else None
+            # `isLast` is authoritative when Jira sends it; a missing token means the
+            # same thing and is what older responses use to say it.
+            if payload.get("isLast") is True or next_token is None:
                 return
+        raise ListingIncomplete(listed, pages=_MAX_PAGES)
 
     async def fetch(self, external_id: str) -> RawDocument:
         if external_id.startswith("issue:"):
@@ -237,6 +253,18 @@ class JiraConnector(_AtlassianConnector):
         )
 
 
+def _next_params(link: str) -> dict[str, Any]:
+    """The query of a Confluence `_links.next`, as parameters.
+
+    The value is a relative reference like
+    `/wiki/rest/api/content/search?cql=...&cursor=...&limit=25`. Only its query is
+    used: the path is rebuilt from the cloud id this connector already resolved, so a
+    link that pointed somewhere else could not move the request.
+    """
+    query = urlparse(link).query
+    return {key: value for key, value in parse_qsl(query, keep_blank_values=False)}
+
+
 class ConfluenceConnector(_AtlassianConnector):
     """The `Connector` protocol against Confluence Cloud's content REST API."""
 
@@ -250,11 +278,24 @@ class ConfluenceConnector(_AtlassianConnector):
         else:
             stamp = since.astimezone(UTC).strftime(_CQL_MINUTE)
             cql = f'type=page and lastmodified >= "{stamp}" order by lastmodified asc'
+        # **Follow the link Confluence hands back rather than counting offsets.**
+        # `content/search` is cursor-paged: `_links.next` carries a `cursor`
+        # parameter that encodes the server's position, and a re-issued `start`
+        # offset over a CQL search is not guaranteed to line up with it — Confluence
+        # is explicit that deep offsets over search are unstable, so a walk that
+        # recomputed `start` could repeat a page or step over one. The offset is
+        # kept only as the opening position.
         start = 0
+        next_query: str | None = None
         for _page in range(_MAX_PAGES):
+            params: dict[str, Any] = (
+                _next_params(next_query)
+                if next_query
+                else {"cql": cql, "limit": _PAGE_SIZE, "start": start}
+            )
             payload = await self._http.get_json(
                 f"{_API}/ex/confluence/{cloud}/wiki/rest/api/content/search",
-                params={"cql": cql, "limit": _PAGE_SIZE, "start": start},
+                params=params,
             )
             results = payload.get("results")
             if not isinstance(results, list):
@@ -274,12 +315,14 @@ class ConfluenceConnector(_AtlassianConnector):
             size = payload.get("size")
             limit = payload.get("limit")
             links = payload.get("_links")
-            has_next = isinstance(links, dict) and "next" in links
+            raw_next = links.get("next") if isinstance(links, dict) else None
             if not isinstance(size, int) or not isinstance(limit, int):
                 return
-            if size < limit or not has_next:
+            if size < limit or not isinstance(raw_next, str) or not raw_next:
                 return
+            next_query = raw_next
             start += size
+        raise ListingIncomplete(start, pages=_MAX_PAGES)
 
     async def fetch(self, external_id: str) -> RawDocument:
         if external_id.startswith("page:"):

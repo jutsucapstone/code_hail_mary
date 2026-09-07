@@ -64,3 +64,58 @@ class TestProviderFailureClassification:
         kind, retryable = classify(error)
         assert kind is FailureKind.PROVIDER_TRANSIENT
         assert retryable is True
+
+
+class TestTheConnectorsOwnFailures:
+    """The half of the taxonomy that used to fall through to INTERNAL.
+
+    Every live provider call goes through `ProviderHttp.request`, which raises
+    `ProviderAuthError` on 401/403, a transient `ProviderApiError` on 429 and 5xx, and a
+    permanent one on any other 4xx. None of those were named in `classify`, so a grant
+    the employee revoked at Google came back as "internal bug, retry five times" and the
+    connection kept describing itself as connected.
+    """
+
+    def test_a_revoked_grant_is_permanent_and_not_an_internal_bug(self) -> None:
+        from jutsu_connectors.providers.base import ProviderAuthError
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(ProviderAuthError("the provider no longer honours this token"))
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_a_rate_limit_is_transient(self) -> None:
+        from jutsu_connectors.providers.base import ProviderApiError
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(
+            ProviderApiError("the provider rate-limited this sync", transient=True, retry_after=30)
+        )
+        assert kind is FailureKind.PROVIDER_TRANSIENT
+        assert retryable is True
+
+    def test_a_rejected_request_is_permanent(self) -> None:
+        """A 400 from a provider is rejected identically every time. Five attempts buys
+        five identical refusals and five entries in someone's quota."""
+        from jutsu_connectors.providers.base import ProviderApiError
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(
+            ProviderApiError("the provider rejected the request (HTTP 400)", transient=False)
+        )
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_the_auth_error_is_matched_before_its_parent(self) -> None:
+        """`ProviderAuthError` subclasses `ProviderApiError` with `transient=False`, so
+        both branches agree on the kind — but only the auth branch is what
+        `record_failure` reads to flip the connection to "reconnect". If the parent
+        check were written first this test would still pass on kind and the connection
+        would silently stay healthy, so it asserts the type relationship too."""
+        from jutsu_connectors.providers.base import ProviderApiError, ProviderAuthError
+
+        assert issubclass(ProviderAuthError, ProviderApiError)
+        assert ProviderAuthError("x").transient is False

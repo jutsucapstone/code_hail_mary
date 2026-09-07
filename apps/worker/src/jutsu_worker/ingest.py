@@ -38,6 +38,12 @@ from typing import Any
 
 import anthropic
 from jutsu_connectors import PathEscape, UnparsableMessage
+from jutsu_connectors.providers.base import (
+    DocumentGone,
+    ListingIncomplete,
+    ProviderApiError,
+    ProviderAuthError,
+)
 from jutsu_core import SourceSystem
 from jutsu_retrieval.embeddings import Embedder
 from jutsu_retrieval.errors import (
@@ -99,6 +105,10 @@ class SourceRun:
     reopened: int
     reclaimed: int
     cursor: str | None
+    #: False when the connector hit its page budget with results still to come. The
+    #: cursor is then left where it was, so nothing is recorded as covered that was
+    #: not listed, and the next walk resumes over the same window.
+    complete: bool = True
 
 
 # --------------------------------------------------------------------------------------
@@ -229,6 +239,7 @@ async def run_source_job(
     enqueued = 0
     duplicate = 0
     reopened = 0
+    complete = True
     try:
         listing = connector.list_since(row.last_sync_cursor)
         async for external_id in listing:
@@ -258,10 +269,27 @@ async def run_source_job(
                     duplicate += 1
             else:
                 enqueued += 1
+    except ListingIncomplete:
+        # The connector ran out of page budget with results still to come. Every
+        # identifier it did yield is already enqueued above and stays enqueued —
+        # this is not a failure of the walk, it is the walk being unfinished.
+        complete = False
     finally:
         await close_connector(connector)
 
-    cursor = started.isoformat()
+    # **The cursor only advances over ground the walk actually covered.**
+    #
+    # `started` means "everything up to here has been listed", and the next walk asks
+    # the provider only for what changed after it. Writing that after a listing that
+    # stopped at its page bound is how a first sync of a large mailbox indexed the
+    # newest few thousand messages and filtered the rest out of every later listing —
+    # permanently, and while reporting success. An incomplete walk therefore leaves the
+    # cursor alone: the next run re-lists the same window, the already-enqueued
+    # identifiers are refused by their idempotency keys, and nothing is lost.
+    #
+    # `last_sync_at` still moves, because a walk did run and the operator needs to see
+    # that it ran; `listing_complete` is what says whether it finished.
+    cursor = started.isoformat() if complete else row.last_sync_cursor
     await session.execute(
         text("UPDATE sources SET last_sync_cursor = :cursor, last_sync_at = now() WHERE id = :id"),
         {"cursor": cursor, "id": str(source_id)},
@@ -296,6 +324,7 @@ async def run_source_job(
             "duplicate": duplicate,
             "reopened": reopened,
             "reclaimed": reclaimed,
+            "listing_complete": complete,
         },
     )
     # The walk's numbers land on the source row too (§11): the Knowledge Sources UI
@@ -313,6 +342,7 @@ async def run_source_job(
                         "duplicate": duplicate,
                         "reopened": reopened,
                         "reclaimed": reclaimed,
+                        "complete": complete,
                     }
                 }
             ),
@@ -320,14 +350,18 @@ async def run_source_job(
         },
     )
     logger.info(
-        "source_run org=%s source=%s listed=%d enqueued=%d reopened=%d duplicate=%d reclaimed=%d",
-        org_id,
-        source_id,
-        listed,
-        enqueued,
-        reopened,
-        duplicate,
-        reclaimed,
+        "%s",
+        {
+            "event": "source_run",
+            "org_id": str(org_id),
+            "source_id": str(source_id),
+            "documents_listed": listed,
+            "documents_enqueued": enqueued,
+            "documents_reopened": reopened,
+            "documents_skipped": duplicate,
+            "jobs_reclaimed": reclaimed,
+            "listing_complete": complete,
+        },
     )
     return SourceRun(
         listed=listed,
@@ -335,6 +369,7 @@ async def run_source_job(
         duplicate=duplicate,
         reopened=reopened,
         reclaimed=reclaimed,
+        complete=complete,
         cursor=cursor,
     )
 
@@ -374,6 +409,13 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
 
     try:
         raw = await connector.fetch(external_id)
+    except DocumentGone:
+        # Not a failure: the identifier was listed and the document is not there.
+        # The job completes having written nothing, so it stops occupying the
+        # administrator's failed-jobs view — and, because the key is left completed
+        # rather than failed, a later walk reopens it if the document appears.
+        await record_state(session, job_id=job.id, state=JobState.NORMALIZED)
+        return IngestOutcome.ABSENT
     finally:
         await close_connector(connector)
     await record_state(session, job_id=job.id, state=JobState.NORMALIZED)
@@ -515,6 +557,19 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
         return FailureKind.PROVIDER_PERMANENT, False
     if isinstance(error, TransientRefreshError):
         return FailureKind.PROVIDER_TRANSIENT, True
+    # The connectors' own failures, which used to fall all the way through to INTERNAL.
+    # That was wrong in both directions: a grant revoked at the provider — the employee
+    # removing the app in their Google account, an administrator revoking it — surfaces
+    # here as a 401/403 and was recorded as an internal bug, retried five times, and
+    # never flipped the connection to "reconnect"; and a permanent 4xx spent five
+    # attempts being rejected identically. `ProviderAuthError` is a subclass, so it is
+    # tested first.
+    if isinstance(error, ProviderAuthError):
+        return FailureKind.PROVIDER_PERMANENT, False
+    if isinstance(error, ProviderApiError):
+        if error.transient:
+            return FailureKind.PROVIDER_TRANSIENT, True
+        return FailureKind.PROVIDER_PERMANENT, False
     # Anthropic SDK errors from the extraction transport. Order matters: RateLimitError
     # and InternalServerError are both APIStatusError subclasses, so the transient checks
     # come first and the remaining 4xx statuses are permanent — a bad key or a nonexistent
@@ -584,6 +639,9 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
         message=message,
         attempts=job.attempts,
         retryable=retryable,
+        # The provider's own answer to "when", when it sent one. Everything else has
+        # no opinion and takes the ladder.
+        retry_after=error.retry_after if isinstance(error, ProviderApiError) else None,
     )
     await _audit(
         session,
@@ -613,7 +671,11 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
         state.value,
         job.attempts,
     )
-    if isinstance(error, ReauthRequired):
+    # Both halves of "this grant is gone": `ReauthRequired` is the credential layer
+    # failing to *mint* a token, `ProviderAuthError` is the provider refusing one it
+    # already minted. Only the first used to reach here, so a grant revoked after the
+    # last successful refresh left a connection that looked healthy and synced nothing.
+    if isinstance(error, ReauthRequired | ProviderAuthError):
         connection_id = await _backing_connection_id(session, payload=job.payload)
         if connection_id is not None:
             await mark_reauth_required(session, connection_id=connection_id)

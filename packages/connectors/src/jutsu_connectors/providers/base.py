@@ -34,6 +34,8 @@ import httpx
 from jutsu_core.models import AclEntry, SourceSystem
 
 __all__ = [
+    "DocumentGone",
+    "ListingIncomplete",
     "ProviderApiError",
     "ProviderAuthError",
     "ProviderContext",
@@ -48,6 +50,50 @@ class TokenSource(Protocol):
     """A currently-valid access token, however the caller keeps it valid."""
 
     async def access_token(self) -> str: ...
+
+
+class DocumentGone(RuntimeError):
+    """The provider has no document at this identifier.
+
+    Distinct from every other provider refusal because it is not a refusal: nothing
+    is wrong, the thing simply is not there. Listing and fetching are two calls with
+    a gap between them, and a document can be deleted, unshared or moved inside it.
+    GitHub makes the case unavoidable — the repository listing says nothing about
+    whether a repository has a README, so a connector that lists one for each
+    repository must be able to say "there wasn't one" without that being an error.
+
+    Treated as a permanently failed job it produced exactly that: a row per
+    README-less repository, failed for ever, in the view an administrator reads to
+    find real problems.
+    """
+
+
+class ListingIncomplete(RuntimeError):
+    """The page budget ran out before the provider ran out of results.
+
+    **The bug this exists to make impossible was silence.** Every listing loop here is
+    bounded — an unbounded `while nextPageToken` against a hostile or looping API is a
+    walk that never returns — and each one used to reach its bound by simply falling out
+    of a `for ... in range(...)`, which is indistinguishable from the provider having no
+    more pages. The walk then advanced `sources.last_sync_cursor` to the moment the walk
+    *started*, so every document past the bound was filtered out of the next listing by
+    that very cursor and never seen again. A first sync of a large mailbox indexed the
+    newest few thousand messages, reported success, and lost the rest permanently.
+
+    Raising instead means the walk keeps everything it enqueued and refuses to claim
+    coverage it does not have: `run_source_walk` leaves the cursor where it was and
+    records the source as incompletely listed.
+
+    `listed` is a count, never an identifier — this message is stored and logged.
+    """
+
+    def __init__(self, listed: int, *, pages: int):
+        super().__init__(
+            f"the provider had more results after {pages} pages ({listed} listed); "
+            "the cursor was not advanced"
+        )
+        self.listed = listed
+        self.pages = pages
 
 
 class ProviderApiError(RuntimeError):

@@ -31,6 +31,7 @@ import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    ListingIncomplete,
     ProviderApiError,
     ProviderContext,
     ProviderHttp,
@@ -46,6 +47,17 @@ _PAGE_SIZE = 300
 _MAX_PAGES = 50
 #: Zoom rejects a from/to range wider than a month.
 _WINDOW_DAYS = 30
+#: How far back each incremental walk re-opens its window.
+#:
+#: Zoom's recordings listing is filtered by whole DATES, and a recording appears in
+#: it only once Zoom has finished processing it — which happens minutes to hours
+#: after the meeting, and can straddle a walk. With the window floored to the
+#: cursor's own date, a meeting held on the 3rd whose recording finished processing
+#: after the walk on the 4th fell between the two: the next walk asked `from=4` and
+#: the recording is dated the 3rd, so nothing ever listed it. Re-opening the window
+#: a couple of days costs re-listing identifiers whose idempotency keys already
+#: exist — the cheapest possible duplicate — and closes the seam.
+_LATE_ARRIVAL_DAYS = 2
 #: How far a FIRST sync reaches back. Recordings older than this arrive when Zoom
 #: history import becomes its own slice; an unbounded walk would spend the rate
 #: limit re-reading years of silence on every reconnect.
@@ -105,7 +117,12 @@ class ZoomConnector:
     async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
         since = parse_cursor(cursor)
         now = datetime.now(tz=UTC)
-        window_start = since if since is not None else now - timedelta(days=_LOOKBACK_DAYS)
+        window_start = (
+            since - timedelta(days=_LATE_ARRIVAL_DAYS)
+            if since is not None
+            else now - timedelta(days=_LOOKBACK_DAYS)
+        )
+        listed = 0
         while True:
             window_end = min(window_start + timedelta(days=_WINDOW_DAYS), now)
             next_token = ""
@@ -123,10 +140,16 @@ class ZoomConnector:
                         continue
                     meeting_uuid = meeting.get("uuid")
                     if isinstance(meeting_uuid, str) and meeting_uuid:
+                        listed += 1
                         yield f"recording:{meeting_uuid}"
                 next_token = str(payload.get("next_page_token") or "")
                 if not next_token:
                     break
+            else:
+                # The window still had pages when the budget ran out. Advancing to
+                # the next window here would step over the remainder of this one,
+                # and the cursor would then exclude it for ever.
+                raise ListingIncomplete(listed, pages=_MAX_PAGES)
             if window_end >= now:
                 return
             # The next window REUSES the boundary day: from/to are inclusive dates,

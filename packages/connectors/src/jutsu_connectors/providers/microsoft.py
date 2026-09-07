@@ -35,6 +35,7 @@ import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 
 from jutsu_connectors.providers.base import (
+    ListingIncomplete,
     ProviderApiError,
     ProviderAuthError,
     ProviderContext,
@@ -147,14 +148,20 @@ async def _odata_pages(
     which is deliberately not kept: the walk's cursor is an instant, not a token)."""
     next_url = url
     next_params = params
+    pages = 0
     for _ in range(_MAX_PAGES):
         payload = await http.get_json(next_url, params=next_params)
+        pages += 1
         yield payload
         next_link = payload.get("@odata.nextLink")
         if not isinstance(next_link, str) or not next_link:
             return
         next_url = next_link
         next_params = None
+    # Same contract as every other connector here, kept consistent even though the
+    # Microsoft products are not enabled in this deployment: falling out of the bound
+    # is not the same event as the provider running out of pages.
+    raise ListingIncomplete(pages * _PAGE_SIZE, pages=_MAX_PAGES)
 
 
 async def _download_text(http: ProviderHttp, client: httpx.AsyncClient, url: str) -> str:

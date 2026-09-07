@@ -1132,26 +1132,80 @@ class TestHttpOAuthTransport:
         assert "bad_verification_code" not in str(refusal.value)
 
     @pytest.mark.parametrize(
-        ("payload", "subject", "label"),
+        ("provider_id", "payload", "subject", "label"),
         [
-            ({"sub": "google-sub", "account_id": "shadow", "email": "a@b"}, "google-sub", "a@b"),
-            ({"account_id": "atlassian-acct", "name": "Ada"}, "atlassian-acct", "Ada"),
-            ({"ok": True, "user_id": "U123", "user": "ada"}, "U123", "ada"),  # Slack auth.test
-            ({"id": 4242, "login": "octo"}, "4242", "octo"),
+            (
+                "google_drive",
+                {"sub": "google-sub", "account_id": "shadow", "email": "a@b"},
+                "google-sub",
+                "a@b",
+            ),
+            ("jira", {"account_id": "atlassian-acct", "name": "Ada"}, "atlassian-acct", "Ada"),
+            (
+                "slack",
+                {"ok": True, "user_id": "U123", "team_id": "T9", "user": "ada"},
+                "U123",
+                "ada",
+            ),
+            ("github", {"id": 4242, "login": "octo"}, "4242", "octo"),
+            (
+                # Zoom answers with both, and only one of them is a person.
+                "zoom",
+                {"id": "zoom-user-1", "account_id": "ACCOUNT-SHARED", "email": "ada@corp"},
+                "zoom-user-1",
+                "ada@corp",
+            ),
         ],
     )
-    async def test_identity_subject_fallback_chain(
-        self, payload: dict[str, object], subject: str, label: str
+    async def test_the_subject_comes_from_the_field_the_provider_declares(
+        self, provider_id: str, payload: dict[str, object], subject: str, label: str
     ) -> None:
-        """sub → account_id → user_id → id, in that order, across the providers'
-        identity shapes — including Slack's auth.test, which has none of OIDC's."""
+        """Each provider's own identity shape, read with that provider's own spec.
+
+        This replaced a single generic ladder — `sub or account_id or user_id or id` —
+        that was tested against four payloads while always passing GitHub's spec, so
+        nothing in the suite could see that the ladder is provider-dependent. It is:
+        Atlassian's `account_id` is the person and Zoom's is the whole account.
+        """
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=payload)
 
-        identity = await _http_transport(handler).fetch_identity(PROVIDERS["github"], "tok")
+        identity = await _http_transport(handler).fetch_identity(PROVIDERS[provider_id], "tok")
         assert identity.subject == subject
         assert identity.label == label
+
+    async def test_two_colleagues_on_one_zoom_account_are_two_subjects(self) -> None:
+        """The ACL consequence, stated as an assertion rather than left to review.
+
+        `owner_acl` mints `zoom:<subject>` and `source_identities` links it to the
+        employee who proved it. One subject shared by a whole Zoom account means the
+        first colleague to connect receives every other colleague's recordings — and,
+        because linking is fail-closed on conflict, the rest receive no principal at
+        all. Both halves are silent.
+        """
+        payloads = iter(
+            [
+                {"id": "zoom-ada", "account_id": "ACCOUNT-SHARED", "email": "ada@corp"},
+                {"id": "zoom-grace", "account_id": "ACCOUNT-SHARED", "email": "grace@corp"},
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=next(payloads))
+
+        transport = _http_transport(handler)
+        first = await transport.fetch_identity(PROVIDERS["zoom"], "tok-a")
+        second = await transport.fetch_identity(PROVIDERS["zoom"], "tok-b")
+        assert first.subject != second.subject
+
+    def test_every_provider_declares_a_subject_field(self) -> None:
+        """A provider added without one would silently inherit `sub`, which several of
+        these APIs do not return at all — and an empty subject is refused at runtime,
+        so the failure would land on an employee mid-connect rather than here."""
+        for provider in PROVIDERS.values():
+            assert provider.subject_fields, provider.id
+            assert all(key and isinstance(key, str) for key in provider.subject_fields), provider.id
 
     async def test_revoke_styles_send_what_each_provider_documents(self) -> None:
         seen: list[httpx.Request] = []

@@ -58,6 +58,18 @@ class Provider:
     #: Authorization header and keeps them out of the body (Zoom requires this, and
     #: RFC 6749 forbids using both at once).
     token_auth: str = "body"  # noqa: S105 - an auth placement tag, not a secret
+    #: Which key of the identity response carries the subject, in order of preference.
+    #:
+    #: **Declared per provider because guessing it is a cross-tenant ACL bug.** A generic
+    #: `sub or account_id or user_id or id` ladder reads Zoom's `GET /v2/users/me`
+    #: response — which carries both an `id` (this employee) and an `account_id` (the
+    #: whole Zoom account, identical for every colleague) — and picks the account. Every
+    #: employee would then mint the same `zoom:<account_id>` ACL principal: the first to
+    #: connect claims it and receives everyone's recordings, and the rest get no
+    #: principal at all because linking is fail-closed on conflict. The same ladder is
+    #: correct for Atlassian, where `account_id` *is* the person. So it is data, not a
+    #: heuristic, and `test_every_provider_declares_a_subject_field` keeps it that way.
+    subject_fields: tuple[str, ...] = ("sub",)
     #: Which source_identities namespace this provider's proven subject belongs to
     #: (ADR 0014). Four Google products share one subject (the OIDC sub), three
     #: Microsoft products share the Graph object id; the namespaces mirror that.
@@ -112,6 +124,8 @@ def _microsoft(id_: str, name: str, description: str, *scopes: str) -> Provider:
         token_url=_MS_TOKEN,
         userinfo_url=_MS_USERINFO,
         scopes=("openid", "email", "offline_access", *scopes),
+        # Graph /me answers with `id`, the directory object id.
+        subject_fields=("id",),
         acl_namespace="m365",
         # No revocation endpoint for v2 access tokens; they expire on their own and
         # the refresh token dies with the local ciphertext.
@@ -128,6 +142,8 @@ def _atlassian(id_: str, name: str, description: str, *scopes: str) -> Provider:
         token_url=_ATLASSIAN_TOKEN,
         userinfo_url=_ATLASSIAN_ME,
         scopes=(*scopes, "offline_access"),
+        # Atlassian's account_id is the person, not a tenant.
+        subject_fields=("account_id",),
         acl_namespace=id_,
         # audience is required for api.atlassian.com tokens; consent prompts the
         # grant screen that actually issues offline_access.
@@ -198,6 +214,8 @@ PROVIDERS: dict[str, Provider] = {
             # `scope` parameter provisions a bot.
             scopes=("channels:history", "channels:read", "users:read"),
             acl_namespace="slack",
+            # auth.test returns user_id (this employee) beside team_id (the workspace).
+            subject_fields=("user_id",),
             token_style="slack_user",  # noqa: S106 - a parsing style tag, not a secret
             revoke_url="https://slack.com/api/auth.revoke",
             revoke_style="bearer_post",
@@ -231,6 +249,9 @@ PROVIDERS: dict[str, Provider] = {
             # user:read + recording:read) and nothing that writes.
             scopes=(),
             acl_namespace="zoom",
+            # `id` is the employee. `account_id` is the Zoom account every colleague
+            # shares — see `subject_fields` on the dataclass for what picking it costs.
+            subject_fields=("id",),
             token_auth="basic",  # noqa: S106 - an auth placement tag, not a secret
             revoke_url="https://zoom.us/oauth/revoke",
             revoke_style="basic_post_token",
@@ -248,6 +269,8 @@ PROVIDERS: dict[str, Provider] = {
             # feature. Private-repo *content* would need `repo` (also write) — refused;
             # a GitHub App installation is the read-only path to private content.
             scopes=("read:user", "read:org"),
+            # GitHub's numeric user id, which survives a login rename.
+            subject_fields=("id",),
             acl_namespace="github",
             revoke_url="https://api.github.com/applications/{client_id}/grant",
             revoke_style="github_grant",
