@@ -41,7 +41,14 @@ from jutsu_api.identities import link_verified_email
 from jutsu_api.registration import allocate_jutsu_id
 from jutsu_api.security import Principal
 
-__all__ = ["AcceptedInvitation", "IssuedInvitation", "accept_invitation", "invite_employee"]
+__all__ = [
+    "AcceptedInvitation",
+    "IssuedInvitation",
+    "accept_invitation",
+    "invite_employee",
+    "resend_invitation",
+    "revoke_invitation",
+]
 
 #: Long enough to survive a weekend and a forwarded mail; short enough that a stale link
 #: in an inbox is not a standing key to the organisation.
@@ -126,6 +133,27 @@ async def invite_employee(
     if member is not None:
         raise Conflict(_ALREADY_A_MEMBER)
 
+    # **An expired invitation has to be retired before a new one can be written.**
+    #
+    # `uq_invitations_org_email_live` is partial on `accepted_at IS NULL AND revoked_at
+    # IS NULL` and cannot mention `expires_at` — `now()` is not immutable, so no index
+    # predicate may reference it. The consequence is that an invitation which merely ran
+    # out of time still occupies the slot: re-inviting that person raised the
+    # `IntegrityError` below and told the administrator the address "already has an
+    # invitation waiting", which was the one thing that was not true. Nobody could invite
+    # them again, ever, and the refusal explained the opposite of the problem.
+    #
+    # Revoked rather than deleted: the row is the record that an invitation was sent, and
+    # its token hash must stay unusable. Scoped by row-level security to the actor's own
+    # organisation, like every statement here.
+    await session.execute(
+        text(
+            "UPDATE invitations SET revoked_at = now() WHERE lower(email) = :email "
+            "AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at <= now()"
+        ),
+        {"email": normalised},
+    )
+
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + timedelta(hours=INVITATION_TTL_HOURS)
 
@@ -193,6 +221,118 @@ async def invite_employee(
     await sender.send(replace(message, secrets={"token": token}))
 
     return IssuedInvitation(invitation_id=invitation_id, token=token)
+
+
+async def revoke_invitation(session: AsyncSession, *, actor: Principal, invitation_id: UUID) -> str:
+    """Cancel an invitation that is still waiting. Returns the address it was for.
+
+    **One statement that filters and marks together**, for the same reason the accept path
+    uses one: two administrators clicking Cancel on the same row must not both write an
+    audit line saying they did it, and a read-then-write is exactly that race.
+
+    An ACCEPTED invitation is not cancellable and this is not an oversight — that person
+    is a member now, and unmaking a membership is deactivation, a different act with a
+    different permission. An already-revoked one is refused too: there is nothing left to
+    cancel, and reporting success would suggest something happened.
+
+    Row-level security scopes the UPDATE to the actor's organisation, so an id belonging
+    to another tenant matches nothing and is indistinguishable from one that does not
+    exist.
+    """
+    revoked = (
+        await session.execute(
+            text(
+                "UPDATE invitations SET revoked_at = now() "
+                "WHERE id = :id AND accepted_at IS NULL AND revoked_at IS NULL "
+                "RETURNING email, role_key"
+            ),
+            {"id": invitation_id},
+        )
+    ).first()
+
+    if revoked is None:
+        raise NotFound("That invitation is no longer waiting.")
+
+    # **The rank ceiling applies to withdrawing an invitation too.**
+    #
+    # `member:invite` is held by HR Admin and IT Admin as well as the two top roles, and
+    # without this an HR Admin could cancel a Super Admin invitation an Owner had issued —
+    # a role they could not have granted, and could not change once it was accepted.
+    # Cancelling somebody's pending access is a smaller act than granting it, but it is
+    # still an act against a rank above your own.
+    #
+    # Checked AFTER the UPDATE on purpose. The single filter-and-mark statement is what
+    # stops two administrators both believing they cancelled it; reading the row first and
+    # then updating would reintroduce exactly that race. Raising here rolls the whole
+    # transaction back — `get_db` wraps the request in `session.begin()` — so the
+    # speculative UPDATE is undone and no audit row is written.
+    if not outranks(actor.role, Role(revoked.role_key)):
+        raise PermissionDenied("You cannot cancel an invitation at that level of access.")
+
+    await session.execute(
+        text(
+            "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
+            "resource_id, outcome) "
+            "VALUES (:org, :actor, 'user', 'member.invite_revoked', 'invitation', :rid, "
+            "'success')"
+        ),
+        {"org": actor.org_id, "actor": str(actor.user_id), "rid": str(invitation_id)},
+    )
+    return str(revoked.email)
+
+
+async def resend_invitation(
+    session: AsyncSession,
+    *,
+    actor: Principal,
+    invitation_id: UUID,
+    settings: Settings,
+    sender: EmailSender,
+) -> IssuedInvitation:
+    """Send a fresh invitation to the address an existing one was for.
+
+    **The old invitation is revoked, not reused.** A resend that re-sent the same token
+    would extend a credential's life by seventy-two hours every time somebody pressed the
+    button, and would leave two live copies of it in two inboxes if the first message
+    turned up late. Issuing a new one and killing the old is also what
+    `uq_invitations_org_email_live` requires — it permits exactly one live invitation per
+    address.
+
+    **It goes through `invite_employee`**, so the rank ceiling is re-checked against the
+    person pressing the button rather than the person who sent the original. An HR Admin
+    therefore cannot resend an invitation a Super Admin issued at Super Admin level, which
+    is the escalation this would otherwise quietly offer.
+    """
+    original = (
+        await session.execute(
+            text(
+                "SELECT email, role_key, role_title FROM invitations "
+                "WHERE id = :id AND accepted_at IS NULL"
+            ),
+            {"id": invitation_id},
+        )
+    ).first()
+
+    if original is None:
+        raise NotFound("That invitation is no longer waiting.")
+
+    # Revoked first, so the INSERT inside `invite_employee` does not collide with it. An
+    # expired row would be retired there anyway; this covers the pending one, which is
+    # the case a resend is actually for.
+    await session.execute(
+        text("UPDATE invitations SET revoked_at = now() WHERE id = :id AND revoked_at IS NULL"),
+        {"id": invitation_id},
+    )
+
+    return await invite_employee(
+        session,
+        actor=actor,
+        email=str(original.email),
+        role=Role(original.role_key),
+        settings=settings,
+        sender=sender,
+        role_title=original.role_title,
+    )
 
 
 async def _organisation_name(session: AsyncSession, *, org_id: object) -> str:

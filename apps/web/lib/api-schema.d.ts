@@ -325,6 +325,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/employees/invitations/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Invitations
+         * @description Invite everyone the administrator approved, and report each row's fate.
+         *
+         *     202 rather than 200: some rows may not have been invited, and the response body — not
+         *     the status — is what says which. A 200 over a batch where eleven rows failed would be
+         *     a lie the client has to unpick.
+         *
+         *     Idempotent in the way that matters for a retry: re-sending the same rows returns
+         *     `already_invited` for everyone who got one, so pressing the button twice does not
+         *     email anybody twice.
+         */
+        post: operations["create_invitations_v1_employees_invitations_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/employees/invitations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Invitations
+         * @description What would happen to each address. Sends nothing and writes nothing.
+         *
+         *     This is the whole reason bulk onboarding is two requests. An administrator pasting a
+         *     list from last quarter's roster wants to see the six people who already have accounts
+         *     and the two misspelt addresses *before* seventy-two others receive mail — and once
+         *     those are shown, an invitation nobody can un-send is a decision rather than an
+         *     accident.
+         *
+         *     It is gated and tenant-scoped exactly like the send: the member and invitation lookups
+         *     run under row-level security, so the answer for an address outside this organisation
+         *     is always "will be invited", never "already a member somewhere else".
+         */
+        post: operations["preview_invitations_v1_employees_invitations_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/employees/{user_id}/connections": {
         parameters: {
             query?: never;
@@ -557,6 +615,55 @@ export interface paths {
          *     It carries no organisation identifier: the sign-in form does not ask for one.
          */
         post: operations["accept_v1_invitations_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invitations/{invitation_id}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend
+         * @description Issue a fresh invitation to the same address, and kill the old one.
+         *
+         *     The most-asked admin question is "they never got it". The answer is a new token, not
+         *     the old one resent: reusing it would extend a live credential's life every time the
+         *     button was pressed, and leave two working copies in two inboxes if the first message
+         *     merely arrived late.
+         */
+        post: operations["resend_v1_invitations__invitation_id__resend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invitations/{invitation_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke
+         * @description Cancel an invitation that is still waiting.
+         *
+         *     Gated on the permission that sent it: whoever may create that exposure may withdraw
+         *     it. An accepted invitation is a 404 here — that person is a member, and unmaking a
+         *     membership is deactivation, not cancellation.
+         */
+        post: operations["revoke_v1_invitations__invitation_id__revoke_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1648,6 +1755,86 @@ export interface components {
             /** Items */
             items: components["schemas"]["BookmarkOut"][];
         };
+        /** BulkInviteOutcome */
+        BulkInviteOutcome: {
+            /** Failed */
+            failed: number;
+            /** Rows */
+            rows: components["schemas"]["BulkRowResult"][];
+            /** Sent */
+            sent: number;
+        };
+        /** BulkInvitePayload */
+        BulkInvitePayload: {
+            /** Rows */
+            rows: components["schemas"]["BulkInviteRow"][];
+        };
+        /**
+         * BulkInviteRow
+         * @description One row of the reviewed preview, sent back to be acted on.
+         *
+         *     The send takes explicit rows rather than the original paste, because the point of the
+         *     preview is that the administrator edits it: fixes a typo, changes somebody's role,
+         *     removes the four people who left. Re-parsing the paste would discard all of that.
+         */
+        BulkInviteRow: {
+            /** Email */
+            email: string;
+            role: components["schemas"]["Role"];
+            /** Role Title */
+            role_title?: string | null;
+        };
+        /**
+         * BulkOutcome
+         * @description What `classify` says will happen, and what `invite_many` reports happened.
+         *
+         *     The two share a vocabulary on purpose: the preview an administrator approved and the
+         *     result they get back read the same way, so a row that changed between them is
+         *     visible rather than merely different.
+         * @enum {string}
+         */
+        BulkOutcome: "ready" | "sent" | "already_member" | "already_invited" | "duplicate" | "invalid_email" | "invalid_role" | "role_too_high" | "failed";
+        /** BulkPreview */
+        BulkPreview: {
+            /** Ready */
+            ready: number;
+            /** Rows */
+            rows: components["schemas"]["BulkRowResult"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * BulkRowResult
+         * @description One row and what happened, or would happen, to it.
+         */
+        BulkRowResult: {
+            /** Detail */
+            detail: string;
+            /** Email */
+            email: string;
+            outcome: components["schemas"]["BulkOutcome"];
+            role: components["schemas"]["Role"];
+            /** Role Title */
+            role_title: string | null;
+        };
+        /**
+         * BulkSource
+         * @description What the administrator supplied, in whichever of the three forms they had it.
+         *
+         *     Exactly one of `emails`, `csv` or `xlsx_base64`. A payload carrying two is refused
+         *     rather than silently preferring one, because the two would disagree about the roles
+         *     and the administrator would never see which had been used.
+         */
+        BulkSource: {
+            /** Csv */
+            csv?: string | null;
+            /** Emails */
+            emails?: string | null;
+            /** @default member */
+            role: components["schemas"]["Role"];
+            /** Xlsx Base64 */
+            xlsx_base64?: string | null;
+        };
         /**
          * Capabilities
          * @description The caller's own identity and permission set.
@@ -2120,6 +2307,11 @@ export interface components {
             items: components["schemas"]["InvitationEntry"][];
             /** Next Cursor */
             next_cursor: string | null;
+        };
+        /** InvitationRevoked */
+        InvitationRevoked: {
+            /** Email */
+            email: string;
         };
         /** InvitePayload */
         InvitePayload: {
@@ -3553,6 +3745,72 @@ export interface operations {
             };
         };
     };
+    create_invitations_v1_employees_invitations_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkInvitePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkInviteOutcome"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_invitations_v1_employees_invitations_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkSource"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_employee_connections_v1_employees__user_id__connections_get: {
         parameters: {
             query?: never;
@@ -3884,6 +4142,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AcceptResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resend_v1_invitations__invitation_id__resend_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_v1_invitations__invitation_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRevoked"];
                 };
             };
             /** @description Validation Error */

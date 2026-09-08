@@ -434,6 +434,213 @@
         "title": "BookmarksOut",
         "type": "object"
       },
+      "BulkInviteOutcome": {
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BulkRowResult"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "sent",
+          "failed"
+        ],
+        "title": "BulkInviteOutcome",
+        "type": "object"
+      },
+      "BulkInvitePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BulkInviteRow"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "BulkInvitePayload",
+        "type": "object"
+      },
+      "BulkInviteRow": {
+        "additionalProperties": false,
+        "description": "One row of the reviewed preview, sent back to be acted on.\n\nThe send takes explicit rows rather than the original paste, because the point of the\npreview is that the administrator edits it: fixes a typo, changes somebody's role,\nremoves the four people who left. Re-parsing the paste would discard all of that.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
+          }
+        },
+        "required": [
+          "email",
+          "role"
+        ],
+        "title": "BulkInviteRow",
+        "type": "object"
+      },
+      "BulkOutcome": {
+        "description": "What `classify` says will happen, and what `invite_many` reports happened.\n\nThe two share a vocabulary on purpose: the preview an administrator approved and the\nresult they get back read the same way, so a row that changed between them is\nvisible rather than merely different.",
+        "enum": [
+          "ready",
+          "sent",
+          "already_member",
+          "already_invited",
+          "duplicate",
+          "invalid_email",
+          "invalid_role",
+          "role_too_high",
+          "failed"
+        ],
+        "title": "BulkOutcome",
+        "type": "string"
+      },
+      "BulkPreview": {
+        "properties": {
+          "ready": {
+            "title": "Ready",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BulkRowResult"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "ready",
+          "total"
+        ],
+        "title": "BulkPreview",
+        "type": "object"
+      },
+      "BulkRowResult": {
+        "description": "One row and what happened, or would happen, to it.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/BulkOutcome"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
+          }
+        },
+        "required": [
+          "email",
+          "role",
+          "role_title",
+          "outcome",
+          "detail"
+        ],
+        "title": "BulkRowResult",
+        "type": "object"
+      },
+      "BulkSource": {
+        "additionalProperties": false,
+        "description": "What the administrator supplied, in whichever of the three forms they had it.\n\nExactly one of `emails`, `csv` or `xlsx_base64`. A payload carrying two is refused\nrather than silently preferring one, because the two would disagree about the roles\nand the administrator would never see which had been used.",
+        "properties": {
+          "csv": {
+            "anyOf": [
+              {
+                "maxLength": 1000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csv"
+          },
+          "emails": {
+            "anyOf": [
+              {
+                "maxLength": 64000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emails"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "default": "member"
+          },
+          "xlsx_base64": {
+            "anyOf": [
+              {
+                "maxLength": 1400000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Xlsx Base64"
+          }
+        },
+        "title": "BulkSource",
+        "type": "object"
+      },
       "Capabilities": {
         "description": "The caller's own identity and permission set.\n\n`org_id` and `user_id` are opaque UUIDs. They are safe to return to the person they\ndescribe, and they are what the UI uses for its own routing \u2014 but they are never\naccepted back as an authorisation input, which is why no endpoint takes an org id\nfrom the client.",
         "properties": {
@@ -1677,6 +1884,19 @@
           "next_cursor"
         ],
         "title": "InvitationPage",
+        "type": "object"
+      },
+      "InvitationRevoked": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "InvitationRevoked",
         "type": "object"
       },
       "InvitePayload": {
@@ -5212,6 +5432,90 @@
         ]
       }
     },
+    "/v1/employees/invitations/bulk": {
+      "post": {
+        "description": "Invite everyone the administrator approved, and report each row's fate.\n\n202 rather than 200: some rows may not have been invited, and the response body \u2014 not\nthe status \u2014 is what says which. A 200 over a batch where eleven rows failed would be\na lie the client has to unpick.\n\nIdempotent in the way that matters for a retry: re-sending the same rows returns\n`already_invited` for everyone who got one, so pressing the button twice does not\nemail anybody twice.",
+        "operationId": "create_invitations_v1_employees_invitations_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkInvitePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkInviteOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Invitations",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/v1/employees/invitations/preview": {
+      "post": {
+        "description": "What would happen to each address. Sends nothing and writes nothing.\n\nThis is the whole reason bulk onboarding is two requests. An administrator pasting a\nlist from last quarter's roster wants to see the six people who already have accounts\nand the two misspelt addresses *before* seventy-two others receive mail \u2014 and once\nthose are shown, an invitation nobody can un-send is a decision rather than an\naccident.\n\nIt is gated and tenant-scoped exactly like the send: the member and invitation lookups\nrun under row-level security, so the answer for an address outside this organisation\nis always \"will be invited\", never \"already a member somewhere else\".",
+        "operationId": "preview_invitations_v1_employees_invitations_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Invitations",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
     "/v1/employees/{user_id}/connections": {
       "get": {
         "operationId": "read_employee_connections_v1_employees__user_id__connections_get",
@@ -5714,6 +6018,94 @@
           }
         },
         "summary": "Accept",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/v1/invitations/{invitation_id}/resend": {
+      "post": {
+        "description": "Issue a fresh invitation to the same address, and kill the old one.\n\nThe most-asked admin question is \"they never got it\". The answer is a new token, not\nthe old one resent: reusing it would extend a live credential's life every time the\nbutton was pressed, and leave two working copies in two inboxes if the first message\nmerely arrived late.",
+        "operationId": "resend_v1_invitations__invitation_id__resend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resend",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/v1/invitations/{invitation_id}/revoke": {
+      "post": {
+        "description": "Cancel an invitation that is still waiting.\n\nGated on the permission that sent it: whoever may create that exposure may withdraw\nit. An accepted invitation is a 404 here \u2014 that person is a member, and unmaking a\nmembership is deactivation, not cancellation.",
+        "operationId": "revoke_v1_invitations__invitation_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationRevoked"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke",
         "tags": [
           "employees"
         ]

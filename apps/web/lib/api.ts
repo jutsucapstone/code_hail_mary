@@ -123,6 +123,23 @@ type InviteBody =
   paths["/v1/employees/invitations"]["post"]["requestBody"]["content"]["application/json"];
 type InviteResponse =
   paths["/v1/employees/invitations"]["post"]["responses"][202]["content"]["application/json"];
+type RevokeInvitationResponse =
+  paths["/v1/invitations/{invitation_id}/revoke"]["post"]["responses"][200]["content"]["application/json"];
+
+/** What the administrator pasted or uploaded, in whichever form they had it. */
+export type BulkSource =
+  paths["/v1/employees/invitations/preview"]["post"]["requestBody"]["content"]["application/json"];
+/** Every row and what would happen to it. Writes nothing. */
+export type BulkPreview =
+  paths["/v1/employees/invitations/preview"]["post"]["responses"][200]["content"]["application/json"];
+type BulkInviteBody =
+  paths["/v1/employees/invitations/bulk"]["post"]["requestBody"]["content"]["application/json"];
+/** Every row and what happened to it. */
+export type BulkInviteOutcome =
+  paths["/v1/employees/invitations/bulk"]["post"]["responses"][202]["content"]["application/json"];
+/** One row of either, sharing a vocabulary so the preview and the result read alike. */
+export type BulkRowResult = BulkPreview["rows"][number];
+export type BulkInviteRow = BulkInviteBody["rows"][number];
 
 type AcceptBody =
   paths["/v1/invitations/accept"]["post"]["requestBody"]["content"]["application/json"];
@@ -437,6 +454,32 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /**
+   * What would happen to each address, without inviting anybody.
+   *
+   * The whole reason bulk onboarding is two requests: the administrator sees the people
+   * who already have accounts and the addresses that are misspelt BEFORE anyone receives
+   * mail. Requires `member:invite`, the same permission as inviting one person.
+   */
+  previewInvitations: (body: BulkSource) =>
+    call<BulkPreview>("/v1/employees/invitations/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Invite everyone in `rows`, and report each row's fate.
+   *
+   * Safe to call again with the same rows: anybody who already got an invitation comes
+   * back as `already_invited` rather than receiving a second one, which is what makes
+   * "retry the failures" a button rather than a support ticket.
+   */
+  inviteMany: (body: BulkInviteBody) =>
+    call<BulkInviteOutcome>("/v1/employees/invitations/bulk", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   acceptInvitation: (body: AcceptBody) =>
     call<AcceptResponse>("/v1/invitations/accept", {
       method: "POST",
@@ -496,6 +539,31 @@ export const api = {
    */
   resyncSource: (sourceId: string) =>
     call<SourceSyncQueued>(`/v1/sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+    }),
+
+  /**
+   * Cancel an invitation that is still waiting. Requires `member:invite`.
+   *
+   * A 404 means it is no longer waiting — accepted, already cancelled, or never this
+   * organisation's. The page treats all three the same way, because from the reader's
+   * side they are the same thing: the row they clicked is stale, so refetch.
+   */
+  revokeInvitation: (invitationId: string) =>
+    call<RevokeInvitationResponse>(
+      `/v1/invitations/${encodeURIComponent(invitationId)}/revoke`,
+      { method: "POST" },
+    ),
+
+  /**
+   * Issue a fresh invitation to the same address, killing the old one.
+   *
+   * Not a re-delivery of the same token: reusing it would extend a live credential's
+   * life on every press. The rank ceiling is re-checked against whoever pressed this,
+   * not whoever sent the original.
+   */
+  resendInvitation: (invitationId: string) =>
+    call<InviteResponse>(`/v1/invitations/${encodeURIComponent(invitationId)}/resend`, {
       method: "POST",
     }),
 

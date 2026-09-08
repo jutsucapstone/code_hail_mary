@@ -1,34 +1,66 @@
 """People in an organisation: listing them, inviting them, joining, and role changes.
 
-Five routes with different guards, and the differences are the design:
+Seven routes with different guards, and the differences are the design:
 
-  GET   /v1/employees                  requires member:read
-  POST  /v1/employees/invitations      requires member:invite
-  GET   /v1/invitations                requires member:invite — who may send them may
-                                       see what happened to them
-  PATCH /v1/employees/{id}/role        requires member:assign_role, plus the rank rules
-                                       the service enforces
-  POST  /v1/invitations/accept         public — the invitee has no session yet; the
-                                       invitation token is what proves who they are
+  GET   /v1/employees                          requires member:read
+  POST  /v1/employees/invitations              requires member:invite
+  POST  /v1/employees/invitations/preview      requires member:invite — writes nothing
+  POST  /v1/employees/invitations/bulk         requires member:invite
+  GET   /v1/invitations                        requires member:invite — who may send them
+                                               may see what happened to them
+  POST  /v1/invitations/{id}/revoke            requires member:invite
+  POST  /v1/invitations/{id}/resend            requires member:invite, and re-checks the
+                                               rank ceiling against whoever pressed it
+  PATCH /v1/employees/{id}/role                requires member:assign_role, plus the rank
+                                               rules the service enforces
+  POST  /v1/invitations/accept                 public — the invitee has no session yet;
+                                               the invitation token is what proves who
+                                               they are
+
+The two bulk routes take the *same* permission as the single one, deliberately. Inviting
+eighty people is inviting one person eighty times; a separate, higher permission would
+either lock administrators out of a tool they are already entitled to use or become a
+reason to hand out a broader role.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from jutsu_core.errors import ValidationFailed
 from jutsu_core.rbac import Permission, Role, role_label
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from jutsu_api.auth_service import open_session
+from jutsu_api.bulk_invitations import (
+    MAX_BULK_ROWS,
+    ROLE_TITLE_MAX,
+    BulkOutcome,
+    BulkRow,
+    ClassifiedRow,
+    classify,
+    invite_many,
+    parse_csv,
+    parse_pasted,
+    parse_xlsx,
+)
 from jutsu_api.config import Settings, get_settings
 from jutsu_api.deps import CurrentPrincipal, Db, get_email_sender
 from jutsu_api.email import EmailSender, send_best_effort
 from jutsu_api.emails import employee_welcome
-from jutsu_api.invitations import accept_invitation, invite_employee, list_employees
+from jutsu_api.invitations import (
+    accept_invitation,
+    invite_employee,
+    list_employees,
+    resend_invitation,
+    revoke_invitation,
+)
 from jutsu_api.operations import change_member_role, list_invitations
 from jutsu_api.routers.auth import set_session_cookies
 from jutsu_api.security import GuardedAPIRoute, destination_for, public, requires
@@ -171,6 +203,209 @@ async def create_invitation(
     return InvitationAccepted()
 
 
+#: Bounds on the pasted and uploaded forms, in characters of the request body.
+#:
+#: `MAX_BULK_ROWS` is the bound that matters, but it is only knowable after parsing — and
+#: a parser should never be handed an unbounded string. Sixty-four thousand characters is
+#: roughly two thousand addresses: far past the row limit, so an over-long paste is
+#: refused for the reason the administrator can act on ("too many addresses") rather than
+#: for its byte count.
+_MAX_PASTED_CHARS = 64_000
+_MAX_CSV_CHARS = 1_000_000
+#: base64 inflates by four thirds, and `MAX_XLSX_BYTES` is a megabyte of workbook.
+_MAX_XLSX_CHARS = 1_400_000
+
+
+class BulkSource(BaseModel):
+    """What the administrator supplied, in whichever of the three forms they had it.
+
+    Exactly one of `emails`, `csv` or `xlsx_base64`. A payload carrying two is refused
+    rather than silently preferring one, because the two would disagree about the roles
+    and the administrator would never see which had been used.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    #: Addresses pasted as text — newline, comma or semicolon separated, and
+    #: `Name <address>` accepted because that is what a mail client copies.
+    emails: str | None = Field(default=None, max_length=_MAX_PASTED_CHARS)
+    #: The text of a CSV or TSV file, read by the browser. No multipart upload: the file
+    #: is text, `File.text()` already has it, and a JSON body keeps the generated
+    #: TypeScript client honest.
+    csv: str | None = Field(default=None, max_length=_MAX_CSV_CHARS)
+    #: A `.xlsx` workbook, base64-encoded. A zip of XML cannot be read as text, so this
+    #: is the one input that arrives as bytes; the parser bounds it before opening it.
+    xlsx_base64: str | None = Field(default=None, max_length=_MAX_XLSX_CHARS)
+    #: The role for rows that do not name one. Never widens what the actor may grant —
+    #: `classify` re-checks every row against the actor's own rank.
+    role: Role = Role.MEMBER
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> BulkSource:
+        supplied = [value for value in (self.emails, self.csv, self.xlsx_base64) if value]
+        if len(supplied) != 1:
+            raise ValueError("Supply exactly one of emails, csv or xlsx_base64.")
+        return self
+
+
+class BulkInviteRow(BaseModel):
+    """One row of the reviewed preview, sent back to be acted on.
+
+    The send takes explicit rows rather than the original paste, because the point of the
+    preview is that the administrator edits it: fixes a typo, changes somebody's role,
+    removes the four people who left. Re-parsing the paste would discard all of that.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    #: **A bounded string, deliberately NOT `EmailStr`.**
+    #:
+    #: The preview marks a row `ready` using `bulk_invitations._EMAIL`, which is
+    #: deliberately permissive because the authority on an address is the mailbox that
+    #: answers it. `EmailStr` is stricter — so a row the preview promised to invite could
+    #: fail validation here, and because Pydantic validates the whole body, ONE such
+    #: address rejected the entire batch with a 422 before `invite_many` ever ran. The
+    #: browser was faithfully posting back what the preview had approved.
+    #:
+    #: The send re-runs `classify` regardless, so a genuinely unusable address comes back
+    #: as that one row marked `invalid_email` while everybody else is invited — which is
+    #: the whole point of a bulk import.
+    email: str = Field(min_length=3, max_length=320)
+    role: Role
+    #: The parsers truncate to this same length, so the preview can never hand back a
+    #: title the send would refuse. `invite_employee` truncates once more on the way to the
+    #: database; all three agree on 128 on purpose.
+    role_title: str | None = Field(default=None, max_length=ROLE_TITLE_MAX)
+
+
+class BulkInvitePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    rows: list[BulkInviteRow] = Field(min_length=1, max_length=MAX_BULK_ROWS)
+
+
+class BulkRowResult(BaseModel):
+    """One row and what happened, or would happen, to it."""
+
+    email: str
+    role: Role
+    role_title: str | None
+    #: ready · sent · already_member · already_invited · duplicate · invalid_email ·
+    #: invalid_role · role_too_high · failed
+    outcome: BulkOutcome
+    #: One sentence, written for the administrator reading the table. Never a token, and
+    #: never anything about an address outside this organisation.
+    detail: str
+
+
+class BulkPreview(BaseModel):
+    rows: list[BulkRowResult]
+    #: Counted server-side so the button's label and the work it does cannot disagree.
+    ready: int
+    total: int
+
+
+class BulkInviteOutcome(BaseModel):
+    rows: list[BulkRowResult]
+    sent: int
+    failed: int
+
+
+def _rendered(rows: list[ClassifiedRow]) -> list[BulkRowResult]:
+    return [
+        BulkRowResult(
+            email=row.email,
+            role=row.role,
+            role_title=row.role_title,
+            outcome=row.outcome,
+            detail=row.detail,
+        )
+        for row in rows
+    ]
+
+
+@router.post("/employees/invitations/preview")
+@requires(Permission.MEMBER_INVITE)
+async def preview_invitations(
+    payload: BulkSource, principal: CurrentPrincipal, session: Db
+) -> BulkPreview:
+    """What would happen to each address. Sends nothing and writes nothing.
+
+    This is the whole reason bulk onboarding is two requests. An administrator pasting a
+    list from last quarter's roster wants to see the six people who already have accounts
+    and the two misspelt addresses *before* seventy-two others receive mail — and once
+    those are shown, an invitation nobody can un-send is a decision rather than an
+    accident.
+
+    It is gated and tenant-scoped exactly like the send: the member and invitation lookups
+    run under row-level security, so the answer for an address outside this organisation
+    is always "will be invited", never "already a member somewhere else".
+    """
+    rows = _parse(payload)
+    if len(rows) > MAX_BULK_ROWS:
+        raise ValidationFailed(
+            f"That is {len(rows)} addresses. Import up to {MAX_BULK_ROWS} at a time."
+        )
+
+    classified = await classify(session, actor=principal, rows=rows)
+    return BulkPreview(
+        rows=_rendered(classified),
+        ready=sum(1 for row in classified if row.outcome is BulkOutcome.READY),
+        total=len(classified),
+    )
+
+
+@router.post("/employees/invitations/bulk", status_code=status.HTTP_202_ACCEPTED)
+@requires(Permission.MEMBER_INVITE)
+async def create_invitations(
+    payload: BulkInvitePayload,
+    principal: CurrentPrincipal,
+    session: Db,
+    settings: SettingsDep,
+    sender: SenderDep,
+) -> BulkInviteOutcome:
+    """Invite everyone the administrator approved, and report each row's fate.
+
+    202 rather than 200: some rows may not have been invited, and the response body — not
+    the status — is what says which. A 200 over a batch where eleven rows failed would be
+    a lie the client has to unpick.
+
+    Idempotent in the way that matters for a retry: re-sending the same rows returns
+    `already_invited` for everyone who got one, so pressing the button twice does not
+    email anybody twice.
+    """
+    result = await invite_many(
+        session,
+        actor=principal,
+        rows=[
+            BulkRow(email=str(row.email), role=row.role, role_title=row.role_title)
+            for row in payload.rows
+        ],
+        settings=settings,
+        sender=sender,
+    )
+    return BulkInviteOutcome(rows=_rendered(result.rows), sent=result.sent, failed=result.failed)
+
+
+def _parse(payload: BulkSource) -> list[BulkRow]:
+    if payload.emails:
+        return parse_pasted(payload.emails, default_role=payload.role)
+    if payload.csv:
+        return parse_csv(payload.csv, default_role=payload.role)
+    if payload.xlsx_base64:
+        try:
+            # `validate=True`, so a body carrying anything but base64 is refused here
+            # rather than quietly decoding to bytes that are not the chosen file.
+            workbook = base64.b64decode(payload.xlsx_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValidationFailed("That file could not be read.") from exc
+        return parse_xlsx(workbook, default_role=payload.role)
+
+    # Unreachable through the model validator, and still not an assertion: a refusal the
+    # caller can read beats an `AssertionError` if that validator is ever relaxed.
+    raise ValidationFailed("Supply addresses to invite.")
+
+
 class InvitationEntry(BaseModel):
     id: UUID
     email: str
@@ -218,6 +453,53 @@ async def read_invitations(
         items=[InvitationEntry(**asdict(row)) for row in page.items],
         next_cursor=page.next_cursor,
     )
+
+
+class InvitationRevoked(BaseModel):
+    #: Echoed so the page can say whose invitation it just cancelled without holding a
+    #: stale copy of the row it optimistically removed.
+    email: str
+
+
+@router.post("/invitations/{invitation_id}/revoke")
+@requires(Permission.MEMBER_INVITE)
+async def revoke(
+    invitation_id: UUID, principal: CurrentPrincipal, session: Db
+) -> InvitationRevoked:
+    """Cancel an invitation that is still waiting.
+
+    Gated on the permission that sent it: whoever may create that exposure may withdraw
+    it. An accepted invitation is a 404 here — that person is a member, and unmaking a
+    membership is deactivation, not cancellation.
+    """
+    email = await revoke_invitation(session, actor=principal, invitation_id=invitation_id)
+    return InvitationRevoked(email=email)
+
+
+@router.post("/invitations/{invitation_id}/resend", status_code=status.HTTP_202_ACCEPTED)
+@requires(Permission.MEMBER_INVITE)
+async def resend(
+    invitation_id: UUID,
+    principal: CurrentPrincipal,
+    session: Db,
+    settings: SettingsDep,
+    sender: SenderDep,
+) -> InvitationAccepted:
+    """Issue a fresh invitation to the same address, and kill the old one.
+
+    The most-asked admin question is "they never got it". The answer is a new token, not
+    the old one resent: reusing it would extend a live credential's life every time the
+    button was pressed, and leave two working copies in two inboxes if the first message
+    merely arrived late.
+    """
+    await resend_invitation(
+        session,
+        actor=principal,
+        invitation_id=invitation_id,
+        settings=settings,
+        sender=sender,
+    )
+    return InvitationAccepted()
 
 
 @router.patch("/employees/{user_id}/role")
