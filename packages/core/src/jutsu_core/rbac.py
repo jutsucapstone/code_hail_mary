@@ -54,6 +54,20 @@ class Permission(StrEnum):
     #: names a feature; this one names the clock and nothing else.
     SYNC_SCHEDULE_MANAGE = "sync:schedule_manage"
 
+    #: The employee's own file workspace, and acting on somebody else's.
+    #:
+    #: Two permissions rather than one because they have different owners. Every role
+    #: holds `BASKET_WRITE` — the basket IS the employee's workspace, and gating it
+    #: behind an admin permission would make the feature useless to the people it is
+    #: for — while `BASKET_MANAGE` follows the admin ladder and is what lets an
+    #: administrator remove a file somebody else uploaded.
+    #:
+    #: Neither confers a document read. §17 keeps roles and ACLs apart: an uploaded
+    #: file becomes visible through `document_acl` like every other document, and no
+    #: permission in this enum may substitute for that.
+    BASKET_WRITE = "basket:write"
+    BASKET_MANAGE = "basket:manage"
+
     MEMBER_READ = "member:read"
     MEMBER_INVITE = "member:invite"
     MEMBER_UPDATE = "member:update"
@@ -178,6 +192,11 @@ _EVERYONE = (
     #: would make the one person KT exists for the one person who cannot open it. The
     #: package's own binding (recipient, expiry, revocation) is the actual gate.
     Permission.KT_OPEN,
+    #: Holding files in your own Knowledge Basket. In everyone's set for the same reason
+    #: `KT_OPEN` is: the basket is the employee's own workspace, and an admin-gated
+    #: permission would make the feature unusable by the people it exists for. What a
+    #: file is visible to is decided by `document_acl`, not by this.
+    Permission.BASKET_WRITE,
 )
 
 ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = MappingProxyType(
@@ -218,6 +237,10 @@ ROLE_PERMISSIONS: Final[MappingProxyType[Role, frozenset[Permission]]] = Mapping
                 Permission.INTEGRATION_CONNECT,
                 Permission.INTEGRATION_REVOKE,
                 Permission.AUDIT_READ,
+                # Removing a file somebody else uploaded. IT rather than HR: this is a
+                # storage and retention act, and the Owner and Super Admin hold it by
+                # holding everything.
+                Permission.BASKET_MANAGE,
                 *_EVERYONE,
             }
         ),
