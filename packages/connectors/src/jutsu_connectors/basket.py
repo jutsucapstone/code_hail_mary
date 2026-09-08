@@ -72,10 +72,14 @@ class BasketConnector:
     the answer is always "you were told".
     """
 
+    #: Part of the `Connector` protocol: the ACL namespace this source's documents land
+    #: in, and what `sources.system` holds for the row that produced them.
+    system = SourceSystem.BASKET
+
     def __init__(self, reader: BasketReader) -> None:
         self._reader = reader
 
-    async def walk(self, since: datetime | None = None) -> AsyncIterator[str]:
+    async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
         """Nothing. See the class docstring — the basket is push, not poll.
 
         Written as an empty `for` rather than `return` followed by an unreachable
@@ -135,6 +139,18 @@ class BasketConnector:
                 "truncated": text.truncated,
             },
         )
+
+    async def acls(self, external_id: str) -> list[AclEntry]:
+        """The grant for one file, without reading its bytes.
+
+        Part of the `Connector` protocol and genuinely used: the pipeline captures ACLs
+        as its own stage, and re-deriving them from a full `fetch` would download the
+        object twice.
+        """
+        record = await self._reader.load(external_id)
+        if record is None:
+            raise DocumentGone(f"basket file {external_id} is no longer present")
+        return self._grant(record)
 
     @staticmethod
     def _grant(record: BasketFile) -> list[AclEntry]:

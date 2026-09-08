@@ -21,6 +21,7 @@ from typing import Any
 from jutsu_connectors import LocalConnector
 from jutsu_connectors.enron import ManifestConnector, SampleManifest, UnparsableManifest
 from jutsu_core import Connector, SourceSystem
+from jutsu_core.storage import ObjectStore
 
 __all__ = ["UnsupportedSource", "connector_for"]
 
@@ -72,7 +73,11 @@ def connector_for(system: SourceSystem, config: dict[str, Any]) -> Connector:
 
 
 async def resolve_connector(
-    system: SourceSystem, config: dict[str, Any], *, org_id: Any
+    system: SourceSystem,
+    config: dict[str, Any],
+    *,
+    org_id: Any,
+    session: Any | None = None,
 ) -> Connector:
     """The async face of `connector_for`, covering provider-backed sources too.
 
@@ -88,6 +93,19 @@ async def resolve_connector(
     """
     if system is SourceSystem.LOCAL:
         return connector_for(system, config)
+
+    if system is SourceSystem.BASKET:
+        # The basket needs a database session and a bucket, not a provider token, so it
+        # does not go through the fetcher factory. `session` is passed by the caller
+        # because the row it reads must be scoped by the same GUC as the job — building
+        # a second session here would be a second tenant scope to get wrong.
+        from jutsu_connectors.basket import BasketConnector
+
+        from jutsu_worker.basket_reader import PostgresBasketReader
+
+        if session is None:
+            raise UnsupportedSource("a basket source needs the job's session")
+        return BasketConnector(PostgresBasketReader(session, ObjectStore.from_env()))
 
     from jutsu_worker.fetchers import build_provider_connector
 

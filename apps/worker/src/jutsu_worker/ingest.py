@@ -404,7 +404,7 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
     if row is None:
         raise UnsupportedSource("source not found in this organisation")
     connector = await resolve_connector(
-        SourceSystem(row.system), row.config_json or {}, org_id=org_id
+        SourceSystem(row.system), row.config_json or {}, org_id=org_id, session=session
     )
 
     try:

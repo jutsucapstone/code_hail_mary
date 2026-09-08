@@ -177,7 +177,7 @@ class TestTheThreeWaysFetchEnds:
 
 
 class TestTheBasketIsPushNotPoll:
-    async def test_walk_lists_nothing(self) -> None:
+    async def test_list_since_lists_nothing(self) -> None:
         """Files arrive by upload, so there is no window to re-list and no cursor.
 
         Returning nothing is the honest answer to "what is new since I last looked" —
@@ -185,9 +185,30 @@ class TestTheBasketIsPushNotPoll:
         """
         connector = BasketConnector(FakeReader({}, {}))
 
-        listed = [identifier async for identifier in connector.walk()]
+        listed = [identifier async for identifier in connector.list_since(None)]
 
         assert listed == []
+
+    async def test_it_satisfies_the_connector_protocol(self) -> None:
+        # `resolve_connector` returns it as a `Connector`, so the four members the
+        # protocol names have to be there — a missing one is a runtime AttributeError
+        # inside a job rather than a type error at the call site.
+        connector = BasketConnector(FakeReader({}, {}))
+
+        assert connector.system is SourceSystem.BASKET
+        for member in ("list_since", "fetch", "acls"):
+            assert callable(getattr(connector, member)), member
+
+    async def test_acls_does_not_download_the_object(self) -> None:
+        # The pipeline captures ACLs as its own stage; re-deriving them from a full
+        # `fetch` would pay for the transfer twice.
+        record = a_file()
+        connector, reader = connector_for(record, b"text")
+
+        grants = await connector.acls(record.file_id)
+
+        assert [g.principal_id for g in grants] == [PRINCIPAL]
+        assert reader.reads == []
 
 
 class TestRealFormatsThroughTheConnector:
