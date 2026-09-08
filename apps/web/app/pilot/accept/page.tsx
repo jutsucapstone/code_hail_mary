@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
+import { CopyButton } from "@/components/copy-button";
 import { Field } from "@/components/pilot/field";
 import { FormShell } from "@/components/pilot/form-shell";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
@@ -72,6 +73,15 @@ function AcceptForm() {
           <p className="rounded-xl border border-brand/40 bg-brand/8 px-4 py-4 text-center font-mono text-lg tracking-[0.12em] text-foreground">
             {issued}
           </p>
+          {/* This is the one screen the ID appears on, and the console asks for it by
+              name at every subsequent sign-in — so transcribing it by eye was the only
+              way to keep it, and a closed tab cost somebody an email to their
+              administrator. */}
+          <div className="flex justify-center">
+            <CopyButton value={issued} label={`Copy JUTSU ID ${issued}`}>
+              Copy your JUTSU ID
+            </CopyButton>
+          </div>
           <p className="text-sm leading-relaxed text-muted-foreground">
             Taking you to your profile. You can find this ID again in your settings at any
             time.

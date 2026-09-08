@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { IdCard, Plug, Search, ShieldCheck, Sparkles } from "lucide-react";
 
+import { CopyButton } from "@/components/copy-button";
 import { useMemberCapabilities } from "@/components/member/member-shell";
 import { Button } from "@/components/ui/button";
 import { can, ROLE_LABELS } from "@/lib/permissions";
@@ -64,8 +65,17 @@ export default function MePage() {
             >
               <IdCard className="size-4" />
             </span>
-            <dd className="font-mono text-lg text-foreground">
+            <dd className="flex flex-wrap items-center gap-3 font-mono text-lg text-foreground">
               {capabilities.jutsu_id ?? "Not issued"}
+              {/* The console asks for this at every sign-in, and it is eight characters
+                  of base32 — the kind of value people transcribe wrongly once and then
+                  distrust. Only offered when there is one to copy. */}
+              {capabilities.jutsu_id ? (
+                <CopyButton
+                  value={capabilities.jutsu_id}
+                  label={`Copy JUTSU ID ${capabilities.jutsu_id}`}
+                />
+              ) : null}
             </dd>
             <dt className="text-sm text-muted-foreground">Your JUTSU ID</dt>
           </div>

@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
+import { CopyButton } from "@/components/copy-button";
 import {
   LoadMore,
   PageHeader,
@@ -638,17 +639,18 @@ function CreatedPanel({ pkg, onDone }: { pkg: KtAdmin; onDone: () => void }) {
         Knowledge Transfer in their console. It expires <When iso={pkg.expires_at} /> and
         can be revoked here at any time.
       </p>
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            void navigator.clipboard.writeText(pkg.kt_code);
-            toast.success("KT ID copied.");
-          }}
-          className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+      <div className="flex flex-wrap items-center gap-2">
+        {/* The only screen this ID appears on before it has to be passed to somebody
+            else, so the confirmation has to be true: `CopyButton` awaits the clipboard
+            and says "Copy failed" when the browser refused, rather than reporting
+            success into a promise nobody read. */}
+        <CopyButton
+          value={pkg.kt_code}
+          label={`Copy KT ID ${pkg.kt_code}`}
+          className="border-brand/50 bg-brand px-3.5 py-2 text-sm text-brand-foreground hover:bg-brand/90 hover:text-brand-foreground"
         >
           Copy KT ID
-        </button>
+        </CopyButton>
         <button
           type="button"
           onClick={onDone}
@@ -839,17 +841,13 @@ export default function KnowledgeTransferPage() {
                     </td>
                     <td className="px-5 py-3.5">
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void navigator.clipboard.writeText(pkg.kt_code);
-                            toast.success("KT ID copied.");
-                          }}
-                          aria-label={`Copy ID ${pkg.kt_code}`}
-                          className="rounded-md border border-hairline-strong px-2.5 py-1 text-xs transition-colors hover:border-brand/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                        <CopyButton
+                          value={pkg.kt_code}
+                          label={`Copy ID ${pkg.kt_code}`}
+                          className="px-2.5 py-1"
                         >
                           Copy ID
-                        </button>
+                        </CopyButton>
                         <button
                           type="button"
                           aria-label={`Details for ${pkg.kt_code}`}
