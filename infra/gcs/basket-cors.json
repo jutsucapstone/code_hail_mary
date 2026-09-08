@@ -1,0 +1,12 @@
+[
+  {
+    "origin": [
+      "https://jutsu.co.in",
+      "https://www.jutsu.co.in",
+      "http://localhost:3210"
+    ],
+    "method": ["PUT", "GET", "HEAD"],
+    "responseHeader": ["Content-Type", "x-goog-content-length-range"],
+    "maxAgeSeconds": 3600
+  }
+]

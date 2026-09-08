@@ -185,6 +185,107 @@
         "title": "AssignmentPayload",
         "type": "object"
       },
+      "AttachRequest": {
+        "properties": {
+          "file_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "File Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "file_ids"
+        ],
+        "title": "AttachRequest",
+        "type": "object"
+      },
+      "AttachedOut": {
+        "properties": {
+          "attached": {
+            "title": "Attached",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attached"
+        ],
+        "title": "AttachedOut",
+        "type": "object"
+      },
+      "AttachmentOut": {
+        "description": "One file as the curator sees it: the same row, plus who put it there.",
+        "properties": {
+          "attached_at": {
+            "format": "date-time",
+            "title": "Attached At",
+            "type": "string"
+          },
+          "attached_by": {
+            "format": "uuid",
+            "title": "Attached By",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "file_id": {
+            "format": "uuid",
+            "title": "File Id",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "state",
+          "attached_at",
+          "attached_by"
+        ],
+        "title": "AttachmentOut",
+        "type": "object"
+      },
+      "AttachmentPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AttachmentPageOut",
+        "type": "object"
+      },
       "AuditEntry": {
         "properties": {
           "action": {
@@ -298,6 +399,108 @@
           "next_cursor"
         ],
         "title": "AuditPageOut",
+        "type": "object"
+      },
+      "BasketFileOut": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "extracted_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Chars"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "format": "uuid",
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "searchable": {
+            "title": "Searchable",
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_user_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "state",
+          "detail",
+          "searchable",
+          "extracted_chars",
+          "retryable",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BasketFileOut",
+        "type": "object"
+      },
+      "BasketPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BasketFileOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BasketPage",
         "type": "object"
       },
       "BookmarkOut": {
@@ -1394,6 +1597,19 @@
         "title": "Discipline",
         "type": "object"
       },
+      "DownloadOut": {
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "DownloadOut",
+        "type": "object"
+      },
       "Employee": {
         "properties": {
           "created_at": {
@@ -2418,6 +2634,19 @@
         "title": "KtDocumentPageOut",
         "type": "object"
       },
+      "KtFileDownloadOut": {
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "KtFileDownloadOut",
+        "type": "object"
+      },
       "KtInsightOut": {
         "properties": {
           "chunk_id": {
@@ -3063,6 +3292,8 @@
           "org:update",
           "org:delete",
           "sync:schedule_manage",
+          "basket:write",
+          "basket:manage",
           "member:read",
           "member:invite",
           "member:update",
@@ -3667,6 +3898,22 @@
         "title": "RegistrationComplete",
         "type": "object"
       },
+      "RenamePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "title": "RenamePayload",
+        "type": "object"
+      },
       "ResumeOut": {
         "properties": {
           "bookmarks": {
@@ -3971,6 +4218,81 @@
         "title": "SearchStatsView",
         "type": "object"
       },
+      "SharedFileOut": {
+        "description": "One attached file, as its recipient sees it.\n\nNo owner id, no object key, no failure reason. A recipient learns what the file is\nand whether its text is in the corpus; the machinery is the owner's business.",
+        "properties": {
+          "attached_at": {
+            "format": "date-time",
+            "title": "Attached At",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "extracted_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Chars"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "state",
+          "extracted_chars",
+          "uploaded_at",
+          "attached_at"
+        ],
+        "title": "SharedFileOut",
+        "type": "object"
+      },
+      "SharedFilePageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SharedFileOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SharedFilePageOut",
+        "type": "object"
+      },
       "SourceEntry": {
         "properties": {
           "account_label": {
@@ -4168,7 +4490,8 @@
           "jira",
           "confluence",
           "github",
-          "zoom"
+          "zoom",
+          "basket"
         ],
         "title": "SourceSystem",
         "type": "string"
@@ -4646,6 +4969,69 @@
         "title": "Title",
         "type": "object"
       },
+      "UploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "content_type": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 536870912.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "content_type",
+          "size_bytes"
+        ],
+        "title": "UploadRequest",
+        "type": "object"
+      },
+      "UploadTicketOut": {
+        "description": "Everything the browser needs to PUT the file, and nothing else.",
+        "properties": {
+          "expires_in_seconds": {
+            "title": "Expires In Seconds",
+            "type": "integer"
+          },
+          "file_id": {
+            "format": "uuid",
+            "title": "File Id",
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "object"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "url",
+          "headers",
+          "expires_in_seconds"
+        ],
+        "title": "UploadTicketOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -5092,6 +5478,346 @@
         "summary": "Verify",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/v1/basket/files": {
+      "get": {
+        "description": "Your files. An administrator holding `basket:manage` sees the organisation's.",
+        "operationId": "list_files_v1_basket_files_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 24,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Files",
+        "tags": [
+          "basket"
+        ]
+      },
+      "post": {
+        "description": "Reserve a row and mint a capability for exactly one object.\n\nThe row is written before the bytes exist, so an upload the browser abandons is a\nvisible `uploading` row rather than nothing at all \u2014 which is what lets the interface\nshow it and the lifecycle rule clean up after it.",
+        "operationId": "create_upload_v1_basket_files_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Upload",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}": {
+      "delete": {
+        "description": "Remove the listing, the search grant and the bytes.\n\n`store` may be None \u2014 a deployment without storage still lets a row be removed, and\nthe object it would have deleted does not exist.",
+        "operationId": "delete_v1_basket_files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete",
+        "tags": [
+          "basket"
+        ]
+      },
+      "patch": {
+        "operationId": "rename_v1_basket_files__file_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenamePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/complete": {
+      "post": {
+        "description": "Verify what landed, and start extraction if there is text to reach.\n\nReturns 200 with the row's real state rather than an error when the file is refused:\na rejected upload is a normal outcome the interface renders per file, and turning it\ninto a 4xx would make one bad file in a multi-file drop look like a failed request.",
+        "operationId": "complete_upload_v1_basket_files__file_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Upload",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/download": {
+      "get": {
+        "description": "A signed GET, minted only after the row came back under the caller's scope.\n\nReturned as JSON rather than a redirect so the browser fetches it deliberately \u2014 a\n302 to a signed URL ends up in history, in referrer headers and in server logs.",
+        "operationId": "download_v1_basket_files__file_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/retry": {
+      "post": {
+        "description": "Re-run a failed extraction. Only `failed` qualifies \u2014 see `retry_file`.",
+        "operationId": "retry_v1_basket_files__file_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry",
+        "tags": [
+          "basket"
         ]
       }
     },
@@ -6955,6 +7681,102 @@
         ]
       }
     },
+    "/v1/kt/{kt_code}/files": {
+      "get": {
+        "description": "The Knowledge Basket files shared with this package's recipient.\n\nUnpaginated on purpose: a handover attaches a curated handful, the picker caps at\n100, and a cursor over a list that size is machinery nobody needs.",
+        "operationId": "read_kt_files_v1_kt__kt_code__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedFilePageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Files",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/files/{file_id}/download": {
+      "get": {
+        "description": "A short-lived signed URL for one attached file.\n\nJSON rather than a 302, for the reason the basket's own download route gives: a\nredirect to a signed URL ends up in history, in referrer headers and in server logs.\nThe grant is verified before the URL exists, never after.",
+        "operationId": "read_kt_file_download_v1_kt__kt_code__files__file_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtFileDownloadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt File Download",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
     "/v1/kt/{kt_code}/handover-summary": {
       "get": {
         "description": "\u00a729's executive summary: composed on demand from the recipient's own claim\nvisibility, grounded and citation-gated exactly like /v1/ask, never persisted.\n\nRefuses before any spend when no answer model is configured \u2014 the same honest 503\nthe ask surface gives, so the button in the KT console can say why.",
@@ -7390,6 +8212,193 @@
           }
         },
         "summary": "Update",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/attachable": {
+      "get": {
+        "description": "The subject's files this caller could attach, minus the ones already on.\n\nBounded by exactly the conditions the write enforces, so the picker cannot offer\nsomething the attach would then refuse \u2014 and a caller without `basket:manage` sees an\nempty list rather than a filtered view of somebody else's basket.",
+        "operationId": "read_attachable_v1_kt__package_id__attachable_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Attachable",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/attachments": {
+      "get": {
+        "description": "What this package currently shares. Authorized in the service, not the decorator.",
+        "operationId": "read_attachments_v1_kt__package_id__attachments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Attachments",
+        "tags": [
+          "kt"
+        ]
+      },
+      "post": {
+        "description": "Attach basket files to a package.",
+        "operationId": "create_attachments_v1_kt__package_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Attachments",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/attachments/{file_id}": {
+      "delete": {
+        "description": "Stop sharing one file. The file itself is untouched and stays the owner's.",
+        "operationId": "remove_attachment_v1_kt__package_id__attachments__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Attachment",
         "tags": [
           "kt"
         ]

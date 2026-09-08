@@ -63,18 +63,26 @@ _NO_REPLY = "This is an automated message from an unmonitored address. Please do
 def _verify_url(app_url: str, *, flow: str | None = None) -> str:
     """A plain URL. Escaping belongs to whoever puts it in markup, and happens once.
 
-    This returned `&amp;` for a while, on the reasoning that the value lands in an `href`.
-    It does — and `action_button` escapes what it is given, so the ampersand was escaped
-    twice and shipped as `&amp;amp;`. A browser decodes that to a literal `&amp;` and
-    parses the second parameter as `amp;flow`, which drops `flow` entirely.
+    **The token is in the FRAGMENT, and that is a security property, not a style.** A
+    browser never transmits a fragment, so `#token=…` reaches JavaScript on the page and
+    reaches no server — while `?token=…` is sent on every request for that URL and is
+    recorded verbatim in the Cloud Run request log as `httpRequest.requestUrl`, retained
+    for thirty days. Checked against production Cloud Logging, not assumed: live tokens
+    were in there.
 
-    That was not cosmetic. `/pilot/verify` reads `flow=register` to decide whether to call
-    `completeRegistration` or `verify`; without it a registration code is submitted to the
-    sign-in endpoint, fails the `expected_purpose` check, and costs the registrant one of
-    their five attempts — on the first link the product ever sends them.
+    `flow` stays in the query string. It is not a secret, and leaving it where the server
+    can see it keeps the page renderable without JavaScript having run.
+
+    The `&`/`&amp;` history is why the two are ordered this way: `action_button` escapes
+    what it is given, so an ampersand written here would be escaped twice and shipped as
+    `&amp;amp;`, which a browser parses as a parameter named `amp;flow` — dropping `flow`
+    entirely. `/pilot/verify` reads `flow=register` to choose between `completeRegistration`
+    and `verify`; without it a registration code goes to the sign-in endpoint, fails the
+    `expected_purpose` check, and costs the registrant one of five attempts on the first
+    link the product ever sends them.
     """
-    query = f"token={TOKEN_SLOT}" + (f"&flow={flow}" if flow else "")
-    return f"{app_url}/pilot/verify?{query}"
+    query = f"?flow={flow}" if flow else ""
+    return f"{app_url}/pilot/verify{query}#token={TOKEN_SLOT}"
 
 
 def _footer_lines(*extra: str) -> list[str]:
@@ -288,7 +296,11 @@ def employee_invitation(*, to: str, organisation: str, app_url: str, hours: int)
     organisation to recognise the invitation, and nothing more.
     """
     expiry = f"This invitation expires in {hours} hours and can be used once."
-    href = f"{app_url}/pilot/accept?token={TOKEN_SLOT}"
+    # In the fragment, never the query string: a browser does not transmit a fragment, so
+    # this single-factor account-creation credential reaches the page and reaches no
+    # server log. See `_verify_url` for the evidence that the query-string form was
+    # landing in production Cloud Logging verbatim.
+    href = f"{app_url}/pilot/accept#token={TOKEN_SLOT}"
     html = document(
         preheader=f"{organisation} has invited you to JUTSU.",
         sections=[

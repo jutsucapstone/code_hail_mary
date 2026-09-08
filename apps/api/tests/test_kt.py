@@ -1282,3 +1282,121 @@ class TestKtHandoverSummary:
         response = await client.get(f"/v1/kt/{package['kt_code']}/handover-summary")
         assert response.status_code == 503
         assert "not configured" in response.json()["error"]["message"]
+
+
+class TestReadingNeverBinds:
+    """Claiming is an irreversible decision about whose package this is.
+
+    It used to happen inside `_open_for`, which every KT route calls — and nine of those
+    routes are GET. `verify_csrf` returns without checking anything on a GET (its own
+    docstring says `SameSite=Lax` "is not sufficient on its own for anything that changes
+    state via a link"), and Lax still sends the session cookie on a top-level navigation.
+    So a link to `/v1/kt/{code}/documents`, clicked by a colleague, permanently bound an
+    unaddressed package to whoever clicked. No form, no POST, no token.
+    """
+
+    async def test_a_get_cannot_claim_an_unaddressed_package(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        # No recipient_email: unaddressed, so the first claimer would win it.
+        package = await create_kt(client, subject_user_id=subject)
+
+        await invite_and_accept(client, mailbox, email="passerby@example.com")
+        await sign_in(client, mailbox, email="passerby@example.com")
+
+        # The GET a link click produces.
+        peeked = await client.get(f"/v1/kt/{package['kt_code']}/documents")
+
+        assert peeked.status_code == 404, peeked.text
+        bound = (
+            await inspector.execute(
+                text("SELECT recipient_user_id, claimed_at FROM kt_packages WHERE kt_code = :c"),
+                {"c": package["kt_code"]},
+            )
+        ).one()
+        assert bound.recipient_user_id is None
+        assert bound.claimed_at is None
+
+    async def test_the_post_door_still_claims(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        inspector: AsyncSession,
+    ) -> None:
+        """The fix must not close the door it was protecting.
+
+        `POST /v1/kt/claim` is CSRF-checked and `KT_CLAIM`-budgeted, and the console calls
+        it on mount before any panel loads — so this is the whole of the real flow.
+        """
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject)
+
+        await invite_and_accept(client, mailbox, email="recipient@example.com")
+        await sign_in(client, mailbox, email="recipient@example.com")
+        me = (await client.get("/v1/me")).json()["user_id"]
+
+        claimed = await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        assert claimed.status_code == 200, claimed.text
+        bound = (
+            await inspector.execute(
+                text("SELECT recipient_user_id FROM kt_packages WHERE kt_code = :c"),
+                {"c": package["kt_code"]},
+            )
+        ).scalar_one()
+        assert str(bound) == me
+
+    async def test_a_get_works_normally_once_the_package_is_claimed(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        # The refusal is about BINDING, not about reading: once bound to this caller the
+        # ordinary panels must load.
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(client, subject_user_id=subject)
+
+        await invite_and_accept(client, mailbox, email="recipient@example.com")
+        await sign_in(client, mailbox, email="recipient@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        assert (await client.get(f"/v1/kt/{package['kt_code']}/documents")).status_code == 200
+
+    async def test_an_addressed_package_is_unaffected(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """A package addressed to somebody was never claimable by a passer-by.
+
+        Included so the change is not read as "addressed packages became stricter" — they
+        did not, and this is the case that proves the refusal is specific to binding.
+        """
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(
+            client, subject_user_id=subject, recipient_email="named@example.com"
+        )
+
+        await invite_and_accept(client, mailbox, email="named@example.com")
+        await sign_in(client, mailbox, email="named@example.com")
+        await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        assert (await client.get(f"/v1/kt/{package['kt_code']}/documents")).status_code == 200

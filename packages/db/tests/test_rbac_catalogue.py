@@ -136,6 +136,12 @@ class TestCatalogueInvariants:
             # recipient, expiry, revocation — is the actual gate, and holding this
             # grants no document.
             Permission.KT_OPEN,
+            # Holding files in your own Knowledge Basket (migration 0021). Universal for
+            # the same reason as KT_OPEN: the basket IS the employee's workspace, so an
+            # admin-gated permission would make it unusable by the people it is for.
+            # `basket:manage` — acting on somebody ELSE's basket — is the admin half and
+            # is deliberately not here.
+            Permission.BASKET_WRITE,
         }
 
 

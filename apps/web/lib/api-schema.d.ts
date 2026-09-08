@@ -171,6 +171,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/basket/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Files
+         * @description Your files. An administrator holding `basket:manage` sees the organisation's.
+         */
+        get: operations["list_files_v1_basket_files_get"];
+        put?: never;
+        /**
+         * Create Upload
+         * @description Reserve a row and mint a capability for exactly one object.
+         *
+         *     The row is written before the bytes exist, so an upload the browser abandons is a
+         *     visible `uploading` row rather than nothing at all — which is what lets the interface
+         *     show it and the lifecycle rule clean up after it.
+         */
+        post: operations["create_upload_v1_basket_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete
+         * @description Remove the listing, the search grant and the bytes.
+         *
+         *     `store` may be None — a deployment without storage still lets a row be removed, and
+         *     the object it would have deleted does not exist.
+         */
+        delete: operations["delete_v1_basket_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename */
+        patch: operations["rename_v1_basket_files__file_id__patch"];
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Upload
+         * @description Verify what landed, and start extraction if there is text to reach.
+         *
+         *     Returns 200 with the row's real state rather than an error when the file is refused:
+         *     a rejected upload is a normal outcome the interface renders per file, and turning it
+         *     into a 4xx would make one bad file in a multi-file drop look like a failed request.
+         */
+        post: operations["complete_upload_v1_basket_files__file_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download
+         * @description A signed GET, minted only after the row came back under the caller's scope.
+         *
+         *     Returned as JSON rather than a redirect so the browser fetches it deliberately — a
+         *     302 to a signed URL ends up in history, in referrer headers and in server logs.
+         */
+        get: operations["download_v1_basket_files__file_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry
+         * @description Re-run a failed extraction. Only `failed` qualifies — see `retry_file`.
+         */
+        post: operations["retry_v1_basket_files__file_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/connection-policies": {
         parameters: {
             query?: never;
@@ -971,6 +1090,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Files
+         * @description The Knowledge Basket files shared with this package's recipient.
+         *
+         *     Unpaginated on purpose: a handover attaches a curated handful, the picker caps at
+         *     100, and a cursor over a list that size is machinery nobody needs.
+         */
+        get: operations["read_kt_files_v1_kt__kt_code__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/files/{file_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt File Download
+         * @description A short-lived signed URL for one attached file.
+         *
+         *     JSON rather than a 302, for the reason the basket's own download route gives: a
+         *     redirect to a signed URL ends up in history, in referrer headers and in server logs.
+         *     The grant is verified before the URL exists, never after.
+         */
+        get: operations["read_kt_file_download_v1_kt__kt_code__files__file_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{kt_code}/handover-summary": {
         parameters: {
             query?: never;
@@ -1113,6 +1279,74 @@ export interface paths {
          *     is its own audit row; a revoked or completed package refuses both.
          */
         patch: operations["update_v1_kt__package_id__patch"];
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/attachable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Attachable
+         * @description The subject's files this caller could attach, minus the ones already on.
+         *
+         *     Bounded by exactly the conditions the write enforces, so the picker cannot offer
+         *     something the attach would then refuse — and a caller without `basket:manage` sees an
+         *     empty list rather than a filtered view of somebody else's basket.
+         */
+        get: operations["read_attachable_v1_kt__package_id__attachable_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Attachments
+         * @description What this package currently shares. Authorized in the service, not the decorator.
+         */
+        get: operations["read_attachments_v1_kt__package_id__attachments_get"];
+        put?: never;
+        /**
+         * Create Attachments
+         * @description Attach basket files to a package.
+         */
+        post: operations["create_attachments_v1_kt__package_id__attachments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/attachments/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Attachment
+         * @description Stop sharing one file. The file itself is untouched and stays the owner's.
+         */
+        delete: operations["remove_attachment_v1_kt__package_id__attachments__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/kt/{package_id}/complete": {
@@ -1678,6 +1912,55 @@ export interface components {
             /** Role Title Key */
             role_title_key?: string | null;
         };
+        /** AttachRequest */
+        AttachRequest: {
+            /** File Ids */
+            file_ids: string[];
+        };
+        /** AttachedOut */
+        AttachedOut: {
+            /** Attached */
+            attached: number;
+        };
+        /**
+         * AttachmentOut
+         * @description One file as the curator sees it: the same row, plus who put it there.
+         */
+        AttachmentOut: {
+            /**
+             * Attached At
+             * Format: date-time
+             */
+            attached_at: string;
+            /**
+             * Attached By
+             * Format: uuid
+             */
+            attached_by: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /** Filename */
+            filename: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** State */
+            state: string;
+        };
+        /** AttachmentPageOut */
+        AttachmentPageOut: {
+            /** Items */
+            items: components["schemas"]["AttachmentOut"][];
+        };
         /** AuditEntry */
         AuditEntry: {
             /** Action */
@@ -1710,6 +1993,50 @@ export interface components {
             items: components["schemas"]["AuditEntry"][];
             /** Next Cursor */
             next_cursor: string | null;
+        };
+        /** BasketFileOut */
+        BasketFileOut: {
+            /** Content Type */
+            content_type: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Extracted Chars */
+            extracted_chars: number | null;
+            /** Filename */
+            filename: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Owner User Id
+             * Format: uuid
+             */
+            owner_user_id: string;
+            /** Retryable */
+            retryable: boolean;
+            /** Searchable */
+            searchable: boolean;
+            /** Size Bytes */
+            size_bytes: number;
+            /** State */
+            state: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** BasketPage */
+        BasketPage: {
+            /** Items */
+            items: components["schemas"]["BasketFileOut"][];
         };
         /** BookmarkOut */
         BookmarkOut: {
@@ -2132,6 +2459,11 @@ export interface components {
             /** Key */
             key: string;
         };
+        /** DownloadOut */
+        DownloadOut: {
+            /** Url */
+            url: string;
+        };
         /** Employee */
         Employee: {
             /**
@@ -2500,6 +2832,11 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** KtFileDownloadOut */
+        KtFileDownloadOut: {
+            /** Url */
+            url: string;
+        };
         /** KtInsightOut */
         KtInsightOut: {
             /**
@@ -2758,7 +3095,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "sync:schedule_manage" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
+        Permission: "org:read" | "org:update" | "org:delete" | "sync:schedule_manage" | "basket:write" | "basket:manage" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
         /** PoliciesOut */
         PoliciesOut: {
             /** Items */
@@ -2964,6 +3301,11 @@ export interface components {
             /** Destination */
             destination: string;
         };
+        /** RenamePayload */
+        RenamePayload: {
+            /** Filename */
+            filename: string;
+        };
         /** ResumeOut */
         ResumeOut: {
             /** Bookmarks */
@@ -3093,6 +3435,45 @@ export interface components {
             /** Returned */
             returned: number;
         };
+        /**
+         * SharedFileOut
+         * @description One attached file, as its recipient sees it.
+         *
+         *     No owner id, no object key, no failure reason. A recipient learns what the file is
+         *     and whether its text is in the corpus; the machinery is the owner's business.
+         */
+        SharedFileOut: {
+            /**
+             * Attached At
+             * Format: date-time
+             */
+            attached_at: string;
+            /** Content Type */
+            content_type: string;
+            /** Extracted Chars */
+            extracted_chars: number | null;
+            /** Filename */
+            filename: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** State */
+            state: string;
+            /**
+             * Uploaded At
+             * Format: date-time
+             */
+            uploaded_at: string;
+        };
+        /** SharedFilePageOut */
+        SharedFilePageOut: {
+            /** Items */
+            items: components["schemas"]["SharedFileOut"][];
+        };
         /** SourceEntry */
         SourceEntry: {
             /** Account Label */
@@ -3173,7 +3554,7 @@ export interface components {
          * @description Every system JUTSU can read from. Read-only, always (§4.8).
          * @enum {string}
          */
-        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom";
+        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom" | "basket";
         /** StoredCitationOut */
         StoredCitationOut: {
             /** Available */
@@ -3308,6 +3689,34 @@ export interface components {
             level_keys: string[];
             /** Practice Key */
             practice_key: string;
+        };
+        /** UploadRequest */
+        UploadRequest: {
+            /** Content Type */
+            content_type: string;
+            /** Filename */
+            filename: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /**
+         * UploadTicketOut
+         * @description Everything the browser needs to PUT the file, and nothing else.
+         */
+        UploadTicketOut: {
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /** Headers */
+            headers: {
+                [key: string]: string;
+            };
+            /** Url */
+            url: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -3538,6 +3947,229 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_v1_basket_files_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                state?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_upload_v1_basket_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTicketOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_v1_basket_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_v1_basket_files__file_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenamePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_upload_v1_basket_files__file_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_v1_basket_files__file_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_v1_basket_files__file_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
                 };
             };
             /** @description Validation Error */
@@ -4720,6 +5352,69 @@ export interface operations {
             };
         };
     };
+    read_kt_files_v1_kt__kt_code__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SharedFilePageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_kt_file_download_v1_kt__kt_code__files__file_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtFileDownloadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_kt_handover_summary_v1_kt__kt_code__handover_summary_get: {
         parameters: {
             query?: never;
@@ -4998,6 +5693,133 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["KtAdminOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_attachable_v1_kt__package_id__attachable_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_attachments_v1_kt__package_id__attachments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_attachments_v1_kt__package_id__attachments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_attachment_v1_kt__package_id__attachments__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

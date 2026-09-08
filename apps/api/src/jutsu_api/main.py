@@ -27,6 +27,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from jutsu_api.logging_context import FIELDS, RequestContextFilter, bind, clear
 from jutsu_api.queue import transport as doorbell_transport
 from jutsu_api.routers import auth as auth_router
+from jutsu_api.routers import basket as basket_router
 from jutsu_api.routers import connections as connections_router
 from jutsu_api.routers import employees as employees_router
 from jutsu_api.routers import evidence as evidence_router
@@ -313,6 +314,7 @@ def create_app() -> FastAPI:
     app.include_router(kt_router.router)
     app.include_router(kt_console_router.router)
     app.include_router(roles_router.router)
+    app.include_router(basket_router.router)
 
     return app
 

@@ -559,6 +559,13 @@ class TestTheSiblingRoutesAreWalledToo:
         package = await owner_with_package(client, mailbox)
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New")
         code = str(package["kt_code"])
+        # Claimed through the POST door first, because a GET may no longer bind an
+        # unaddressed package — reading must not decide whose package it is. The claim
+        # spends `KT_CLAIM`, a different bucket, so it leaves the `KT_OPEN` allowance of 1
+        # intact and this still measures exactly what it measured before.
+        assert (
+            await client.post("/v1/kt/claim", json={"kt_code": code}, headers=csrf(client))
+        ).status_code == 200
 
         assert (await client.get(f"/v1/kt/{code}/documents")).status_code == 200
         assert (await client.get(f"/v1/kt/{code}/documents")).status_code == 429

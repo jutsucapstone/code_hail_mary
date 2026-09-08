@@ -7,7 +7,14 @@ requires-python = ">=3.12,<3.13"
 # by `jutsu_core.doorbell` — `import jutsu_core` never pulls it in, so the "import-cheap,
 # side-effect free" contract holds. It lives here because it is the one package both the
 # API and the worker import, and neither may import the other.
-dependencies = ["pydantic>=2.9", "google-cloud-tasks>=2.16"]
+# `google-cloud-storage` is the Knowledge Basket's object store (ADR 0020), imported
+# LAZILY by `jutsu_core.storage` for the same reason as the doorbell above: the API
+# process that never serves a basket route should not pay for the client at startup.
+dependencies = [
+    "pydantic>=2.9",
+    "google-cloud-tasks>=2.16",
+    "google-cloud-storage>=2.18",
+]
 
 [build-system]
 requires = ["hatchling"]

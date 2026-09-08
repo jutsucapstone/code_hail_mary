@@ -298,7 +298,13 @@ class TestEveryMessageIsWellFormed:
     def test_the_registration_link_actually_carries_the_registration_flow(self) -> None:
         """The specific value that was lost. Named separately from the sweep above,
         because "no parameter is mangled" and "this parameter is present" are different
-        claims and only one of them would have caught it."""
+        claims and only one of them would have caught it.
+
+        The token moved to the fragment and `flow` deliberately did not: one is a
+        credential a browser must never transmit, the other is a route selector the page
+        needs before any JavaScript has run. Both halves are asserted here so a future
+        "tidy them into one place" changes a failing test rather than a live URL.
+        """
         html = _organisation_verification().html or ""
 
         verify = next(
@@ -306,10 +312,9 @@ class TestEveryMessageIsWellFormed:
             for raw in re.findall(r'href="([^"]*)"', html)
             if "/pilot/verify" in raw
         )
-        query = parse_qs(verify.query)
 
-        assert query["flow"] == ["register"]
-        assert query["token"] == [TOKEN_SLOT]
+        assert parse_qs(verify.query)["flow"] == ["register"]
+        assert parse_qs(verify.fragment)["token"] == [TOKEN_SLOT]
 
     def test_a_sign_in_link_does_not_claim_to_be_a_registration(self) -> None:
         """The mirror of the above: `flow` selects a route, and a sign-in code sent to
@@ -498,3 +503,55 @@ class TestSecretSubstitution:
         would be a customer."""
         assert CODE_SLOT == secret_slot("code")
         assert TOKEN_SLOT == secret_slot("token")
+
+
+class TestNoCredentialTravelsInAQueryString:
+    """Where a token sits in a URL decides whether it reaches a server log.
+
+    A browser transmits the query string on every request for a URL and does **not**
+    transmit the fragment. `?token=…` therefore lands verbatim in the Cloud Run request
+    log as `httpRequest.requestUrl`, retained thirty days — and an invitation token is a
+    single-factor account-creation credential, so that is secret exposure, not untidiness.
+    It was confirmed in production Cloud Logging rather than reasoned about.
+
+    Pinned across every builder rather than on the two that carry a token today, so a
+    seventh message cannot reintroduce it.
+    """
+
+    @pytest.mark.parametrize("name", sorted(BUILDERS))
+    def test_the_token_slot_never_appears_in_a_query_string(self, name: str) -> None:
+        content = _both_parts(BUILDERS[name]())
+
+        # Every URL the message contains, in either alternative.
+        for url in re.findall(r"https?://[^\s\"'<>]+", content):
+            query = urlsplit(url.replace("&amp;", "&")).query
+            assert TOKEN_SLOT not in query, f"{name} puts the token in a query string: {url}"
+
+    @pytest.mark.parametrize("name", sorted(BUILDERS))
+    def test_a_token_that_is_present_is_in_the_fragment(self, name: str) -> None:
+        content = _both_parts(BUILDERS[name]())
+        if TOKEN_SLOT not in content:
+            return
+
+        carriers = [
+            url for url in re.findall(r"https?://[^\s\"'<>]+", content) if TOKEN_SLOT in url
+        ]
+        assert carriers, f"{name} names a token but no URL carries it"
+        for url in carriers:
+            assert TOKEN_SLOT in urlsplit(url.replace("&amp;", "&")).fragment, url
+
+    def test_the_flow_selector_stays_in_the_query_string(self) -> None:
+        """It is not a secret, and the server needs it to render the page.
+
+        Stated as its own test so that "move everything to the fragment" is not read as
+        the lesson — the fragment is for credentials, and a page that cannot see its own
+        flow parameter before JavaScript runs is a worse page.
+        """
+        content = _both_parts(_organisation_verification())
+
+        registering = [
+            url for url in re.findall(r"https?://[^\s\"'<>]+", content) if "flow=" in url
+        ]
+        assert registering
+        for url in registering:
+            assert "flow=register" in urlsplit(url.replace("&amp;", "&")).query

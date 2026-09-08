@@ -46,7 +46,7 @@ gcloud config set project "$PROJECT_ID"
 ### 1. Enable the APIs
 
 ```bash
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com iamcredentials.googleapis.com
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com iamcredentials.googleapis.com storage.googleapis.com
 ```
 
 ### 2. Artifact Registry
@@ -577,6 +577,89 @@ A spring-forward transition does **not** cost a night. The hour is resolved to a
 forward to the next real moment — 01:00 in a zone that jumps 01:00 to 02:00 runs at
 02:00 local. Matching the hour *label* instead would have made that organisation
 invisible for the whole day, silently.
+
+---
+
+### 10b. The Knowledge Basket bucket
+
+One bucket for the whole deployment, not one per tenant (ADR 0020). A bucket per
+organisation would hit the per-project bucket quota, make onboarding a provisioning step
+that can fail, and put tenant isolation in a name rather than in a policy. Isolation is
+the `basket_files` row under `ENABLE` + `FORCE` row-level security; the object key is
+`org/{org_id}/{file_id}`, which makes a misconfiguration auditable by prefix and is **not**
+what enforces anything.
+
+```bash
+gcloud storage buckets create "gs://${PROJECT_ID}-basket" \
+  --project="${PROJECT_ID}" \
+  --location=asia-south1 \
+  --default-storage-class=STANDARD \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+```
+
+`--uniform-bucket-level-access` removes per-object ACLs, so access is IAM and nothing
+else — there is no way for one object to end up world-readable through a legacy ACL.
+`--public-access-prevention` is the belt: even a mistaken `allUsers` binding is refused
+by the organisation-level policy rather than quietly applied.
+
+Versioning, so a deletion or an overwrite stays recoverable for a month:
+
+```bash
+gcloud storage buckets update "gs://${PROJECT_ID}-basket" --versioning
+gcloud storage buckets update "gs://${PROJECT_ID}-basket" \
+  --lifecycle-file=infra/gcs/basket-lifecycle.json
+```
+
+The lifecycle file expires noncurrent versions after 30 days and aborts multipart uploads
+left incomplete after 1 day. Neither rule touches a live object.
+
+CORS, because the browser PUTs straight to the bucket and reads the response:
+
+```bash
+gcloud storage buckets update "gs://${PROJECT_ID}-basket" \
+  --cors-file=infra/gcs/basket-cors.json
+```
+
+The origins are the two production ones plus `http://localhost:3210`. Note what is *not*
+there: no wildcard. A permissive CORS policy on a bucket holding one tenant's documents
+is the same class of mistake as a permissive CORS policy on the API.
+
+Two IAM bindings, both on the **runtime** service account and neither project-wide:
+
+```bash
+# Read and write objects — scoped to this bucket, so the account cannot reach any other.
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}-basket" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role=roles/storage.objectAdmin
+
+# Sign URLs as itself. This is what makes a V4 signed URL possible with NO private key
+# anywhere — the API calls IAM Credentials `signBlob` under its own Cloud Run identity.
+# A downloaded service-account key would be a credential in a file, and §4.10 has no
+# carve-out for one that is convenient.
+gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role=roles/iam.serviceAccountTokenCreator
+```
+
+`iamcredentials.googleapis.com` must be enabled for the second one to work at runtime;
+§1 already enables it.
+
+**The deploy passes the bucket name, and derives it.** `JUTSU_BASKET_BUCKET` is set to
+`${{ secrets.GCP_PROJECT_ID }}-basket` for `jutsu-api` and `jutsu-worker`. A bucket name
+is not a credential — it is visible in every signed URL — so it is derived rather than
+kept as a secret of its own. The deployer service account holds `run.admin`,
+`artifactregistry.writer` and `iam.serviceAccountUser` and **no storage role**, which is
+why the pipeline cannot verify the bucket exists before deploying: creating it is a
+prerequisite of this section, not something the deploy checks. If it is missing, the
+routes answer 503 with "File storage is not configured" and the panel says so.
+
+Verify the settings actually took, rather than trusting the commands:
+
+```bash
+gcloud storage buckets describe "gs://${PROJECT_ID}-basket" \
+  --format="yaml(name,location,uniform_bucket_level_access,public_access_prevention,versioning_enabled,cors_config,lifecycle_config)"
+```
 
 ---
 

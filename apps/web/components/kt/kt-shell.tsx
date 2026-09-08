@@ -45,6 +45,11 @@ const TABS = [
   { slug: "learn", name: "Learning path" },
   { slug: "ask", name: "Ask KT" },
   { slug: "documents", name: "Documents" },
+  // Files a curator attached to THIS package (ADR 0021) — a different thing from
+  // Documents, which is the corpus the recipient could already read narrowed to the
+  // package window. Adjacent because both answer "what can I read", separate because
+  // one is a deliberate hand-over and the other is the recipient's own access.
+  { slug: "files", name: "Shared files" },
   { slug: "projects", name: "Projects" },
   { slug: "responsibilities", name: "Responsibilities" },
   { slug: "people", name: "People" },
