@@ -38,6 +38,7 @@ __all__ = [
     "SignedUpload",
     "normalise_filename",
     "object_key",
+    "sanitise_original",
     "sniff_mime",
 ]
 
@@ -112,6 +113,27 @@ def _strip_invisibles(value: str) -> str:
 
 #: Long enough for any real filename, short enough to render in a table.
 _MAX_FILENAME: Final = 255
+
+
+def sanitise_original(raw: str) -> str:
+    """The person's own filename, kept as they typed it — minus what cannot be stored.
+
+    This is the DISPLAY and DOWNLOAD name, so case, spaces and punctuation all survive;
+    only the characters that are not text survive nothing. That is not tidiness:
+
+      * **Postgres refuses `\\x00` in a text column outright**, so a filename containing
+        one is a failed INSERT and a 500 rather than a stored file. Found by a test that
+        uploaded `with\\x00nul.txt`.
+      * A bidi override in a name the interface renders is the listing disguise
+        `normalise_filename` already removes; leaving it in the original would put it
+        back on screen.
+
+    Separators are deliberately KEPT here. They cannot reach an object key — the server
+    chooses that — and `signed_download` strips what would break a Content-Disposition
+    header, so a name like `q3/q4 notes.txt` displays as the person wrote it.
+    """
+    cleaned = _strip_invisibles(unicodedata.normalize("NFC", raw or "")).strip()
+    return cleaned[:_MAX_FILENAME] or "untitled"
 
 
 def normalise_filename(raw: str) -> str:

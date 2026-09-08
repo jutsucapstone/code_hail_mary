@@ -13,10 +13,12 @@ transaction, and every statement after that point is filtered by row-level secur
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Request
 from jutsu_core.errors import Unauthenticated
+from jutsu_core.storage import ObjectStore
 from jutsu_db.engine import get_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,8 +37,10 @@ __all__ = [
     "CurrentPrincipal",
     "Db",
     "SettingsDep",
+    "StoreDep",
     "get_db",
     "get_email_sender",
+    "get_object_store",
     "get_principal",
 ]
 
@@ -114,3 +118,21 @@ async def get_principal(request: Request, session: Db) -> Principal:
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+
+
+@lru_cache(maxsize=1)
+def get_object_store() -> ObjectStore | None:
+    """The Knowledge Basket's bucket, or None when this deployment has none.
+
+    Cached, because constructing it reads the environment and the Cloud Storage client
+    it lazily builds holds a connection pool worth keeping.
+
+    **None is a supported state, not a failure.** A deployment without
+    `JUTSU_BASKET_BUCKET` runs normally with the basket routes answering 503; raising at
+    startup would take the whole API down over a feature most requests never touch, and
+    the routes say so in a sentence a person can act on.
+    """
+    return ObjectStore.from_env()
+
+
+StoreDep = Annotated[ObjectStore | None, Depends(get_object_store)]

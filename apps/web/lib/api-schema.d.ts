@@ -171,6 +171,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/basket/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Files
+         * @description Your files. An administrator holding `basket:manage` sees the organisation's.
+         */
+        get: operations["list_files_v1_basket_files_get"];
+        put?: never;
+        /**
+         * Create Upload
+         * @description Reserve a row and mint a capability for exactly one object.
+         *
+         *     The row is written before the bytes exist, so an upload the browser abandons is a
+         *     visible `uploading` row rather than nothing at all — which is what lets the interface
+         *     show it and the lifecycle rule clean up after it.
+         */
+        post: operations["create_upload_v1_basket_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete
+         * @description Soft delete: it stops being listed and downloadable at once, and stays auditable.
+         */
+        delete: operations["delete_v1_basket_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename */
+        patch: operations["rename_v1_basket_files__file_id__patch"];
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Upload
+         * @description Verify what landed, and start extraction if there is text to reach.
+         *
+         *     Returns 200 with the row's real state rather than an error when the file is refused:
+         *     a rejected upload is a normal outcome the interface renders per file, and turning it
+         *     into a 4xx would make one bad file in a multi-file drop look like a failed request.
+         */
+        post: operations["complete_upload_v1_basket_files__file_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download
+         * @description A signed GET, minted only after the row came back under the caller's scope.
+         *
+         *     Returned as JSON rather than a redirect so the browser fetches it deliberately — a
+         *     302 to a signed URL ends up in history, in referrer headers and in server logs.
+         */
+        get: operations["download_v1_basket_files__file_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/basket/files/{file_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry
+         * @description Re-run a failed extraction. Only `failed` qualifies — see `retry_file`.
+         */
+        post: operations["retry_v1_basket_files__file_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/connection-policies": {
         parameters: {
             query?: never;
@@ -1711,6 +1827,50 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** BasketFileOut */
+        BasketFileOut: {
+            /** Content Type */
+            content_type: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Extracted Chars */
+            extracted_chars: number | null;
+            /** Filename */
+            filename: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Owner User Id
+             * Format: uuid
+             */
+            owner_user_id: string;
+            /** Retryable */
+            retryable: boolean;
+            /** Searchable */
+            searchable: boolean;
+            /** Size Bytes */
+            size_bytes: number;
+            /** State */
+            state: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** BasketPage */
+        BasketPage: {
+            /** Items */
+            items: components["schemas"]["BasketFileOut"][];
+        };
         /** BookmarkOut */
         BookmarkOut: {
             /** Available */
@@ -2131,6 +2291,11 @@ export interface components {
             display_name: string;
             /** Key */
             key: string;
+        };
+        /** DownloadOut */
+        DownloadOut: {
+            /** Url */
+            url: string;
         };
         /** Employee */
         Employee: {
@@ -2758,7 +2923,7 @@ export interface components {
          * @description What a caller may do. Namespaced `subject:verb` so the set stays readable.
          * @enum {string}
          */
-        Permission: "org:read" | "org:update" | "org:delete" | "sync:schedule_manage" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
+        Permission: "org:read" | "org:update" | "org:delete" | "sync:schedule_manage" | "basket:write" | "basket:manage" | "member:read" | "member:invite" | "member:update" | "member:assign_role" | "member:assign_role_code" | "integration:read" | "integration:connect" | "integration:revoke" | "audit:read" | "kt:manage" | "profile:self_read" | "profile:self_update" | "integration:self_manage" | "retrieval:query" | "kt:open";
         /** PoliciesOut */
         PoliciesOut: {
             /** Items */
@@ -2963,6 +3128,11 @@ export interface components {
         RegistrationComplete: {
             /** Destination */
             destination: string;
+        };
+        /** RenamePayload */
+        RenamePayload: {
+            /** Filename */
+            filename: string;
         };
         /** ResumeOut */
         ResumeOut: {
@@ -3173,7 +3343,7 @@ export interface components {
          * @description Every system JUTSU can read from. Read-only, always (§4.8).
          * @enum {string}
          */
-        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom";
+        SourceSystem: "local" | "gmail" | "m365" | "slack" | "jira" | "confluence" | "github" | "zoom" | "basket";
         /** StoredCitationOut */
         StoredCitationOut: {
             /** Available */
@@ -3308,6 +3478,34 @@ export interface components {
             level_keys: string[];
             /** Practice Key */
             practice_key: string;
+        };
+        /** UploadRequest */
+        UploadRequest: {
+            /** Content Type */
+            content_type: string;
+            /** Filename */
+            filename: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /**
+         * UploadTicketOut
+         * @description Everything the browser needs to PUT the file, and nothing else.
+         */
+        UploadTicketOut: {
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /** Headers */
+            headers: {
+                [key: string]: string;
+            };
+            /** Url */
+            url: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -3538,6 +3736,229 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_v1_basket_files_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                state?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_upload_v1_basket_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadTicketOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_v1_basket_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_v1_basket_files__file_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenamePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_upload_v1_basket_files__file_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_v1_basket_files__file_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_v1_basket_files__file_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BasketFileOut"];
                 };
             };
             /** @description Validation Error */

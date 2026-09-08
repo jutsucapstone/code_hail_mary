@@ -42,6 +42,10 @@ class SourceSystem(StrEnum):
     CONFLUENCE = "confluence"
     GITHUB = "github"
     ZOOM = "zoom"
+    #: Files an employee uploaded to their own Knowledge Basket (ADR 0020). A source
+    #: system like any other, so an uploaded file versions, chunks, embeds and is ACL
+    #: filtered by exactly the machinery a connector's documents are.
+    BASKET = "basket"
 
 
 class AclEntry(BaseModel):

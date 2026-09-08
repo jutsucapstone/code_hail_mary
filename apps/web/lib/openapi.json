@@ -300,6 +300,108 @@
         "title": "AuditPageOut",
         "type": "object"
       },
+      "BasketFileOut": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "extracted_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Chars"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "format": "uuid",
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "searchable": {
+            "title": "Searchable",
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_user_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "state",
+          "detail",
+          "searchable",
+          "extracted_chars",
+          "retryable",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BasketFileOut",
+        "type": "object"
+      },
+      "BasketPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BasketFileOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BasketPage",
+        "type": "object"
+      },
       "BookmarkOut": {
         "properties": {
           "available": {
@@ -1392,6 +1494,19 @@
           "display_name"
         ],
         "title": "Discipline",
+        "type": "object"
+      },
+      "DownloadOut": {
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "DownloadOut",
         "type": "object"
       },
       "Employee": {
@@ -3063,6 +3178,8 @@
           "org:update",
           "org:delete",
           "sync:schedule_manage",
+          "basket:write",
+          "basket:manage",
           "member:read",
           "member:invite",
           "member:update",
@@ -3667,6 +3784,22 @@
         "title": "RegistrationComplete",
         "type": "object"
       },
+      "RenamePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "title": "RenamePayload",
+        "type": "object"
+      },
       "ResumeOut": {
         "properties": {
           "bookmarks": {
@@ -4168,7 +4301,8 @@
           "jira",
           "confluence",
           "github",
-          "zoom"
+          "zoom",
+          "basket"
         ],
         "title": "SourceSystem",
         "type": "string"
@@ -4646,6 +4780,69 @@
         "title": "Title",
         "type": "object"
       },
+      "UploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "content_type": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 536870912.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "content_type",
+          "size_bytes"
+        ],
+        "title": "UploadRequest",
+        "type": "object"
+      },
+      "UploadTicketOut": {
+        "description": "Everything the browser needs to PUT the file, and nothing else.",
+        "properties": {
+          "expires_in_seconds": {
+            "title": "Expires In Seconds",
+            "type": "integer"
+          },
+          "file_id": {
+            "format": "uuid",
+            "title": "File Id",
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "object"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "url",
+          "headers",
+          "expires_in_seconds"
+        ],
+        "title": "UploadTicketOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -5092,6 +5289,346 @@
         "summary": "Verify",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/v1/basket/files": {
+      "get": {
+        "description": "Your files. An administrator holding `basket:manage` sees the organisation's.",
+        "operationId": "list_files_v1_basket_files_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 24,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Files",
+        "tags": [
+          "basket"
+        ]
+      },
+      "post": {
+        "description": "Reserve a row and mint a capability for exactly one object.\n\nThe row is written before the bytes exist, so an upload the browser abandons is a\nvisible `uploading` row rather than nothing at all \u2014 which is what lets the interface\nshow it and the lifecycle rule clean up after it.",
+        "operationId": "create_upload_v1_basket_files_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTicketOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Upload",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}": {
+      "delete": {
+        "description": "Soft delete: it stops being listed and downloadable at once, and stays auditable.",
+        "operationId": "delete_v1_basket_files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete",
+        "tags": [
+          "basket"
+        ]
+      },
+      "patch": {
+        "operationId": "rename_v1_basket_files__file_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenamePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/complete": {
+      "post": {
+        "description": "Verify what landed, and start extraction if there is text to reach.\n\nReturns 200 with the row's real state rather than an error when the file is refused:\na rejected upload is a normal outcome the interface renders per file, and turning it\ninto a 4xx would make one bad file in a multi-file drop look like a failed request.",
+        "operationId": "complete_upload_v1_basket_files__file_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Upload",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/download": {
+      "get": {
+        "description": "A signed GET, minted only after the row came back under the caller's scope.\n\nReturned as JSON rather than a redirect so the browser fetches it deliberately \u2014 a\n302 to a signed URL ends up in history, in referrer headers and in server logs.",
+        "operationId": "download_v1_basket_files__file_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download",
+        "tags": [
+          "basket"
+        ]
+      }
+    },
+    "/v1/basket/files/{file_id}/retry": {
+      "post": {
+        "description": "Re-run a failed extraction. Only `failed` qualifies \u2014 see `retry_file`.",
+        "operationId": "retry_v1_basket_files__file_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BasketFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry",
+        "tags": [
+          "basket"
         ]
       }
     },
