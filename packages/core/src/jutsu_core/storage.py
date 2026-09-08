@@ -180,8 +180,34 @@ _SIGNATURES: Final[tuple[tuple[int, bytes, str], ...]] = (
     (0, b"OggS", "audio/ogg"),
     (0, b"\x1a\x45\xdf\xa3", "video/webm"),
     (0, b"RIFF", "riff"),
-    (4, b"ftyp", "video/mp4"),
+    # Resolved by brand below — a flat "video/mp4" refused every .mov and .m4a.
+    (4, b"ftyp", "ftyp"),
 )
+
+
+#: ISO base media file format brands, read from bytes 8-12 immediately after `ftyp`.
+#:
+#: Returning a flat `video/mp4` for every `ftyp` file was wrong in a way that cost a whole
+#: upload: `.mov` declares `video/quicktime` and `.m4a` declares `audio/mp4`, both
+#: disagreed with the flat answer, and `_resolve` refused them — **after** the browser had
+#: PUT the entire file to Cloud Storage. A 300 MB recording was uploaded in full and then
+#: told it was not what it claimed.
+#:
+#: Unknown brands fall back to `video/mp4`, which is what the vast majority of `ftyp`
+#: files are and what the previous behaviour assumed for all of them.
+_FTYP_BRANDS: Final[dict[bytes, str]] = {
+    b"qt  ": "video/quicktime",
+    b"M4A ": "audio/mp4",
+    b"M4B ": "audio/mp4",
+    b"M4P ": "audio/mp4",
+    b"M4V ": "video/x-m4v",
+    b"3gp4": "video/3gpp",
+    b"3gp5": "video/3gpp",
+    b"avif": "image/avif",
+    b"heic": "image/heic",
+    b"heix": "image/heic",
+    b"mif1": "image/heif",
+}
 
 
 def sniff_mime(head: bytes) -> str | None:
@@ -194,14 +220,26 @@ def sniff_mime(head: bytes) -> str | None:
     for offset, signature, mime in _SIGNATURES:
         if head[offset : offset + len(signature)] == signature:
             if mime == "riff":
-                # RIFF is a container: WAV and AVI share the first four bytes.
+                # RIFF is a container and the four bytes at 8 are the form. WEBP was
+                # missing here, so every `.webp` sniffed as None, disagreed with its
+                # declared `image/webp`, and was rejected after a completed upload.
                 form = head[8:12]
                 if form == b"WAVE":
                     return "audio/wav"
                 if form == b"AVI ":
                     return "video/x-msvideo"
+                if form == b"WEBP":
+                    return "image/webp"
                 return None
+            if mime == "ftyp":
+                return _FTYP_BRANDS.get(head[8:12], "video/mp4")
             return mime
+    # An MP3 need not carry an ID3 tag; a bare MPEG audio frame begins with eleven set
+    # bits. Without this a tagless `.mp3` sniffed as None and was refused for disagreeing
+    # with a claim it never contradicted. The second byte's top three bits are the sync
+    # remainder, and 0xE0 is the mask that reads them.
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return "audio/mpeg"
     return None
 
 

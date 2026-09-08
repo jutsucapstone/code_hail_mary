@@ -22,7 +22,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from jutsu_api.answers import answers_configured
 from jutsu_api.auth_service import scoped_acl_principals
-from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.deps import CurrentPrincipal, Db, StoreDep
 from jutsu_api.kt import (
     SUPPORTED_SCOPES,
     claim_or_open,
@@ -37,6 +37,14 @@ from jutsu_api.kt import (
     list_packages,
     revoke_package,
     update_package,
+)
+from jutsu_api.kt_files import (
+    attach_files,
+    attachable_files,
+    detach_file,
+    package_attachments,
+    shared_download_url,
+    shared_files,
 )
 from jutsu_api.rate_limit import Bucket, spend_budget
 from jutsu_api.routers.search import AnswerTransportDep
@@ -518,3 +526,170 @@ async def read_kt_handover_summary(
         ],
         attempts=outcome.attempts,
     )
+
+
+# ------------------------------------------------------ basket files on a package
+#
+# Two audiences on one table, and the split runs through every route below (ADR 0021).
+#
+# The RECIPIENT's two routes are `kt:open` and reach the package only through
+# `open_package_for`, which re-decides binding, revocation, completion and expiry and
+# spends a `KT_OPEN` allowance before it looks anything up. Revoking a package therefore
+# closes its files in the same instant, with nothing running at revocation time.
+#
+# The CURATOR's four routes are `kt:open` at the decorator and `kt:manage`-or-subject in
+# the service, and that asymmetry is deliberate rather than an omission. The departing
+# employee may curate their own handover, and they hold no admin permission at all — so
+# the decorator cannot express the rule and `_curatable` is the authorization. It answers
+# 404 rather than 403 to a caller who is neither, so nothing here confirms that another
+# employee's package exists.
+
+
+class SharedFileOut(BaseModel):
+    """One attached file, as its recipient sees it.
+
+    No owner id, no object key, no failure reason. A recipient learns what the file is
+    and whether its text is in the corpus; the machinery is the owner's business.
+    """
+
+    id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    #: `ready` — its text is in the corpus and Ask KT can cite it — or `stored`, which is
+    #: kept and downloadable and deliberately not searchable. Passed through in the
+    #: owner's own vocabulary so the two consoles cannot describe one file differently.
+    state: str
+    extracted_chars: int | None
+    uploaded_at: datetime
+    attached_at: datetime
+
+
+class SharedFilePageOut(BaseModel):
+    items: list[SharedFileOut]
+
+
+class KtFileDownloadOut(BaseModel):
+    #: A short-lived signed URL. Returned as JSON rather than a 302 so the browser
+    #: fetches it deliberately — a redirect to a signed URL lands in history, in
+    #: referrer headers and in server logs.
+    url: str
+
+
+class AttachmentOut(BaseModel):
+    """One file as the curator sees it: the same row, plus who put it there."""
+
+    id: UUID
+    file_id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    state: str
+    attached_at: datetime
+    attached_by: UUID
+
+
+class AttachmentPageOut(BaseModel):
+    items: list[AttachmentOut]
+
+
+class AttachRequest(BaseModel):
+    #: Bounded because the picker is bounded. A larger set is a script, and a script
+    #: attaching two hundred files in one request is a different feature.
+    file_ids: Annotated[list[UUID], Field(min_length=1, max_length=100)]
+
+
+class AttachedOut(BaseModel):
+    #: How many were NEWLY attached. Lower than what was asked for when a file was
+    #: already on the package, is not the subject's, or is not one this actor can see —
+    #: the service refuses those silently rather than saying which failed why, because
+    #: naming the reason per id is a probe of somebody else's basket.
+    attached: int
+
+
+@router.get("/kt/{kt_code}/files")
+@requires(Permission.KT_OPEN)
+async def read_kt_files(
+    kt_code: str, principal: CurrentPrincipal, session: Db
+) -> SharedFilePageOut:
+    """The Knowledge Basket files shared with this package's recipient.
+
+    Unpaginated on purpose: a handover attaches a curated handful, the picker caps at
+    100, and a cursor over a list that size is machinery nobody needs.
+    """
+    rows = await shared_files(
+        session, org_id=principal.org_id, user_id=principal.user_id, kt_code=kt_code
+    )
+    return SharedFilePageOut(items=[SharedFileOut(**asdict(row)) for row in rows])
+
+
+@router.get("/kt/{kt_code}/files/{file_id}/download")
+@requires(Permission.KT_OPEN)
+async def read_kt_file_download(
+    kt_code: str,
+    file_id: UUID,
+    principal: CurrentPrincipal,
+    session: Db,
+    store: StoreDep,
+) -> KtFileDownloadOut:
+    """A short-lived signed URL for one attached file.
+
+    JSON rather than a 302, for the reason the basket's own download route gives: a
+    redirect to a signed URL ends up in history, in referrer headers and in server logs.
+    The grant is verified before the URL exists, never after.
+    """
+    url = await shared_download_url(
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        store=store,
+        file_id=file_id,
+    )
+    return KtFileDownloadOut(url=url)
+
+
+@router.get("/kt/{package_id}/attachments")
+@requires(Permission.KT_OPEN)
+async def read_attachments(
+    package_id: UUID, principal: CurrentPrincipal, session: Db
+) -> AttachmentPageOut:
+    """What this package currently shares. Authorized in the service, not the decorator."""
+    rows = await package_attachments(session, actor=principal, package_id=package_id)
+    return AttachmentPageOut(items=[AttachmentOut(**asdict(row)) for row in rows])
+
+
+@router.get("/kt/{package_id}/attachable")
+@requires(Permission.KT_OPEN)
+async def read_attachable(
+    package_id: UUID, principal: CurrentPrincipal, session: Db
+) -> AttachmentPageOut:
+    """The subject's files this caller could attach, minus the ones already on.
+
+    Bounded by exactly the conditions the write enforces, so the picker cannot offer
+    something the attach would then refuse — and a caller without `basket:manage` sees an
+    empty list rather than a filtered view of somebody else's basket.
+    """
+    rows = await attachable_files(session, actor=principal, package_id=package_id)
+    return AttachmentPageOut(items=[AttachmentOut(**asdict(row)) for row in rows])
+
+
+@router.post("/kt/{package_id}/attachments", status_code=status.HTTP_201_CREATED)
+@requires(Permission.KT_OPEN)
+async def create_attachments(
+    package_id: UUID, payload: AttachRequest, principal: CurrentPrincipal, session: Db
+) -> AttachedOut:
+    """Attach basket files to a package."""
+    attached = await attach_files(
+        session, actor=principal, package_id=package_id, file_ids=payload.file_ids
+    )
+    return AttachedOut(attached=attached)
+
+
+@router.delete("/kt/{package_id}/attachments/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+@requires(Permission.KT_OPEN)
+async def remove_attachment(
+    package_id: UUID, file_id: UUID, principal: CurrentPrincipal, session: Db
+) -> None:
+    """Stop sharing one file. The file itself is untouched and stays the owner's."""
+    await detach_file(session, actor=principal, package_id=package_id, file_id=file_id)

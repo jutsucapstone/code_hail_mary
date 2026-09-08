@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
+import { KtAttachments } from "@/components/admin/kt-attachments";
 import { CopyButton } from "@/components/copy-button";
 import {
   LoadMore,
@@ -340,6 +341,16 @@ function PackageDetails({
       )}
 
       {detail.data ? <PackageControls pkg={detail.data} onChanged={onChanged} /> : null}
+
+      {/* Which of the subject's own uploads travel with this package (ADR 0021).
+          Placed under the lifecycle controls because it IS a lifecycle question: the
+          grant these create lives and dies with the package above them. */}
+      {detail.data ? (
+        <KtAttachments
+          packageId={id}
+          closed={detail.data.status === "revoked" || detail.data.status === "completed"}
+        />
+      ) : null}
 
       <section aria-labelledby="kt-activity-heading" className="flex flex-col gap-3">
         <h3 id="kt-activity-heading" className="text-sm font-medium text-foreground">

@@ -208,7 +208,13 @@ async def retry(file_id: UUID, principal: CurrentPrincipal, session: Db) -> Bask
 
 @router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 @requires(Permission.BASKET_WRITE)
-async def delete(file_id: UUID, principal: CurrentPrincipal, session: Db) -> Response:
-    """Soft delete: it stops being listed and downloadable at once, and stays auditable."""
-    await basket.delete_file(session, actor=principal, file_id=file_id)
+async def delete(
+    file_id: UUID, principal: CurrentPrincipal, session: Db, store: StoreDep
+) -> Response:
+    """Remove the listing, the search grant and the bytes.
+
+    `store` may be None — a deployment without storage still lets a row be removed, and
+    the object it would have deleted does not exist.
+    """
+    await basket.delete_file(session, actor=principal, store=store, file_id=file_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

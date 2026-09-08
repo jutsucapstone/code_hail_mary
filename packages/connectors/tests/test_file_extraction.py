@@ -231,3 +231,81 @@ class TestEncodingIsChosenByEvidence:
         result = extract("naïve résumé".encode(), mime="text/plain")
 
         assert "naïve résumé" in result.text
+
+
+class TestAZipContainerCannotSpendUnboundedMemory:
+    """`MAX_EXTRACT_BYTES` bounds the COMPRESSED archive, which is not a bound at all.
+
+    XML compresses at better than 1000:1, so a `.docx` well inside every existing limit
+    can declare — and deliver — tens of gigabytes. The per-format caps do not help:
+    `python-docx` and `python-pptx` parse the whole XML part into a tree before a single
+    paragraph can be counted, so the memory is spent before any loop starts.
+
+    The repository already had this guard, in `bulk_invitations` for `.xlsx` uploads. It
+    was never carried across to the Knowledge Basket, which reads three zip formats.
+    """
+
+    @staticmethod
+    def _archive(members: int = 1, declared: int = 1024) -> bytes:
+        """A zip whose central directory truthfully declares a large expansion.
+
+        Written by hand rather than with `zipfile.writestr`, because compressing an
+        actual gigabyte to prove a point about not decompressing it would be absurd. The
+        guard reads `file_size` from the directory, which is exactly what is forged here —
+        and an attacker's real bomb declares the truth too, which is the case that matters.
+        """
+        import struct
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for index in range(members):
+                archive.writestr(f"word/part{index}.xml", b"<w:p/>" * 8)
+        raw = bytearray(buffer.getvalue())
+
+        # Rewrite every central-directory entry's uncompressed size. The signature is
+        # PK\x01\x02 and `file_size` is a 4-byte LE field at offset 24.
+        position = 0
+        while True:
+            position = raw.find(b"PK\x01\x02", position)
+            if position < 0:
+                break
+            struct.pack_into("<I", raw, position + 24, declared)
+            position += 4
+        return bytes(raw)
+
+    def test_an_archive_that_declares_gigabytes_is_refused_before_it_is_opened(self) -> None:
+        bomb = self._archive(members=4, declared=500_000_000)
+
+        with pytest.raises(UnsupportedContent) as raised:
+            extract(bomb, mime=DOCX)
+
+        assert "stored" in str(raised.value).lower()
+
+    def test_an_archive_with_absurdly_many_members_is_refused(self) -> None:
+        with pytest.raises(UnsupportedContent):
+            extract(self._archive(members=5_000, declared=8), mime=DOCX)
+
+    def test_the_guard_covers_slides_and_spreadsheets_too(self) -> None:
+        # Three readers open a zip, so one guarded reader is a guard that does not hold.
+        bomb = self._archive(members=4, declared=500_000_000)
+
+        for mime in (PPTX, XLSX):
+            with pytest.raises(UnsupportedContent):
+                extract(bomb, mime=mime)
+
+    def test_an_ordinary_document_still_extracts(self) -> None:
+        """The guard must not be a refusal of every Office file.
+
+        A real `.docx` built by python-docx passes through untouched — the ceiling is far
+        past any document a person actually writes.
+        """
+        docx = pytest.importorskip("docx")
+        document = docx.Document()
+        document.add_paragraph("The runbook lives in Confluence.")
+        buffer = io.BytesIO()
+        document.save(buffer)
+
+        result = extract(buffer.getvalue(), mime=DOCX)
+
+        assert "runbook lives in Confluence" in result.text

@@ -58,9 +58,16 @@ const nextConfig: NextConfig = {
     // explicit that nonces disable static generation, CDN caching and PPR — or unless the
     // experimental SRI flag is enabled, which is not a thing to put under a production
     // release. The directives that do NOT need inline script are all strict, and
-    // `connect-src 'self'` is the one that matters most here: every API call already goes
-    // through the same-origin proxy at `/api/jutsu/*`, so nothing legitimate talks to a
-    // third-party origin and injected script cannot exfiltrate to one either.
+    // `connect-src` is the one that matters most here: every API call goes through the
+    // same-origin proxy at `/api/jutsu/*`, so the only third-party origin it names is the
+    // storage host below, and injected script has nowhere else to exfiltrate to.
+
+    // Where a Knowledge Basket file's bytes actually live. V4 signed URLs are issued
+    // against the global `storage.googleapis.com` endpoint rather than a bucket-named
+    // host, so this one origin covers upload, download and preview for every bucket and
+    // needs no `JUTSU_BASKET_BUCKET` at build time.
+    const STORAGE_ORIGIN = "https://storage.googleapis.com";
+
     const csp = [
       "default-src 'self'",
       // `'unsafe-eval'` only in development: React uses `eval` there to reconstruct
@@ -70,17 +77,28 @@ const nextConfig: NextConfig = {
       // Next inlines critical CSS, and Tailwind v4's output is a stylesheet rather than
       // inline styles — but the framework's own injection is what forces this.
       "style-src 'self' 'unsafe-inline'",
-      // `blob:` and `data:` are how the app renders locally-generated images; no remote
-      // image host is used anywhere.
-      "img-src 'self' blob: data:",
+      // `blob:` and `data:` are how the app renders locally-generated images. The storage
+      // origin is here for Knowledge Basket previews, which render an uploaded image
+      // straight from a short-lived signed URL rather than proxying the bytes through
+      // Cloud Run.
+      `img-src 'self' blob: data: ${STORAGE_ORIGIN}`,
       // `next/font/google` downloads and self-hosts at build time, so no font CDN is
       // ever contacted at runtime.
       "font-src 'self'",
-      // The viewer fetches its own wasm and chunks from the origin that served it.
-      "connect-src 'self' https://unpkg.com",
+      // `connect-src` carries the storage origin because a Knowledge Basket upload PUTs
+      // its bytes straight to Cloud Storage under a signed URL (ADR 0020). Without this
+      // exact origin the browser blocks the request and the whole feature is dead in
+      // production while working perfectly in every test — a scripted `fetch` has no CSP.
+      //
+      // Exactly one host, never `https:` and never a wildcard: the point of a narrow
+      // `connect-src` is that injected script has nowhere to exfiltrate to, and one more
+      // named origin costs that guarantee nothing.
+      `connect-src 'self' https://unpkg.com ${STORAGE_ORIGIN}`,
       "worker-src 'self' blob:",
       "manifest-src 'self'",
-      "media-src 'self'",
+      // Audio and video the employee uploaded, played from the same signed URL. These
+      // are `stored` files — kept and playable, never transcribed.
+      `media-src 'self' ${STORAGE_ORIGIN}`,
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",

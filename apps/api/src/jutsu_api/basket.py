@@ -8,7 +8,7 @@ and when the bytes are trustworthy enough to hand to the ingestion pipeline.
 
 *The row is the authorization.* Every query runs under row-level security, so an
 organisation's files are invisible to another's without any predicate being written here.
-Within an organisation, `_visible_to` adds the second boundary: you see your own files;
+Within an organisation, `visible_to` adds the second boundary: you see your own files;
 `basket:manage` sees everyone's. That one is an application check because it is a
 *product* rule rather than a tenancy one — but it is applied in the SQL, never as a
 post-filter, for the reason §4.5 gives about counts and cursors.
@@ -23,6 +23,7 @@ is kept only as evidence of what was claimed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +45,7 @@ from jutsu_core.storage import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_api.identities import link_basket_principal
 from jutsu_api.security import Principal
 
 logger = logging.getLogger("jutsu.basket")
@@ -58,6 +60,7 @@ __all__ = [
     "rename_file",
     "retry_file",
     "start_upload",
+    "visible_to",
 ]
 
 #: The namespace a basket ACL principal carries, matching `sources.system`.
@@ -72,7 +75,7 @@ _COLUMNS: Final = (
 
 # S608 appears on every read below, and the exemption is narrow and stated rather than
 # applied to the file. Two fragments are interpolated into these queries: `_COLUMNS`, a
-# module-level literal, and `scope`, which `_visible_to` returns as one of exactly two
+# module-level literal, and `scope`, which `visible_to` returns as one of exactly two
 # literals defined in this module. Everything a caller supplies — the id, the owner, the
 # search text, the state — is a bound parameter and never reaches the SQL text. Bandit
 # cannot tell a constant from user input, which is why the marker is per line.
@@ -126,7 +129,7 @@ def _row(record: Any) -> BasketFileRow:
     )
 
 
-def _visible_to(actor: Principal) -> tuple[str, dict[str, Any]]:
+def visible_to(actor: Principal) -> tuple[str, dict[str, Any]]:
     """The ownership half of the boundary, as SQL rather than a post-filter.
 
     Row-level security already makes another organisation's files invisible. This is the
@@ -171,6 +174,13 @@ async def start_upload(
     if plan_for(content_type) is None:
         raise ValidationFailed("That kind of file cannot be added to a Knowledge Basket.")
 
+    # Make the grant this file will be given actually resolvable. `BasketConnector` grants
+    # `basket:{owner_user_id}` and principals come only from `source_identities`, so
+    # without this the uploader cannot retrieve their own file — silently, while the
+    # console says "Searchable". Idempotent, and here rather than in `complete_upload`
+    # because the identity should exist before anything grants to it.
+    await link_basket_principal(session, org_id=actor.org_id, user_id=actor.user_id)
+
     file_id = uuid4()
     key = object_key(actor.org_id, file_id)
     # Sanitised, not raw: Postgres refuses a NUL byte in a text column, so an
@@ -199,7 +209,12 @@ async def start_upload(
 
     return UploadTicket(
         file_id=file_id,
-        upload=store.signed_upload(key, content_type=content_type, max_bytes=size_bytes),
+        # Off the event loop: `google-cloud-storage` is synchronous, and V4 signing here
+        # is a real network round trip to the IAM Credentials API. Blocking the loop for
+        # it stalls every other request the worker process is serving.
+        upload=await asyncio.to_thread(
+            store.signed_upload, key, content_type=content_type, max_bytes=size_bytes
+        ),
     )
 
 
@@ -220,7 +235,7 @@ async def complete_upload(
     if store is None:
         raise ServiceUnavailable("File storage is not configured for this deployment.")
 
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     record = (
         await session.execute(
             text(
@@ -237,12 +252,12 @@ async def complete_upload(
         # but it must not re-enqueue or re-verify.
         raise Conflict("That upload has already been completed.")
 
-    measured = store.stat(record.object_key)
+    measured = await asyncio.to_thread(store.stat, record.object_key)
     if measured is None:
         raise ValidationFailed("The file did not finish uploading. Try again.")
     size, checksum = measured
 
-    head = store.read_head(record.object_key)
+    head = await asyncio.to_thread(store.read_head, record.object_key)
     detected = sniff_mime(head)
     declared = record.declared_mime
     resolved = _resolve(declared=declared, detected=detected)
@@ -407,7 +422,7 @@ async def _basket_source(session: AsyncSession, *, org_id: UUID) -> UUID:
 
 
 async def _read_one(session: AsyncSession, *, actor: Principal, file_id: UUID) -> BasketFileRow:
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     record = (
         await session.execute(
             text(
@@ -436,7 +451,7 @@ async def list_files(
     are the same string — a listing that sorts on one and matches on another is how a
     file appears to be missing.
     """
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     filters = ["deleted_at IS NULL", scope]
     bound: dict[str, Any] = {"limit": max(1, min(limit, 200)), **params}
 
@@ -464,14 +479,14 @@ async def download_url(
 ) -> str:
     """A short-lived GET, minted only after the row came back.
 
-    The order is the security property: the query is scoped by RLS and by `_visible_to`,
+    The order is the security property: the query is scoped by RLS and by `visible_to`,
     so a URL cannot be produced for a file the caller may not see. Deriving the key from
     the request instead of from the row is the mistake this function's shape prevents.
     """
     if store is None:
         raise ServiceUnavailable("File storage is not configured for this deployment.")
 
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     record = (
         await session.execute(
             text(
@@ -486,7 +501,9 @@ async def download_url(
     if record.state == "uploading":
         raise Conflict("That file has not finished uploading yet.")
 
-    return store.signed_download(record.object_key, filename=record.original_filename)
+    return await asyncio.to_thread(
+        store.signed_download, record.object_key, filename=record.original_filename
+    )
 
 
 async def rename_file(
@@ -496,7 +513,7 @@ async def rename_file(
     if not cleaned or cleaned == "untitled":
         raise ValidationFailed("A file needs a name.")
 
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     updated = (
         await session.execute(
             text(
@@ -517,30 +534,57 @@ async def rename_file(
     return await _read_one(session, actor=actor, file_id=file_id)
 
 
-async def delete_file(session: AsyncSession, *, actor: Principal, file_id: UUID) -> str:
-    """Soft-delete, and stop the file being listed or downloadable immediately.
+async def delete_file(
+    session: AsyncSession, *, actor: Principal, store: ObjectStore | None, file_id: UUID
+) -> str:
+    """Remove the file: the listing, the search grant, and the bytes.
 
-    The object survives until the lifecycle rule collects it, and the row survives as the
-    record that the file existed. Hard-deleting here would destroy the audit trail and
-    make the operation unrecoverable from a misclick.
+    The button says "Remove for good", and until this did all three it was not telling the
+    truth. Soft-deleting the row alone stopped the file being *listed* while leaving its
+    chunks in the corpus with a live `document_acl` grant — so a file the employee deleted
+    kept answering their Ask JUTSU queries, quoting text from a document the console said
+    was gone.
 
-    The document is deliberately NOT superseded: its chunks stop being reachable when the
-    grant is removed, and unpicking a version chain because somebody tidied their basket
-    is a far larger act than this button implies.
+    Three acts, in an order chosen so a failure leaves the safe state:
+
+      * **the row is soft-deleted**, which stops every listing and download in the same
+        transaction and keeps the record that the file existed;
+      * **the grant is deleted**, which is what actually removes it from retrieval. The
+        `document` row and its chunks stay — unpicking a version chain because somebody
+        tidied their basket is a much larger act than this button implies — and with no
+        ACL row they are reachable by nobody;
+      * **the object is deleted**, last and outside the transaction, because it is the
+        only irreversible-looking step. It is in fact recoverable: the bucket has object
+        versioning, so the delete writes a noncurrent version the lifecycle rule keeps for
+        thirty days.
+
+    A storage failure does not fail the request. The row is already gone from every read
+    path and the grant is already gone from retrieval, so the file is deleted as far as
+    every person and every query is concerned; the residue is an unreferenced object, which
+    is a cost problem rather than a privacy one, and raising here would tell the employee
+    their deletion failed when it did not.
     """
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     deleted = (
         await session.execute(
             text(
                 "UPDATE basket_files SET deleted_at = now(), deleted_by = :actor, "  # noqa: S608
                 f"updated_at = now() WHERE id = :id AND deleted_at IS NULL AND {scope} "
-                "RETURNING original_filename"
+                "RETURNING original_filename, object_key, document_id"
             ),
             {"id": file_id, "actor": actor.user_id, **params},
         )
     ).first()
     if deleted is None:
         raise NotFound("That file was not found.")
+
+    if deleted.document_id is not None:
+        # The line that makes "removed" mean removed from search. Same transaction as the
+        # soft delete, so the two can never disagree about whether this file is gone.
+        await session.execute(
+            text("DELETE FROM document_acl WHERE document_id = :doc"),
+            {"doc": deleted.document_id},
+        )
 
     await session.execute(
         text(
@@ -550,6 +594,13 @@ async def delete_file(session: AsyncSession, *, actor: Principal, file_id: UUID)
         ),
         {"org": actor.org_id, "actor": str(actor.user_id), "rid": str(file_id)},
     )
+
+    if store is not None:
+        try:
+            await asyncio.to_thread(store.delete, deleted.object_key)
+        except Exception:  # see the docstring: an orphan object is a cost, not a leak
+            logger.warning("%s", {"event": "basket_object_delete_failed"})
+
     return str(deleted.original_filename)
 
 
@@ -560,7 +611,7 @@ async def retry_file(session: AsyncSession, *, actor: Principal, file_id: UUID) 
     a `quarantined` one was refused for a security reason — re-running either would fail
     identically, and offering the button would teach people it does nothing.
     """
-    scope, params = _visible_to(actor)
+    scope, params = visible_to(actor)
     record = (
         await session.execute(
             text(

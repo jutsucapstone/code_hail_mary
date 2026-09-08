@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import { LegalPage } from "@/components/site/legal-page";
-import { siteConfig } from "@/lib/content";
+import { CONTACT_EMAIL, siteConfig } from "@/lib/content";
 
 export const metadata: Metadata = {
   title: "Terms",
@@ -56,7 +56,8 @@ export default function TermsPage() {
 
       <h2>Contact</h2>
       <p>
-        Questions about these terms: <a href="mailto:hello@jutsu.dev">hello@jutsu.dev</a>.
+        Questions about these terms:{" "}
+        <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
       </p>
     </LegalPage>
   );

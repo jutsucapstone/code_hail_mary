@@ -224,9 +224,60 @@ def _pdf(data: bytes) -> list[str]:
         raise UnsupportedContent("That PDF could not be read.") from exc
 
 
+#: How much a zip container may expand to, and how many members it may hold.
+#:
+#: `MAX_EXTRACT_BYTES` bounds the COMPRESSED archive and nothing else, which is not a
+#: bound at all for a zip: XML compresses at better than 1000:1, so a 32 MiB `.docx`
+#: within every existing limit can declare — and deliver — tens of gigabytes. The
+#: per-format caps below it (`_MAX_DOCX_PARAGRAPHS`, `_MAX_PPTX_SLIDES`,
+#: `_MAX_SHEET_ROWS`) do not help: `python-docx` and `python-pptx` parse the whole XML
+#: part into a tree before a single paragraph can be counted, so the memory is spent
+#: before any loop starts.
+#:
+#: 400 MB and 4096 members are far past any real document — the largest `.docx` in normal
+#: use is a few tens of MB expanded — and far short of what kills a 1 GiB worker.
+_MAX_ARCHIVE_UNCOMPRESSED: Final = 400_000_000
+_MAX_ARCHIVE_MEMBERS: Final = 4_096
+
+
+def _refuse_a_zip_bomb(data: bytes) -> None:
+    """Read the archive's own directory before any of it is expanded.
+
+    The central directory records each member's uncompressed length, so the cost of the
+    file can be known without paying it. An attacker can of course lie there — but then
+    the declared size no longer matches the stream and `zipfile` raises during the read,
+    which each reader already turns into `UnsupportedContent`. What this closes is the
+    *honest* bomb: a small archive that truthfully declares gigabytes.
+
+    Deliberately a second copy of the guard `bulk_invitations` uses rather than an import
+    of it: `jutsu_connectors` must not depend on `jutsu_api`, and the alternative — lifting
+    it into `jutsu_core` — would put a zip parser in the package every process imports at
+    startup. The two have different ceilings for different reasons (a spreadsheet of email
+    addresses is not a 300-slide deck), so sharing the number would be wrong even if
+    sharing the code were easy.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            if len(members) > _MAX_ARCHIVE_MEMBERS:
+                raise UnsupportedContent("That file could not be read.")
+            if sum(member.file_size for member in members) > _MAX_ARCHIVE_UNCOMPRESSED:
+                raise UnsupportedContent(
+                    "That file expands to more than this system will read. "
+                    "It is stored, but not searchable."
+                )
+    except UnsupportedContent:
+        raise
+    except Exception as exc:
+        raise UnsupportedContent("That file could not be read.") from exc
+
+
 def _docx(data: bytes) -> list[str]:
     import docx
 
+    _refuse_a_zip_bomb(data)
     try:
         document = docx.Document(io.BytesIO(data))
     except Exception as exc:
@@ -245,6 +296,8 @@ def _docx(data: bytes) -> list[str]:
 
 def _pptx(data: bytes) -> list[str]:
     from pptx import Presentation
+
+    _refuse_a_zip_bomb(data)
 
     try:
         deck = Presentation(io.BytesIO(data))
@@ -269,6 +322,8 @@ def _pptx(data: bytes) -> list[str]:
 
 def _xlsx(data: bytes) -> list[str]:
     from openpyxl import load_workbook
+
+    _refuse_a_zip_bomb(data)
 
     try:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)

@@ -141,6 +141,33 @@ export type BulkInviteOutcome =
 export type BulkRowResult = BulkPreview["rows"][number];
 export type BulkInviteRow = BulkInviteBody["rows"][number];
 
+/** One file in a Knowledge Basket, with the state the interface renders. */
+export type BasketFile =
+  paths["/v1/basket/files"]["get"]["responses"][200]["content"]["application/json"]["items"][number];
+type BasketPage =
+  paths["/v1/basket/files"]["get"]["responses"][200]["content"]["application/json"];
+type UploadTicket =
+  paths["/v1/basket/files"]["post"]["responses"][201]["content"]["application/json"];
+type BasketUploadBody =
+  paths["/v1/basket/files"]["post"]["requestBody"]["content"]["application/json"];
+type BasketDownload =
+  paths["/v1/basket/files/{file_id}/download"]["get"]["responses"][200]["content"]["application/json"];
+
+/** One basket file shared with a knowledge-transfer recipient (ADR 0021). */
+export type KtFile =
+  paths["/v1/kt/{kt_code}/files"]["get"]["responses"][200]["content"]["application/json"]["items"][number];
+type KtFilePage =
+  paths["/v1/kt/{kt_code}/files"]["get"]["responses"][200]["content"]["application/json"];
+type KtFileDownload =
+  paths["/v1/kt/{kt_code}/files/{file_id}/download"]["get"]["responses"][200]["content"]["application/json"];
+/** The same file as its curator sees it — the attachment, plus who made it. */
+export type KtAttachment =
+  paths["/v1/kt/{package_id}/attachments"]["get"]["responses"][200]["content"]["application/json"]["items"][number];
+type KtAttachmentPage =
+  paths["/v1/kt/{package_id}/attachments"]["get"]["responses"][200]["content"]["application/json"];
+type KtAttached =
+  paths["/v1/kt/{package_id}/attachments"]["post"]["responses"][201]["content"]["application/json"];
+
 type AcceptBody =
   paths["/v1/invitations/accept"]["post"]["requestBody"]["content"]["application/json"];
 type AcceptResponse =
@@ -480,6 +507,68 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /**
+   * Reserve a row and get a URL to PUT the bytes to.
+   *
+   * The response's `headers` must be sent verbatim on the PUT: they were signed, so
+   * changing the content type or exceeding the size is refused by Cloud Storage rather
+   * than by us. Requires `basket:write`, which every role holds.
+   */
+  startBasketUpload: (body: BasketUploadBody) =>
+    call<UploadTicket>("/v1/basket/files", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Tell the API the bytes have landed.
+   *
+   * This is the gate: the server re-reads the object's size and checksum and sniffs its
+   * first bytes, so a file that is not what it claimed comes back `rejected`. Answers 200
+   * with the row's real state rather than an error, because one bad file in a multi-file
+   * drop is a per-row outcome, not a failed request.
+   */
+  completeBasketUpload: (fileId: string) =>
+    call<BasketFile>(`/v1/basket/files/${encodeURIComponent(fileId)}/complete`, {
+      method: "POST",
+    }),
+
+  /** Your files, or the organisation's for a holder of `basket:manage`. */
+  basketFiles: (params: { q?: string | null; state?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.state) search.set("state", params.state);
+    const suffix = search.size ? `?${search}` : "";
+    return call<BasketPage>(`/v1/basket/files${suffix}`, { method: "GET" });
+  },
+
+  /**
+   * A short-lived signed URL for one file.
+   *
+   * Returned as JSON rather than a redirect so the browser fetches it deliberately — a
+   * 302 to a signed URL ends up in history, in referrer headers and in server logs.
+   */
+  basketDownloadUrl: (fileId: string) =>
+    call<BasketDownload>(`/v1/basket/files/${encodeURIComponent(fileId)}/download`, {
+      method: "GET",
+    }),
+
+  renameBasketFile: (fileId: string, filename: string) =>
+    call<BasketFile>(`/v1/basket/files/${encodeURIComponent(fileId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ filename }),
+    }),
+
+  /** Re-run a failed extraction. Only a `failed` file qualifies; the server refuses others. */
+  retryBasketFile: (fileId: string) =>
+    call<BasketFile>(`/v1/basket/files/${encodeURIComponent(fileId)}/retry`, {
+      method: "POST",
+    }),
+
+  /** Soft delete: it stops being listed and downloadable at once, and stays auditable. */
+  deleteBasketFile: (fileId: string) =>
+    call<void>(`/v1/basket/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
+
   acceptInvitation: (body: AcceptBody) =>
     call<AcceptResponse>("/v1/invitations/accept", {
       method: "POST",
@@ -760,6 +849,55 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kt_code: ktCode }),
     }),
+
+  /**
+   * The Knowledge Basket files attached to this package (ADR 0021).
+   *
+   * Not the subject's basket — only what a curator explicitly attached. The server
+   * re-decides the grant from the package's live state on every call, so a revoked or
+   * completed package answers 403 here exactly as it does everywhere else in the console.
+   */
+  ktFiles: (ktCode: string) =>
+    call<KtFilePage>(`/v1/kt/${encodeURIComponent(ktCode)}/files`, { method: "GET" }),
+
+  /** A short-lived signed URL for one attached file, minted only after the grant holds. */
+  ktFileDownloadUrl: (ktCode: string, fileId: string) =>
+    call<KtFileDownload>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/files/${encodeURIComponent(fileId)}/download`,
+      { method: "GET" },
+    ),
+
+  /** What a package currently shares, for whoever curates it. */
+  ktAttachments: (packageId: string) =>
+    call<KtAttachmentPage>(`/v1/kt/${encodeURIComponent(packageId)}/attachments`, {
+      method: "GET",
+    }),
+
+  /** The subject's files this caller could attach, minus the ones already on. */
+  ktAttachable: (packageId: string) =>
+    call<KtAttachmentPage>(`/v1/kt/${encodeURIComponent(packageId)}/attachable`, {
+      method: "GET",
+    }),
+
+  /**
+   * Attach files. Returns how many were NEWLY attached.
+   *
+   * Fewer than asked for is normal rather than an error: a file already on the package,
+   * one belonging to somebody other than the subject, or one this caller cannot see is
+   * skipped. The server deliberately does not say which failed why — naming the reason
+   * per id would be a probe of another employee's basket.
+   */
+  ktAttach: (packageId: string, fileIds: string[]) =>
+    call<KtAttached>(`/v1/kt/${encodeURIComponent(packageId)}/attachments`, {
+      method: "POST",
+      body: JSON.stringify({ file_ids: fileIds }),
+    }),
+
+  ktDetach: (packageId: string, fileId: string) =>
+    call<void>(
+      `/v1/kt/${encodeURIComponent(packageId)}/attachments/${encodeURIComponent(fileId)}`,
+      { method: "DELETE" },
+    ),
 
   /** Documents in the package window the RECIPIENT may already read (their own ACL). */
   /** One document in the package window the recipient may read, as ordered masked

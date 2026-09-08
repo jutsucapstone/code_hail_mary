@@ -62,6 +62,18 @@ export const MEMBER_SECTIONS: readonly MemberSection[] = [
     slice: "P3",
   },
   {
+    // Gated on `basket:write`, which every role holds — stated because the routes
+    // require it, not to filter anyone out. `basket:manage` is the wider one, and it
+    // widens what the same page *lists*, never whether it renders.
+    href: "/me/basket",
+    name: "Knowledge basket",
+    group: "Knowledge",
+    description: "Upload your own files so they join what JUTSU can answer from.",
+    permission: "basket:write",
+    status: "live",
+    slice: "P3C",
+  },
+  {
     href: "/handover",
     name: "Knowledge transfer",
     group: "Knowledge",

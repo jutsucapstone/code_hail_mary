@@ -38,6 +38,7 @@ from typing import Any
 
 import anthropic
 from jutsu_connectors import PathEscape, UnparsableMessage
+from jutsu_connectors.extraction import UnsupportedContent
 from jutsu_connectors.providers.base import (
     DocumentGone,
     ListingIncomplete,
@@ -56,6 +57,12 @@ from jutsu_retrieval.persistence import embed_pending_chunks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_worker.basket_state import (
+    basket_file_id_for,
+    mark_extracting,
+    mark_failed,
+    mark_ready,
+)
 from jutsu_worker.credentials import (
     CredentialsUnavailable,
     ReauthRequired,
@@ -407,6 +414,14 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
         SourceSystem(row.system), row.config_json or {}, org_id=org_id, session=session
     )
 
+    # A Knowledge Basket file is a row the employee is watching, so this job owns its
+    # lifecycle as well as the document's. Without these three writes the row never left
+    # `uploaded`, the console polled a state nothing would ever change, and `searchable`
+    # and `retryable` were both permanently false.
+    basket_id = basket_file_id_for(str(row.system), external_id)
+    if basket_id is not None:
+        await mark_extracting(session, file_id=basket_id)
+
     try:
         raw = await connector.fetch(external_id)
     except DocumentGone:
@@ -443,6 +458,17 @@ async def run_document_job(session: AsyncSession, *, job: Job) -> IngestOutcome:
 
     persisted = await persist_document(session, org_id=org_id, source_id=source_id, raw=raw)
     await record_state(session, job_id=job.id, state=JobState.CHUNKED)
+
+    if basket_id is not None:
+        # Zero characters is a real answer — a scan with no text layer — and recording it
+        # rather than leaving NULL is what lets the console say "we could not read any
+        # text" instead of leaving the file looking unprocessed.
+        await mark_ready(
+            session,
+            file_id=basket_id,
+            document_id=persisted.document_id,
+            extracted_chars=len(raw.body),
+        )
 
     if persisted.outcome is not IngestOutcome.UNCHANGED:
         await enqueue_job(
@@ -561,6 +587,12 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
     """
     if isinstance(error, UnparsableMessage):
         return FailureKind.MALFORMED_DOCUMENT, False
+    # Extraction refused the bytes. Re-reading the same object produces the same refusal,
+    # so five attempts reach one conclusion five times — and for a Knowledge Basket file
+    # they delay by twenty minutes the moment the employee is told their file could not be
+    # read and offered the retry button.
+    if isinstance(error, UnsupportedContent):
+        return FailureKind.MALFORMED_DOCUMENT, False
     if isinstance(error, PathEscape | UnsupportedSource):
         return FailureKind.SOURCE_UNAVAILABLE, False
     if isinstance(error, TruncatedInput | PermanentEmbeddingError):
@@ -648,6 +680,12 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
     kind, retryable = classify(error)
     message = f"{type(error).__name__}: {error}"
 
+    # A Knowledge Basket file the employee is watching has to say what happened to it.
+    # Here rather than in `run_document_job` because this runs in a NEW transaction: the
+    # work transaction is already aborted at this point, and an UPDATE inside it would
+    # write nothing and raise something unrelated.
+    await _mark_basket_failed(session, job=job, message=message, kind=kind)
+
     state = await fail_job(
         session,
         job_id=job.id,
@@ -696,3 +734,37 @@ async def record_failure(session: AsyncSession, *, job: Job, error: BaseExceptio
         if connection_id is not None:
             await mark_reauth_required(session, connection_id=connection_id)
     return state
+
+
+async def _mark_basket_failed(
+    session: AsyncSession, *, job: Job, message: str, kind: FailureKind
+) -> None:
+    """Tell a basket file why its ingestion failed, if this job was about one.
+
+    One indexed read on a failure path to learn the source's system, because the job's
+    payload names a source and not a system. Cheap, and only on the path that already
+    decided something went wrong.
+
+    The reason shown is `str(error)` as `record_failure` already composed it — which is a
+    description, never a payload, because every exception that reaches here is raised by
+    code that does not carry document text in it. `basket_state.mark_failed` bounds and
+    collapses it before it reaches a column the console renders.
+    """
+    if job.kind is not JobKind.INGEST_DOCUMENT:
+        return
+    external_id = str(job.payload.get("external_id") or "")
+    source_id = job.payload.get("source_id")
+    if not external_id or source_id is None:
+        return
+
+    row = (
+        await session.execute(
+            text("SELECT system FROM sources WHERE id = :id"), {"id": str(source_id)}
+        )
+    ).first()
+    if row is None:
+        return
+    file_id = basket_file_id_for(str(row.system), external_id)
+    if file_id is None:
+        return
+    await mark_failed(session, file_id=file_id, reason=message, kind=kind.value)

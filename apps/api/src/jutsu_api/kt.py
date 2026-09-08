@@ -51,6 +51,7 @@ __all__ = [
     "kt_document",
     "kt_documents",
     "list_packages",
+    "open_package_for",
     "revoke_package",
     "update_package",
 ]
@@ -563,6 +564,7 @@ async def _open_for(
     user_id: UUID,
     kt_code: str,
     budgeted: bool = True,
+    may_claim: bool = False,
 ) -> object:
     """The one authorization path for recipients. Everything KT-scoped calls this.
 
@@ -585,6 +587,20 @@ async def _open_for(
     `budgeted=False` is for `claim_or_open` alone: that route already spends
     `KT_CLAIM` before calling in, and charging twice for one attempt halves the
     stated allowance.
+
+    **`may_claim` is why binding is not a side effect of reading.** Claiming is an
+    irreversible state change — it decides, permanently, whose package this is — and it
+    used to happen inside every one of the nine GET routes that reach here.
+    `verify_csrf` returns without checking anything on a GET (its own docstring says Lax
+    "is not sufficient on its own for anything that changes state via a link"), and
+    `SameSite=Lax` still sends the session cookie on a top-level navigation. So a link to
+    `/v1/kt/{code}/documents`, clicked by a colleague, permanently bound an unaddressed
+    package to whoever clicked — no form, no POST, no token.
+
+    Only `claim_or_open` passes `may_claim=True`, and it is reached exclusively through
+    `POST /v1/kt/claim`, which is CSRF-checked and `KT_CLAIM`-budgeted. Every other
+    caller now gets the ordinary 404 for an unbound package, which is also what the
+    console already produces: `KtShell` claims by POST on mount before any panel loads.
     """
     if budgeted:
         await spend_budget(Bucket.KT_OPEN, org_id=org_id, user_id=user_id)
@@ -630,6 +646,14 @@ async def _open_for(
         # `claim_or_open` tells a re-open from the first claim below.
         return row
 
+    if not may_claim:
+        # Unbound, and this caller came through a route that may not bind. Reading must
+        # never decide whose package this is — see `may_claim` in the docstring. The same
+        # 404 as an unknown code, because "exists but you have not claimed it" is exactly
+        # the fact a KT ID must not confirm to whoever happens to hold it.
+        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        raise NotFound(_NOT_FOUND)
+
     # First eligible opener claims it. From here on, everyone else is a 404. The
     # rowcount is the race detector: two concurrent first opens both read the package
     # unbound, but only one UPDATE binds — and the loser must get the same refusal a
@@ -666,6 +690,25 @@ async def _open_for(
     return row
 
 
+async def open_package_for(
+    session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str
+) -> UUID:
+    """`_open_for`, for a sibling module, returning only the package id.
+
+    Exported so that a module handling KT-scoped resources reaches the package through
+    THIS path rather than writing its own `SELECT ... FROM kt_packages` — which is how a
+    second authorization path gets born. `kt_files` is the first such caller (ADR 0021).
+
+    **The id and nothing else, deliberately.** A caller outside this module wants to join
+    on the package, not to render it; everything a recipient may know about a package is
+    already shaped by `KtRecipientView`. Handing back the row would let the next caller
+    read `subject_user_id` or `recipient_email` straight out of it and put either on a
+    screen that was never checked for them.
+    """
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    return UUID(str(row.id))  # type: ignore[attr-defined]
+
+
 async def claim_or_open(
     session: AsyncSession,
     *,
@@ -685,7 +728,16 @@ async def claim_or_open(
     # `POST /v1/kt/claim` spends `KT_CLAIM` before it calls in, so the open is not
     # charged again: one attempt, one charge. Every other route reaches `_open_for`
     # directly and pays the `KT_OPEN` allowance there.
-    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code, budgeted=False)
+    # The one caller allowed to bind: this is `POST /v1/kt/claim`, which is CSRF-checked
+    # and already spent `KT_CLAIM`.
+    row = await _open_for(
+        session,
+        org_id=org_id,
+        user_id=user_id,
+        kt_code=kt_code,
+        budgeted=False,
+        may_claim=True,
+    )
 
     await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
     if row.recipient_user_id is not None:  # type: ignore[attr-defined]

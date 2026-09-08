@@ -9,6 +9,7 @@ import { FormShell } from "@/components/pilot/form-shell";
 import { SelectField } from "@/components/pilot/select-field";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
+import { VERIFY_ADDRESS_KEY, setHandoff } from "@/lib/link-token";
 import type { components } from "@/lib/api-schema";
 import { INDUSTRIES, countryOptions } from "@/lib/onboarding";
 
@@ -152,7 +153,11 @@ export default function AdminRegistrationPage() {
       // credential and it is not trusted — completion is keyed on the token and code
       // that only reached the inbox. `flow` tells that screen which endpoint completes
       // this: a registration code cannot open a session, and vice versa.
-      router.push(`/pilot/verify?flow=register&to=${encodeURIComponent(email)}`);
+      // The address goes in sessionStorage, not the URL: as `?to=` it landed verbatim in
+      // the Cloud Run request log for the sole purpose of letting the next screen say
+      // where the code went.
+      setHandoff(VERIFY_ADDRESS_KEY, email);
+      router.push("/pilot/verify?flow=register");
     } catch (error) {
       // The offending field is on the pane behind this one, so returning the reader to
       // it is the whole fix — a message about the organisation domain, shown under the

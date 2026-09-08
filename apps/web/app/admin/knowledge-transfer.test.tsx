@@ -9,6 +9,7 @@ import {
   callIndexFor,
   capabilities,
   scriptFetch,
+  type ScriptedResponse,
   sentBody,
   type Json,
 } from "@/test-support/api";
@@ -84,6 +85,28 @@ function listPage(...items: Json[]): Json {
   return { items, next_cursor: null };
 }
 
+/**
+ * The positional script, with the package-attachment reads answered out of band.
+ *
+ * `KtAttachments` fires two GETs the moment the details panel opens, and neither is what
+ * any test in this file is about. Letting them consume scripted responses would shift
+ * every body by two and make each assertion depend on React's effect order — the exact
+ * fragility `routeFetch` exists to avoid. What the panel itself does is proven in
+ * `components/admin/kt-attachments.test.tsx`, against its own scripted API.
+ */
+function script(...responses: ScriptedResponse[]) {
+  const positional = scriptFetch(...responses);
+  const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/attachments") || url.includes("/attachable")) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: [] }) });
+    }
+    return positional(input, init) as Promise<unknown>;
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 /** The one PATCH in a script. The detail GET shares its URL, so the method is the key. */
 function patchIndex(fetchMock: ReturnType<typeof scriptFetch>): number {
   return fetchMock.mock.calls.findIndex(
@@ -93,7 +116,7 @@ function patchIndex(fetchMock: ReturnType<typeof scriptFetch>): number {
 
 describe("knowledge transfer list", () => {
   it("renders each package with its last activity", async () => {
-    scriptFetch({
+    script({
       status: 200,
       body: listPage(
         ktAdmin(),
@@ -127,7 +150,7 @@ describe("knowledge transfer list", () => {
   });
 
   it("completes a package only on the second click, then POSTs to its complete route", async () => {
-    const fetchMock = scriptFetch(
+    const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin({ status: "completed" }) },
       { status: 200, body: listPage(ktAdmin({ status: "completed" })) },
@@ -158,7 +181,7 @@ describe("knowledge transfer list", () => {
   });
 
   it("offers Complete only on packages that are still open", async () => {
-    scriptFetch({ status: 200, body: listPage(ktAdmin({ status: "revoked" })) });
+    script({ status: 200, body: listPage(ktAdmin({ status: "revoked" })) });
     renderWithQuery(<KnowledgeTransferPage />);
     await screen.findByText("Grace Hopper");
 
@@ -170,7 +193,7 @@ describe("knowledge transfer list", () => {
 
 describe("knowledge transfer details", () => {
   it("fetches the package and its slice of the audit trail, and renders an activity row", async () => {
-    const fetchMock = scriptFetch(
+    const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin({ claimed_at: "2026-08-02T10:00:00Z", status: "claimed" }) },
       {
@@ -231,7 +254,7 @@ describe("knowledge transfer details", () => {
   });
 
   it("says when a package has no activity yet", async () => {
-    scriptFetch(
+    script(
       { status: 200, body: listPage(ktAdmin({ last_activity_at: null })) },
       { status: 200, body: ktAdmin({ last_activity_at: null }) },
       { status: 200, body: { items: [], next_cursor: null } },
@@ -248,7 +271,7 @@ describe("knowledge transfer details", () => {
 
   it("does not ask for the trail without audit:read, and says why", async () => {
     caps.current = capabilities({ permissions: [...DEFAULT_PERMISSIONS, "kt:manage"] });
-    const fetchMock = scriptFetch(
+    const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin() },
     );
@@ -267,7 +290,7 @@ describe("knowledge transfer details", () => {
 
   it("extends the expiry with a PATCH carrying only extend_days", async () => {
     const extended = ktAdmin({ expires_at: "2026-11-30T09:00:00Z" });
-    const fetchMock = scriptFetch(
+    const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin() },
       { status: 200, body: { items: [], next_cursor: null } },
@@ -298,7 +321,7 @@ describe("knowledge transfer details", () => {
 
   it("re-addresses a package nobody has opened, with the address as the only field", async () => {
     const readdressed = ktAdmin({ recipient_email: "new.hire@example.com" });
-    const fetchMock = scriptFetch(
+    const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin() },
       { status: 200, body: { items: [], next_cursor: null } },
@@ -331,7 +354,7 @@ describe("knowledge transfer details", () => {
       subject_name: "Ada Lovelace",
       status: "revoked",
     });
-    scriptFetch(
+    script(
       { status: 200, body: listPage(bound, revoked) },
       { status: 200, body: bound },
       { status: 200, body: { items: [], next_cursor: null } },
@@ -355,7 +378,7 @@ describe("knowledge transfer details", () => {
   });
 
   it("closes the panel and returns to the list", async () => {
-    scriptFetch(
+    script(
       { status: 200, body: listPage(ktAdmin()) },
       { status: 200, body: ktAdmin() },
       { status: 200, body: { items: [], next_cursor: null } },
@@ -376,7 +399,7 @@ describe("knowledge transfer details", () => {
 describe("knowledge transfer gate", () => {
   it("denies without kt:manage instead of rendering an empty list", () => {
     caps.current = capabilities({ permissions: [...DEFAULT_PERMISSIONS, "audit:read"] });
-    scriptFetch();
+    script();
     renderWithQuery(<KnowledgeTransferPage />);
 
     expect(screen.getByRole("heading", { name: /do not have access/i })).toBeInTheDocument();

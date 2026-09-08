@@ -18,6 +18,7 @@ Three properties carry most of the weight:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +29,8 @@ from jutsu_api.deps import get_db, get_email_sender, get_object_store
 from jutsu_api.email import RecordingEmailSender
 from jutsu_api.main import create_app
 from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
+from jutsu_core.models import AclEntry, RawDocument, SourceSystem
+from jutsu_worker.pipeline import persist_document
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -330,7 +333,7 @@ class TestOneEmployeeCannotSeeAnother:
         """The boundary inside an organisation, which RLS does not provide.
 
         Both people are in the same tenant, so row-level security passes them both. What
-        separates them is `_visible_to`, applied inside the query.
+        separates them is `visible_to`, applied inside the query.
         """
         await register_owner(client, mailbox)
         mine = await upload(client, store, filename="my-notes.txt")
@@ -707,3 +710,186 @@ class TestConcurrentAndDuplicateUploads:
             )
         ).scalar_one()
         assert jobs == 1
+
+
+class TestTheGrantIsActuallyResolvable:
+    """A grant naming a principal nobody holds is a grant to nobody.
+
+    `BasketConnector` writes `document_acl` naming `basket:{owner_user_id}`, and
+    `resolve_acl_principals` builds a caller's principals ONLY from `source_identities`.
+    Nothing minted a `basket` identity, so an uploaded file was retrievable by nobody —
+    including the person who uploaded it — while the console said "Searchable". The whole
+    feature failed silently, and every existing test passed.
+    """
+
+    async def test_uploading_gives_the_owner_the_principal_their_file_is_granted_to(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        await upload(client, store)
+
+        row = (
+            await inspector.execute(
+                text(
+                    "SELECT source_system, subject, user_id, linked_by, is_active "
+                    "FROM source_identities WHERE source_system = 'basket'"
+                )
+            )
+        ).one()
+        # The principal the connector will grant to is `{system}:{subject}`, so these two
+        # columns ARE the grant. If they do not match `basket:{owner_user_id}`, retrieval
+        # returns nothing and nothing says why.
+        assert row.source_system == "basket"
+        assert str(row.subject) == str(row.user_id)
+        assert row.linked_by == "basket_upload"
+        assert row.is_active is True
+
+    async def test_the_subject_is_the_session_and_never_the_request(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        inspector: AsyncSession,
+    ) -> None:
+        """Which is what makes minting it here legitimate at all.
+
+        The admin self-link refusal exists because an administrator *asserts* a subject.
+        Here the server chose the namespace (a constant) and the subject (the
+        authenticated session's own user id), so there is no assertion to distrust — and
+        nothing a caller can send changes it.
+        """
+        await register_owner(client, mailbox)
+        me = (await client.get("/v1/me")).json()
+
+        await upload(client, store, filename="../../etc/passwd")
+
+        subject = (
+            await inspector.execute(
+                text("SELECT subject FROM source_identities WHERE source_system = 'basket'")
+            )
+        ).scalar_one()
+        assert str(subject) == me["user_id"]
+
+    async def test_uploading_twice_mints_one_identity(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+
+        await upload(client, store, filename="one.txt")
+        await upload(client, store, filename="two.txt")
+
+        count = (
+            await inspector.execute(
+                text("SELECT count(*) FROM source_identities WHERE source_system = 'basket'")
+            )
+        ).scalar_one()
+        assert count == 1
+
+
+class TestRemovingAFileRemovesIt:
+    """ "Remove for good" has to mean removed, and it used to mean unlisted.
+
+    The soft delete stopped the row being listed while leaving its chunks in the corpus
+    with a live `document_acl` grant — so a file the employee deleted kept answering their
+    Ask JUTSU queries, quoting text from a document the console said was gone.
+    """
+
+    async def test_deleting_removes_the_search_grant(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        inspector: AsyncSession,
+    ) -> None:
+        await register_owner(client, mailbox)
+        row = await upload(client, store)
+        # Stand in for the worker by using the REAL writer: `persist_document` is what
+        # ingestion calls, so the document and the grant this test deletes are the same
+        # shape production has rather than a hand-built approximation of one.
+        org_id = (await inspector.execute(text("SELECT id FROM orgs LIMIT 1"))).scalar_one()
+        await inspector.execute(
+            text("SELECT set_config('app.current_org_id', :o, true)"), {"o": str(org_id)}
+        )
+        source_id = (
+            await inspector.execute(text("SELECT id FROM sources WHERE system = 'basket' LIMIT 1"))
+        ).scalar_one()
+        persisted = await persist_document(
+            inspector,
+            org_id=org_id,
+            source_id=source_id,
+            raw=RawDocument(
+                external_id=row["id"],
+                source_system=SourceSystem.BASKET,
+                title="notes.txt",
+                body="The migration was decided in March.",
+                mime="text/plain",
+                created_at=datetime(2026, 9, 8, 10, 30, tzinfo=UTC),
+                acls=[AclEntry(principal_type="user", principal_id="basket:someone")],
+            ),
+        )
+        document_id = persisted.document_id
+        await inspector.execute(
+            text("UPDATE basket_files SET document_id = :d WHERE id = :i"),
+            {"d": document_id, "i": row["id"]},
+        )
+        await inspector.commit()
+
+        deleted = await client.delete(f"/v1/basket/files/{row['id']}", headers=csrf(client))
+        assert deleted.status_code == 204, deleted.text
+
+        await inspector.execute(
+            text("SELECT set_config('app.current_org_id', :o, true)"), {"o": str(org_id)}
+        )
+        remaining = (
+            await inspector.execute(
+                text("SELECT count(*) FROM document_acl WHERE document_id = :d"),
+                {"d": document_id},
+            )
+        ).scalar_one()
+        assert remaining == 0
+
+    async def test_deleting_removes_the_object_from_storage(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, store: FakeStore
+    ) -> None:
+        # Recoverable rather than destructive: the bucket has versioning, so this writes a
+        # noncurrent version the lifecycle rule keeps for thirty days.
+        await register_owner(client, mailbox)
+        row = await upload(client, store)
+        key, _, _ = store.signed_uploads[0]
+        assert key in store.objects
+
+        await client.delete(f"/v1/basket/files/{row['id']}", headers=csrf(client))
+
+        assert store.deleted == [key]
+        assert key not in store.objects
+
+    async def test_a_storage_failure_does_not_fail_the_deletion(
+        self, client: AsyncClient, mailbox: RecordingEmailSender, store: FakeStore
+    ) -> None:
+        """The row and the grant are already gone, so the file IS deleted.
+
+        Raising here would tell the employee their deletion failed when every person and
+        every query already agrees it succeeded; the residue is an unreferenced object,
+        which is a cost problem rather than a privacy one.
+        """
+        await register_owner(client, mailbox)
+        row = await upload(client, store)
+
+        def explode(key: str) -> None:
+            raise RuntimeError("storage is having a day")
+
+        store.delete = explode  # type: ignore[method-assign]
+
+        deleted = await client.delete(f"/v1/basket/files/{row['id']}", headers=csrf(client))
+
+        assert deleted.status_code == 204, deleted.text
+        assert (await client.get("/v1/basket/files")).json()["items"] == []

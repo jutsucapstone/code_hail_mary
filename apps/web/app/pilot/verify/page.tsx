@@ -7,6 +7,7 @@ import { CodeInput } from "@/components/pilot/code-input";
 import { FormShell } from "@/components/pilot/form-shell";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
+import { VERIFY_ADDRESS_KEY, useHandoff, useLinkToken } from "@/lib/link-token";
 
 /**
  * Code entry — the step that actually authenticates.
@@ -15,7 +16,8 @@ import { ApiError, api } from "@/lib/api";
  * scanners, link previewers and corporate security proxies fetch every URL in a message.
  * If arriving at this page redeemed the challenge, a scanner would burn it before the
  * recipient clicked — and a redeemed link sitting in a scanner's logs is a credential
- * somebody else already used. So the token is read from the query string and submitted.
+ * somebody else already used. So the token is read from the URL fragment — which the
+ * browser never transmits — and submitted.
  *
  * **The token is no longer something a person has to produce.** It used to be a required
  * field, and the only place to obtain one was the emailed link — so the six-digit code,
@@ -44,15 +46,24 @@ function VerifyForm() {
   const [resendIn, setResendIn] = useState(0);
   const [resent, setResent] = useState(false);
 
-  // All three arrive in the URL: `token` from the emailed link, `to` from the previous
-  // step so this page can say where the code went, and `flow` so it knows which endpoint
-  // completes this. None is trusted — the server decides in every case.
+  // Three inputs, and they arrive by three different routes on purpose.
   //
-  // `flow` selects a *route*, not a permission. Both endpoints assert the challenge's
-  // purpose server-side, so pointing this at the wrong one yields the same refusal as a
-  // wrong code rather than crossing the two flows over.
-  const token = params.get("token") ?? "";
-  const sentTo = params.get("to");
+  // `token` comes from the URL FRAGMENT, which a browser never transmits — see
+  // `useLinkToken`. In the query string it was recorded verbatim in the Cloud Run
+  // request log, which is where live challenge tokens were found.
+  //
+  // `to` comes from `sessionStorage`, written by whichever page sent the code. It is
+  // only ever used to tell the reader where to look, so it does not need to reach a
+  // server at all — and as a query parameter it put a registrant's work email address
+  // into that same request log.
+  //
+  // `flow` stays in the query string. It is not a secret, and it selects a *route*
+  // rather than a permission: both endpoints assert the challenge's purpose server-side,
+  // so pointing this at the wrong one yields the same refusal as a wrong code.
+  //
+  // None of the three is trusted. The server decides in every case.
+  const token = useLinkToken();
+  const sentTo = useHandoff(VERIFY_ADDRESS_KEY);
   const registering = params.get("flow") === "register";
 
   useEffect(() => {

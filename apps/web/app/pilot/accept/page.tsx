@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { CopyButton } from "@/components/copy-button";
@@ -8,6 +8,7 @@ import { Field } from "@/components/pilot/field";
 import { FormShell } from "@/components/pilot/form-shell";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
+import { useLinkToken } from "@/lib/link-token";
 
 /**
  * Accepting an invitation.
@@ -24,14 +25,14 @@ import { ApiError, api } from "@/lib/api";
 
 function AcceptForm() {
   const router = useRouter();
-  const params = useSearchParams();
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(
     null,
   );
   const [issued, setIssued] = useState<string | null>(null);
 
-  const token = params.get("token") ?? "";
+  // From the URL fragment, which the browser never sends anywhere. See `useLinkToken`.
+  const token = useLinkToken();
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -111,8 +112,17 @@ function AcceptForm() {
         />
 
         {/* Prefilled from the link. Editable rather than hidden so pasting a whole link
-            still works, and so the field is not an unexplained silent requirement. */}
+            still works, and so the field is not an unexplained silent requirement.
+
+            `key={token}` is load-bearing now that the token comes from the fragment: it
+            arrives in an effect, one render AFTER the input mounted, and `defaultValue`
+            is only read on mount. Without the key the field would stay empty for every
+            person who followed the link — and stay empty in a way that looks like the
+            link failed. Changing the key remounts the input once, when the value
+            arrives; typing afterwards does not change `token`, so the field stays
+            editable. */}
         <Field
+          key={token}
           id="token"
           name="token"
           label="Invitation token"

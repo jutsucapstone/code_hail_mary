@@ -280,3 +280,62 @@ class TestInvisibleCharactersInFilenames:
 
         assert "/" not in cleaned
         assert "\u202e" not in cleaned
+
+
+class TestTheSnifferRecognisesWhatThePickerOffers:
+    """Every type the file picker offers must sniff to the type it declares.
+
+    A mismatch here is not a cosmetic problem: `_resolve` refuses the file, and it refuses
+    it in `complete_upload` — **after** the browser has PUT the whole thing to Cloud
+    Storage. Four of the twenty extensions on offer used to fail exactly that way, so a
+    300 MB recording was uploaded in full and then told it was not what it claimed.
+    """
+
+    def test_a_webp_image_is_recognised(self) -> None:
+        # RIFF is a container: WAV, AVI and WEBP share the first four bytes, and WEBP was
+        # missing from the form table, so every .webp sniffed as None.
+        assert sniff_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
+
+    def test_a_quicktime_movie_is_not_called_an_mp4(self) -> None:
+        # `.mov` declares video/quicktime; a flat "video/mp4" for every ftyp box
+        # disagreed with it.
+        assert sniff_mime(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00") == "video/quicktime"
+
+    def test_m4a_audio_is_audio_rather_than_video(self) -> None:
+        assert sniff_mime(b"\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00") == "audio/mp4"
+
+    def test_a_plain_mp4_still_sniffs_as_video(self) -> None:
+        assert sniff_mime(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00") == "video/mp4"
+
+    def test_an_unknown_ftyp_brand_falls_back_to_mp4(self) -> None:
+        # The previous behaviour for every brand, kept for the ones not named.
+        assert sniff_mime(b"\x00\x00\x00\x18ftypzzzz\x00\x00\x00\x00") == "video/mp4"
+
+    def test_an_mp3_without_an_id3_tag_is_still_an_mp3(self) -> None:
+        """An ID3 tag is optional; a bare MPEG frame is the actual signature.
+
+        Without this a tagless `.mp3` sniffed as None and was refused for disagreeing with
+        a claim it never contradicted.
+        """
+        assert sniff_mime(b"\xff\xfb\x90\x00" + b"\x00" * 20) == "audio/mpeg"
+
+    def test_an_id3_tagged_mp3_is_unaffected(self) -> None:
+        assert sniff_mime(b"ID3\x04\x00\x00\x00\x00\x00\x00") == "audio/mpeg"
+
+    def test_a_wav_and_an_avi_still_resolve(self) -> None:
+        assert sniff_mime(b"RIFF\x00\x00\x00\x00WAVEfmt ") == "audio/wav"
+        assert sniff_mime(b"RIFF\x00\x00\x00\x00AVI LIST") == "video/x-msvideo"
+
+    def test_an_executable_is_still_refused(self) -> None:
+        """The whole point of sniffing. Widening the table must not widen this.
+
+        `MZ` is a DOS/PE header and matches nothing, so `_resolve` sees `None` against a
+        non-text claim and refuses — which is the `.exe` announced as `image/png`.
+        """
+        assert sniff_mime(b"MZ\x90\x00\x03" + b"\x00" * 64) is None
+
+    def test_a_short_read_never_raises(self) -> None:
+        # `read_head` returns whatever the object had; an empty or one-byte object must
+        # produce "unknown", not an IndexError inside a request.
+        for head in (b"", b"\xff", b"R", b"\x00\x00\x00"):
+            assert sniff_mime(head) is None or isinstance(sniff_mime(head), str)

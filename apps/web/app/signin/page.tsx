@@ -7,6 +7,7 @@ import { Field } from "@/components/pilot/field";
 import { FormShell } from "@/components/pilot/form-shell";
 import { FormError, SubmitButton } from "@/components/pilot/submit-button";
 import { ApiError, api } from "@/lib/api";
+import { VERIFY_ADDRESS_KEY, setHandoff } from "@/lib/link-token";
 
 /**
  * Signing back in.
@@ -63,7 +64,9 @@ export default function SignInPage() {
       // either way so neither field becomes an oracle. The code going to the mailbox
       // stays the thing that authenticates.
       await api.requestChallenge({ email, jutsu_id: jutsuId || null });
-      router.push(`/pilot/verify?to=${encodeURIComponent(email)}`);
+      // sessionStorage rather than the URL — see the admin page and `link-token.ts`.
+      setHandoff(VERIFY_ADDRESS_KEY, email);
+      router.push("/pilot/verify");
     } catch (error) {
       const message =
         error instanceof ApiError

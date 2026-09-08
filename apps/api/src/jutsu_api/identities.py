@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 __all__ = [
     "LinkedIdentity",
+    "link_basket_principal",
     "link_identity",
     "link_verified_email",
     "list_identities",
@@ -54,6 +55,8 @@ __all__ = [
 LINKED_BY_VERIFIED_EMAIL = "verified_email"
 LINKED_BY_ADMIN = "admin"
 LINKED_BY_OAUTH = "oauth_connection"
+#: The server chose the namespace and the subject; see `link_basket_principal`.
+LINKED_BY_BASKET = "basket_upload"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +146,44 @@ async def link_verified_subject(
             "system": source_system.value,
             "subject": subject,
             "by": LINKED_BY_OAUTH,
+        },
+    )
+
+
+async def link_basket_principal(session: AsyncSession, *, org_id: UUID, user_id: UUID) -> None:
+    """Make `basket:{user_id}` a principal the uploader actually holds.
+
+    Without this the Knowledge Basket does not work at all, and it fails silently.
+    `BasketConnector._grant` writes a `document_acl` row naming `basket:{owner_user_id}`,
+    and `resolve_acl_principals` builds a caller's principals **only** from
+    `source_identities` — so with no row here the grant matches nobody. The uploader's own
+    file was invisible to the uploader, while the console labelled it "Searchable".
+
+    **This is the strongest verification in the system, not the weakest.** The admin
+    self-link refusal exists because an administrator *asserts* a subject; the OAuth path
+    is allowed because a provider *proves* one (ADR 0014). Here the server chose both
+    halves: the namespace is a constant and the subject is the authenticated session's own
+    `users.id`. Nothing a caller sends reaches it, so there is no assertion to distrust —
+    the identity is true by construction.
+
+    Idempotent, and deliberately silent on conflict. `str(user_id)` is unique per person
+    per tenant, so the only conflict possible is a re-run for the same user, which is a
+    no-op. Revocation still works the ordinary way: `revoke_all_for_user` flips
+    `is_active` at offboarding and the person's own files stop being retrievable by them,
+    which is the correct end state for somebody who has left.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO source_identities "
+            "(org_id, user_id, source_system, subject, linked_by) "
+            "VALUES (:org, :user, CAST('basket' AS source_system), :subject, :by) "
+            "ON CONFLICT (org_id, source_system, subject) WHERE is_active DO NOTHING"
+        ),
+        {
+            "org": str(org_id),
+            "user": str(user_id),
+            "subject": str(user_id),
+            "by": LINKED_BY_BASKET,
         },
     )
 

@@ -16,7 +16,25 @@ import { PILOT_PATH } from "@/lib/surfaces";
  * keeps the header, hero, contact section, announcement bar and footer from drifting
  * apart — the CTA that matters most appears in five places.
  */
-const CONTACT_MAILTO = "mailto:hello@jutsu.dev?subject=JUTSU%20enquiry";
+/**
+ * The one contact address, on the domain this deployment actually owns.
+ *
+ * **It used to be `hello@jutsu.dev`, and that was not a harmless placeholder.** `jutsu.dev`
+ * is registered to somebody else — it resolves to Cloudflare and carries live Protonmail
+ * MX records, while this project's DNS is GoDaddy and serves `jutsu.co.in`. So the
+ * Privacy and Terms pages were directing customers' privacy and legal enquiries, which by
+ * definition contain personal data, to a mailbox controlled by an unknown third party.
+ *
+ * **`jutsu.co.in` has no MX records yet, so this address currently bounces.** That is
+ * deliberate and it is the right trade: a bounce tells the sender their message did not
+ * arrive, while the previous address delivered it to a stranger silently. Publishing a
+ * mailbox nobody reads is the remaining half of the problem, and it is fixed by adding MX
+ * records for the domain — a DNS change only the domain's owner can make. `apps/web/README.md`
+ * records it as an outstanding release item.
+ */
+export const CONTACT_EMAIL = "hello@jutsu.co.in";
+
+const CONTACT_MAILTO = `mailto:${CONTACT_EMAIL}?subject=JUTSU%20enquiry`;
 
 export const siteConfig = {
   name: "JUTSU",

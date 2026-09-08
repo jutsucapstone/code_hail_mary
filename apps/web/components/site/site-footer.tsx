@@ -3,7 +3,7 @@ import { Mail } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/site/logo";
 import { Container } from "@/components/site/section";
-import { footerNav, siteConfig } from "@/lib/content";
+import { CONTACT_EMAIL, footerNav, siteConfig } from "@/lib/content";
 
 export function SiteFooter() {
   const year = siteConfig.org.date.split(" ")[1];
@@ -22,11 +22,11 @@ export function SiteFooter() {
               decisions. {siteConfig.tagline}
             </p>
             <a
-              href="mailto:hello@jutsu.dev"
+              href={`mailto:${CONTACT_EMAIL}`}
               className="mt-6 inline-flex items-center gap-2 rounded-md text-sm text-muted-foreground transition-colors hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               <Mail aria-hidden="true" className="size-4" />
-              hello@jutsu.dev
+              {CONTACT_EMAIL}
             </a>
           </div>
 

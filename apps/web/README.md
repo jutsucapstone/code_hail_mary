@@ -37,8 +37,20 @@ npx tsc --noEmit  # typecheck
 - **Set `NEXT_PUBLIC_SITE_URL`** (see `.env.example`). It feeds canonical URLs,
   `sitemap.xml`, `robots.txt` and Open Graph tags. Without it, crawlers are
   handed `localhost`.
-- **Replace `hello@jutsu.dev`** — it is a placeholder used by every CTA, the
-  footer and both legal pages.
+- **Add MX records for `jutsu.co.in`, and make `hello@jutsu.co.in` a monitored
+  mailbox.** The address is published on both legal pages, in the footer and by
+  every "Contact us" CTA, and it is defined once as `CONTACT_EMAIL` in
+  `lib/content.ts`. As of this writing the domain has **no MX records at all**, so
+  the address bounces — which is the correct failure while it is unattended (a
+  bounce tells the sender their message did not arrive) but is not a state to ship
+  in. This is a DNS change only the domain's owner can make.
+
+  It replaced `hello@jutsu.dev`, which was not a harmless placeholder: `jutsu.dev`
+  is registered to a third party — Cloudflare-hosted, with live Protonmail MX —
+  while this project's DNS is GoDaddy. Privacy and legal enquiries, which contain
+  personal data by definition, were being addressed to a mailbox nobody here
+  controls. `lib/content.test.ts` now fails if any published address leaves the
+  owned domain.
 - Review `app/privacy/page.tsx` and `app/terms/page.tsx` with someone qualified.
   They are written to be accurate about how the product works, not to be legal
   advice.

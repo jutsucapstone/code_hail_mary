@@ -13,6 +13,7 @@ what the store does with bytes is proven in `packages/core/tests/test_storage.py
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -415,3 +416,175 @@ class TestTenantIsolation:
         assert files == 0, "another tenant could see basket rows"
         assert documents == 0, "another tenant could see the documents they became"
         assert chunks == 0, "another tenant could see the chunks"
+
+
+class TestTheRowSaysWhatHappenedToIt:
+    """The basket row's own lifecycle, which nothing used to write.
+
+    `complete_upload` set `uploaded` and the worker only ever READ `basket_files`, so the
+    state never advanced, `document_id` and `extracted_chars` stayed NULL, `searchable`
+    and `retryable` were permanently false, and the employee's console polled every three
+    seconds for ever against a row nothing would change. Every test here fails against
+    that build.
+    """
+
+    async def test_a_successful_ingestion_marks_the_file_ready(self, session: AsyncSession) -> None:
+        store = FakeStore()
+        basket = await a_basket(session, store, body=b"The migration was decided in March.")
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        row = (
+            await session.execute(
+                text(
+                    "SELECT state, document_id, extracted_chars, failure_reason "
+                    "FROM basket_files WHERE id = :i"
+                ),
+                {"i": basket["file_id"]},
+            )
+        ).one()
+        assert row.state == "ready"
+        assert row.document_id is not None
+        assert row.extracted_chars == len("The migration was decided in March.")
+        assert row.failure_reason is None
+
+    async def test_the_document_it_names_is_the_one_that_was_written(
+        self, session: AsyncSession
+    ) -> None:
+        store = FakeStore()
+        # A `document_id` that points at nothing would make the console's "searchable"
+        # badge true and its link dead.
+        basket = await a_basket(session, store, body=b"Runbook: restart the ingest worker.")
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        linked = (
+            await session.execute(
+                text(
+                    "SELECT d.id FROM documents d "
+                    "JOIN basket_files f ON f.document_id = d.id WHERE f.id = :i"
+                ),
+                {"i": basket["file_id"]},
+            )
+        ).scalar_one_or_none()
+        assert linked is not None
+
+    async def test_zero_extracted_characters_is_recorded_rather_than_left_null(
+        self, session: AsyncSession
+    ) -> None:
+        store = FakeStore()
+        """A scan with no text layer is a real answer, and NULL is not it.
+
+        Distinguishing "we read it and found nothing" from "we have not read it" is the
+        whole reason the column is nullable.
+        """
+        pypdf = pytest.importorskip("pypdf")
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        basket = await a_basket(
+            session,
+            store,
+            body=buffer.getvalue(),
+            filename="scan.pdf",
+            mime="application/pdf",
+        )
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        row = (
+            await session.execute(
+                text("SELECT state, extracted_chars FROM basket_files WHERE id = :i"),
+                {"i": basket["file_id"]},
+            )
+        ).one()
+        assert row.state == "ready"
+        assert row.extracted_chars == 0
+
+    async def test_an_unreadable_file_is_marked_failed_with_a_reason(
+        self, session: AsyncSession
+    ) -> None:
+        store = FakeStore()
+        """And the reason is mandatory — the CHECK constraint refuses a failed row without one."""
+        basket = await a_basket(
+            session,
+            store,
+            body=b"this is definitely not a pdf",
+            filename="broken.pdf",
+            mime="application/pdf",
+        )
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        row = (
+            await session.execute(
+                text("SELECT state, failure_reason, failure_kind FROM basket_files WHERE id = :i"),
+                {"i": basket["file_id"]},
+            )
+        ).one()
+        assert row.state == "failed"
+        assert row.failure_reason
+        assert row.failure_kind
+
+    async def test_an_unreadable_file_is_not_retried_five_times(
+        self, session: AsyncSession
+    ) -> None:
+        store = FakeStore()
+        """Re-reading the same bytes fails identically, so the job is permanent.
+
+        It also matters to the person: a retryable failure delays by twenty minutes the
+        moment they are told their file could not be read and offered the button.
+        """
+        basket = await a_basket(
+            session,
+            store,
+            body=b"not a pdf at all",
+            filename="broken.pdf",
+            mime="application/pdf",
+        )
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        job = (
+            await session.execute(
+                text("SELECT state, failure_kind FROM jobs WHERE kind = 'ingest.document'")
+            )
+        ).one()
+        assert job.state == "failed"
+        assert job.failure_kind == "malformed_document"
+
+    async def test_a_file_deleted_mid_flight_is_not_resurrected(
+        self, session: AsyncSession
+    ) -> None:
+        store = FakeStore()
+        """The owner's delete outranks the pipeline.
+
+        A worker that started before the employee pressed Remove must not write `ready`
+        back onto a row they have already removed — which is what `WHERE deleted_at IS
+        NULL` on every state write is for.
+        """
+        basket = await a_basket(session, store, body=b"Notes worth keeping.")
+        await scope(session, basket["org_id"])
+        await session.execute(
+            text("UPDATE basket_files SET deleted_at = now(), deleted_by = :u WHERE id = :i"),
+            {"u": basket["user_id"], "i": basket["file_id"]},
+        )
+        await session.commit()
+
+        await queue_and_run(session, basket, store)
+
+        await scope(session, basket["org_id"])
+        row = (
+            await session.execute(
+                text("SELECT state, deleted_at FROM basket_files WHERE id = :i"),
+                {"i": basket["file_id"]},
+            )
+        ).one()
+        assert row.deleted_at is not None
+        assert row.state != "ready"
