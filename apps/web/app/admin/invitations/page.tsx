@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+
 import { useCapabilities } from "@/components/admin/admin-shell";
 import {
   LoadMore,
@@ -24,11 +26,22 @@ import { classifyApiError } from "@/lib/api-error";
 import { ROLE_LABELS, can } from "@/lib/permissions";
 
 /**
- * Invitations — what happened to every one this organisation sent.
+ * Invitations — what happened to every one this organisation sent, and the two things
+ * an administrator can do about it.
  *
  * The addressee's email is shown deliberately: the caller holds `member:invite`, and an
  * invitation *is* an email address. Status is derived server-side against the database
  * clock, so "expired" here and "expired" at acceptance time cannot disagree.
+ *
+ * **Cancel and Resend are offered on the rows the server would accept them for**, which
+ * is a courtesy and not the enforcement — both routes take `member:invite` and refuse an
+ * invitation that is no longer waiting. Resend re-checks the rank ceiling against the
+ * person pressing it, so an HR Admin cannot resend a Super Admin's invitation at Super
+ * Admin level even by crafting the request.
+ *
+ * Both refetch rather than patching the row in place. The status shown is derived from
+ * the database clock, and a locally-edited copy would be the one thing on this page that
+ * was not.
  */
 
 function InvitationStatus({ status }: { status: string }) {
@@ -53,6 +66,9 @@ export default function InvitationsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mayRead = can(capabilities, "member:invite");
+  // Which row is mid-request, so its own buttons disable rather than the whole table
+  // freezing. `null` while nothing is in flight.
+  const [acting, setActing] = useState<string | null>(null);
 
   const head = useQuery({
     queryKey: ["invitations"],
@@ -80,6 +96,33 @@ export default function InvitationsPage() {
     }
   }
 
+  async function act(
+    invitation: InvitationPage["items"][number],
+    what: "revoke" | "resend",
+  ) {
+    setActing(invitation.id);
+    try {
+      if (what === "revoke") {
+        await api.revokeInvitation(invitation.id);
+        toast.success(`Invitation to ${invitation.email} cancelled.`);
+      } else {
+        await api.resendInvitation(invitation.id);
+        toast.success(`A new invitation is on its way to ${invitation.email}.`);
+      }
+      // The walked-back pages are dropped rather than merged: a resend creates a row and
+      // cancels another, so the older pages the reader had accumulated no longer line up
+      // with the cursor they came from.
+      setOlder([]);
+      setCursor(null);
+      setExhausted(false);
+      await head.refetch();
+    } catch (error) {
+      toast.error(classifyApiError(error).message);
+    } finally {
+      setActing(null);
+    }
+  }
+
   const rows = [...(head.data?.items ?? []), ...older];
   const more = !exhausted && (cursor ?? head.data?.next_cursor);
 
@@ -88,7 +131,8 @@ export default function InvitationsPage() {
       <PageHeader eyebrow="People" title="Invitations">
         Every invitation this organisation has sent, newest first. Sending one is done
         from Employees; this is where you see whether it was accepted, is still waiting,
-        or lapsed.
+        or lapsed — and where you cancel one, or send a fresh link to someone who never
+        got theirs.
       </PageHeader>
 
       {head.error ? (
@@ -112,8 +156,8 @@ export default function InvitationsPage() {
       ) : (
         <>
           <TableShell
-            caption="Invitations with addressee, role, status, and when they were sent and expire."
-            headings={["Sent", "Addressee", "Role", "Status", "Expires"]}
+            caption="Invitations with addressee, role, status, when they were sent and expire, and what you can do about each."
+            headings={["Sent", "Addressee", "Role", "Status", "Expires", "Actions"]}
           >
             {rows.map((invitation) => (
               <tr key={invitation.id} className="border-b border-hairline last:border-b-0">
@@ -129,6 +173,41 @@ export default function InvitationsPage() {
                 </td>
                 <td className="px-5 py-3.5 text-xs text-muted-foreground">
                   <When iso={invitation.expires_at} />
+                </td>
+                <td className="px-5 py-3.5">
+                  {/* Only a waiting invitation has anything to cancel, and only an
+                      unaccepted one can be reissued — an accepted invitation belongs to
+                      a member now, and removing a member is deactivation, not this. */}
+                  {invitation.status === "accepted" || invitation.status === "revoked" ? (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={acting === invitation.id}
+                        aria-busy={acting === invitation.id}
+                        aria-label={`Resend the invitation to ${invitation.email}`}
+                        onClick={() => void act(invitation, "resend")}
+                        className="h-8 text-xs"
+                      >
+                        Resend
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={acting === invitation.id}
+                        aria-busy={acting === invitation.id}
+                        aria-label={`Cancel the invitation to ${invitation.email}`}
+                        onClick={() => void act(invitation, "revoke")}
+                        className="h-8 text-xs text-destructive hover:text-destructive"
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Fragment } from "react";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
+import { BulkOnboarding } from "@/components/admin/bulk-onboarding";
 import { EmployeeConnections } from "@/components/admin/employee-connections";
 import { RoleAssignment } from "@/components/admin/role-assignment";
 import { LoadMore } from "@/components/admin/page-scaffold";
@@ -350,6 +351,13 @@ export default function EmployeesPage() {
             {invited ? `Invitation sent to ${invited}.` : ""}
           </p>
         </section>
+      ) : null}
+
+      {/* The same permission as the single form above, and for the same reason: inviting
+          eighty people is inviting one person eighty times. Rendering it is a courtesy —
+          both bulk routes re-check `member:invite` and the rank ceiling server-side. */}
+      {mayInvite ? (
+        <BulkOnboarding grantable={grantable} onInvited={() => load(query)} />
       ) : null}
 
       <section aria-labelledby="people-heading" className="flex min-h-0 flex-1 flex-col gap-4">

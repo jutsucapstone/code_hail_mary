@@ -22,6 +22,11 @@ dependencies = [
     # enqueues a durable job row. Postgres remains the queue; losing the message loses
     # nothing but latency.
     "arq>=0.26",
+    # Bulk employee onboarding accepts the spreadsheet an HR team already has. A `.xlsx`
+    # is a zip of XML and cannot be read as text, so the alternative to this dependency
+    # is telling every administrator to re-save the file as CSV first. It is read
+    # strictly bounded and read-only — see `jutsu_api.bulk_invitations.parse_xlsx`.
+    "openpyxl>=3.1",
 ]
 
 [dependency-groups]

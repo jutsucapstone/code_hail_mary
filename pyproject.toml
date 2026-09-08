@@ -30,6 +30,10 @@ dev = [
     "mypy>=1.13",
     # Stubs for the protobuf timestamp the Cloud Tasks doorbell builds (ADR 0017).
     "types-protobuf>=5.29",
+    # Stubs for the workbook reader behind bulk employee onboarding (ADR 0019). Real
+    # stubs rather than an `ignore_missing_imports` override: the parser handles an
+    # uploaded file, and `Any` is exactly the wrong thing to have there.
+    "types-openpyxl>=3.1",
 ]
 
 [tool.ruff]

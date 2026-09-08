@@ -33,6 +33,64 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   async headers() {
+    const isProduction = process.env.NODE_ENV === "production";
+
+    // **One policy for the whole app, and the reason is App Router navigation.**
+    //
+    // This was briefly two rules — a strict one everywhere and a looser one on
+    // `/handover`, whose Spline scene loads a pinned ES module from unpkg. That does not
+    // work, and the way it fails is invisible: a Content-Security-Policy is a property of
+    // the DOCUMENT that carried the header, not of the current route. `/handover` is
+    // reached from the KT shell through `next/link` (components/kt/kt-shell.tsx), which is
+    // a same-document navigation, so the page inherits whatever policy the entry document
+    // was served with. The scene would therefore render on a hard load and be blocked on
+    // the normal in-app path — protection that depends on how the reader arrived is worse
+    // than none, because nobody can reason about it.
+    //
+    // So the CDN origin is allowed everywhere and stated plainly rather than hidden
+    // behind a rule that does not hold. **The change that would let this tighten is
+    // vendoring `spline-viewer.js` into `public/`** — one self-contained file, after which
+    // `script-src` drops to `'self' 'unsafe-inline'` and the supply-chain exposure goes
+    // with it.
+    //
+    // `'unsafe-inline'` on `script-src` is a limitation, not an oversight. Next 16 needs
+    // it unless every page is dynamically rendered behind a nonce — the bundled docs are
+    // explicit that nonces disable static generation, CDN caching and PPR — or unless the
+    // experimental SRI flag is enabled, which is not a thing to put under a production
+    // release. The directives that do NOT need inline script are all strict, and
+    // `connect-src 'self'` is the one that matters most here: every API call already goes
+    // through the same-origin proxy at `/api/jutsu/*`, so nothing legitimate talks to a
+    // third-party origin and injected script cannot exfiltrate to one either.
+    const csp = [
+      "default-src 'self'",
+      // `'unsafe-eval'` only in development: React uses `eval` there to reconstruct
+      // server-side error stacks in the browser. Neither React nor Next uses it in a
+      // production build.
+      `script-src 'self' 'unsafe-inline' https://unpkg.com${isProduction ? "" : " 'unsafe-eval'"}`,
+      // Next inlines critical CSS, and Tailwind v4's output is a stylesheet rather than
+      // inline styles — but the framework's own injection is what forces this.
+      "style-src 'self' 'unsafe-inline'",
+      // `blob:` and `data:` are how the app renders locally-generated images; no remote
+      // image host is used anywhere.
+      "img-src 'self' blob: data:",
+      // `next/font/google` downloads and self-hosts at build time, so no font CDN is
+      // ever contacted at runtime.
+      "font-src 'self'",
+      // The viewer fetches its own wasm and chunks from the origin that served it.
+      "connect-src 'self' https://unpkg.com",
+      "worker-src 'self' blob:",
+      "manifest-src 'self'",
+      "media-src 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      // Kept in step with `X-Frame-Options: SAMEORIGIN` below on purpose: two headers
+      // that disagree about framing is how one of them silently stops being the answer.
+      "frame-ancestors 'self'",
+      "frame-src 'none'",
+      ...(isProduction ? ["upgrade-insecure-requests"] : []),
+    ].join("; ");
+
     const headers = [
       { key: "X-Content-Type-Options", value: "nosniff" },
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
@@ -64,14 +122,16 @@ const nextConfig: NextConfig = {
     // A browser ignores the header on a plain-HTTP response anyway (RFC 6797 §7.2), so
     // this is about not asserting a policy the dev server cannot honour rather than
     // about a live risk.
-    if (process.env.NODE_ENV === "production") {
+    if (isProduction) {
       headers.push({
         key: "Strict-Transport-Security",
         value: "max-age=31536000; includeSubDomains",
       });
     }
 
-    return [{ source: "/:path*", headers }];
+    const cspHeader = { key: "Content-Security-Policy", value: csp };
+
+    return [{ source: "/:path*", headers: [...headers, cspHeader] }];
   },
 };
 
