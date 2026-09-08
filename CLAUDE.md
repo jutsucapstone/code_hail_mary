@@ -540,6 +540,45 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   form on the same permission the route requires, or an HR Admin reads a schedule they
   may set and is given no control.
 
+### Invitation and bulk-onboarding traps (`jutsu_api.invitations`, `bulk_invitations`)
+
+- **`uq_invitations_org_email_live` cannot mention `expires_at`, and that is not a
+  mistake anyone can fix.** `now()` is not immutable, so no index predicate may reference
+  it; the partial index is `accepted_at IS NULL AND revoked_at IS NULL` and its own
+  migration comment claims expired invitations may be reissued. They could not be — the
+  expired row still occupied the slot, the INSERT raised `IntegrityError`, and the
+  refusal read "that person already has an invitation waiting", which was the one thing
+  that was not true. `invite_employee` now revokes the expired row before inserting. Do
+  not "simplify" that UPDATE away because the index looks like it already covers it.
+- **A bulk row needs a savepoint, and only a DATABASE error proves it.** Postgres aborts
+  the transaction at its first error, so one failing row would otherwise discard every
+  invitation after it while the batch reported success. The regression test induces
+  `SELECT 1 / 0` rather than raising in Python on purpose: a Python `raise` leaves the
+  connection perfectly healthy, so a test built on one passes with `begin_nested`
+  removed.
+- **Delivery happens after the savepoints, so a failed send REVOKES rather than rolls
+  back.** Its savepoint is long released by then. Revoking reaches the same end state and
+  — because the unique index is partial on exactly `revoked_at IS NULL` — is also what
+  lets the administrator retry that address. Deleting the row instead would destroy the
+  record that JUTSU tried.
+- **The preview is advice; the send re-decides.** Rows come back from the browser, so
+  `invite_many` re-runs `classify` and `invite_employee` re-runs `outranks`. Trusting the
+  preview would make the rank ceiling a client-side check.
+- **`openpyxl` is imported inside `parse_xlsx`, not at module scope.** It drags in its own
+  XML machinery, and every API process would pay for it at startup to serve a route most
+  of them never see.
+- **`navigator.clipboard?.writeText(v)` reports success when there is no clipboard.**
+  Optional chaining makes the whole expression `undefined`, which `await` resolves — so
+  the obvious spelling says "Copied" on exactly the insecure origins that copied nothing.
+  `components/copy-button.tsx` tests for the object explicitly. The call sites it replaced
+  used `void navigator.clipboard.writeText(...)` followed by an unconditional success
+  toast, which was the same lie with an extra step.
+- **jsdom implements neither `Blob.text()` nor `Blob.arrayBuffer()`.** Both are Baseline in
+  every browser this targets and are how the onboarding panel reads a dropped file. The
+  polyfill lives in `apps/web/vitest.setup.ts` — reaching for `FileReader` in application
+  code to satisfy a test environment would put a 2010 API into the codebase for reasons no
+  reader could infer.
+
 ### Postgres driver traps (asyncpg, via SQLAlchemy)
 
 - **One statement per `op.execute`.** asyncpg prepares every statement, and a prepared
