@@ -41,9 +41,20 @@ interface SplineSceneProps {
   onReady?: () => void;
 }
 
-// Pinned, and immutable at this URL. An unpinned "latest" would let a vendor publish
-// change how a shipped page renders without a deploy.
-const VIEWER_SRC = "https://unpkg.com/@splinetool/viewer@2.0.37/build/spline-viewer.js";
+// Vendored, for the reason the scene itself is: a script served from someone else's
+// origin can be republished, withdrawn or compromised and change what a shipped page
+// executes with no deploy of ours — and for a *script* that is a far larger claim than
+// it is for a scene file. Pinning the URL bounded the version, not the trust.
+//
+// `next.config.ts` named this as the change that lets `script-src` drop to
+// `'self' 'unsafe-inline'`, and it now has. The cost is 3.5MB of deploy weight, paid
+// once, against a third party in the execution path of every page that renders a scene.
+//
+// The bundle lazily imports `./boolean.js`, `./physics.js` and friends for scene
+// features this one does not use; those siblings are not vendored, so a scene that
+// needed them would 404 here where it previously reached the CDN. That is a deliberate
+// bound, not an oversight — vendoring the whole runtime tree is a different decision.
+const VIEWER_SRC = "/spline/spline-viewer.js";
 
 // How long to keep looking for the shadow root before giving up. The element upgrades
 // only once the module arrives, which on a cold cache is a network round trip.

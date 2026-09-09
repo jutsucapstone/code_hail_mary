@@ -47,11 +47,12 @@ const nextConfig: NextConfig = {
     // the normal in-app path — protection that depends on how the reader arrived is worse
     // than none, because nobody can reason about it.
     //
-    // So the CDN origin is allowed everywhere and stated plainly rather than hidden
-    // behind a rule that does not hold. **The change that would let this tighten is
-    // vendoring `spline-viewer.js` into `public/`** — one self-contained file, after which
-    // `script-src` drops to `'self' 'unsafe-inline'` and the supply-chain exposure goes
-    // with it.
+    // That is why the CDN origin was allowed everywhere rather than hidden behind a rule
+    // that does not hold — and why the fix was never a second policy. **The viewer is now
+    // vendored into `public/spline/`**, so `script-src` carries no third-party origin at
+    // all and there is nothing left for a per-route exception to be tempted by. The scene
+    // and the script that draws it are both served from here; a vendor can no longer
+    // change what a shipped page executes without a deploy of ours.
     //
     // `'unsafe-inline'` on `script-src` is a limitation, not an oversight. Next 16 needs
     // it unless every page is dynamically rendered behind a nonce — the bundled docs are
@@ -73,7 +74,7 @@ const nextConfig: NextConfig = {
       // `'unsafe-eval'` only in development: React uses `eval` there to reconstruct
       // server-side error stacks in the browser. Neither React nor Next uses it in a
       // production build.
-      `script-src 'self' 'unsafe-inline' https://unpkg.com${isProduction ? "" : " 'unsafe-eval'"}`,
+      `script-src 'self' 'unsafe-inline'${isProduction ? "" : " 'unsafe-eval'"}`,
       // Next inlines critical CSS, and Tailwind v4's output is a stylesheet rather than
       // inline styles — but the framework's own injection is what forces this.
       "style-src 'self' 'unsafe-inline'",
@@ -93,7 +94,7 @@ const nextConfig: NextConfig = {
       // Exactly one host, never `https:` and never a wildcard: the point of a narrow
       // `connect-src` is that injected script has nowhere to exfiltrate to, and one more
       // named origin costs that guarantee nothing.
-      `connect-src 'self' https://unpkg.com ${STORAGE_ORIGIN}`,
+      `connect-src 'self' ${STORAGE_ORIGIN}`,
       "worker-src 'self' blob:",
       "manifest-src 'self'",
       // Audio and video the employee uploaded, played from the same signed URL. These

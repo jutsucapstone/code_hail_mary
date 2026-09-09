@@ -143,10 +143,10 @@ describe("the content security policy", () => {
     expect(directive(csp, "frame-src")).toBe("frame-src 'none'");
   });
 
-  it("confines network calls to this origin, the pinned CDN and Cloud Storage", async () => {
+  it("confines network calls to this origin and Cloud Storage", async () => {
     // Narrow because every API call goes through the same-origin proxy at /api/jutsu/*.
-    // unpkg is present only because the Spline viewer is loaded from it; vendoring that
-    // file is what would let it go.
+    // unpkg was here only because the Spline viewer was loaded from it; the viewer is
+    // vendored into `public/spline/` now, so the origin is gone.
     //
     // The storage origin is NOT optional and is not a convenience: a Knowledge Basket
     // upload PUTs its bytes straight to Cloud Storage under a signed URL (ADR 0020).
@@ -154,7 +154,7 @@ describe("the content security policy", () => {
     // production while every test still passes — a scripted `fetch` has no CSP. That is
     // precisely why it is pinned here rather than left to be noticed.
     expect(directive(await cspFor("production"), "connect-src")).toBe(
-      "connect-src 'self' https://unpkg.com https://storage.googleapis.com",
+      "connect-src 'self' https://storage.googleapis.com",
     );
   });
 
@@ -172,18 +172,14 @@ describe("the content security policy", () => {
     // exfiltrate to. A bare `https:` or a `*.googleapis.com` gives that away for nothing.
     //
     // Asserted over the directive's TOKENS rather than as a substring of the policy: the
-    // obvious `not.toContain("https:")` is satisfied by `https://unpkg.com`, so it passes
-    // whatever the policy says and proves nothing. That is the version this test shipped
-    // with first, and preflight caught it.
+    // obvious `not.toContain("https:")` is satisfied by any `https://…` source, so it
+    // passes whatever the policy says and proves nothing. That is the version this test
+    // shipped with first, and preflight caught it.
     const sources = directive(await cspFor("production"), "connect-src")
       .split(/\s+/)
       .slice(1);
 
-    expect(sources).toEqual([
-      "'self'",
-      "https://unpkg.com",
-      "https://storage.googleapis.com",
-    ]);
+    expect(sources).toEqual(["'self'", "https://storage.googleapis.com"]);
     for (const source of sources) {
       expect(source, `${source} is a wildcard`).not.toContain("*");
       // A scheme-only source (`https:`) permits every host that speaks it.
@@ -191,10 +187,15 @@ describe("the content security policy", () => {
     }
   });
 
-  it("allows exactly one third-party script origin, and names it", async () => {
+  it("allows no third-party script origin at all", async () => {
+    // The viewer was the only one, and it is vendored. `'unsafe-inline'` remains a
+    // documented Next 16 limitation (nonces disable static generation, CDN caching and
+    // PPR); what this pins is that no OFF-ORIGIN host may execute script here, which is
+    // the half that governs supply chain.
     const scriptSrc = directive(await cspFor("production"), "script-src");
 
-    expect(scriptSrc).toBe("script-src 'self' 'unsafe-inline' https://unpkg.com");
+    expect(scriptSrc).toBe("script-src 'self' 'unsafe-inline'");
+    expect(scriptSrc).not.toContain("//");
   });
 
   it("agrees with X-Frame-Options rather than contradicting it", async () => {
