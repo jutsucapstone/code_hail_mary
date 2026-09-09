@@ -162,6 +162,13 @@ function KtStill({ visible }: { visible: boolean }) {
       data-testid="kt-still"
       className={cn(
         "pointer-events-none absolute inset-0 flex items-center justify-center",
+        // **Behind the figure, never over it.** An absolutely positioned sibling paints
+        // ABOVE an in-flow one, so at the default layer this still covered the viewer
+        // and cleared only when `load-complete` fired — making a vendor event the thing
+        // standing between the reader and a scene that was already drawing. `-z-10`
+        // inside the parent's `isolate` puts it under the canvas, so the worst case is
+        // a faint glow behind the figure rather than no figure at all.
+        "-z-10",
         // Matches the emblem's fade so the hand-off reads as one object resolving,
         // not as two images swapping.
         "transition-opacity duration-700",
