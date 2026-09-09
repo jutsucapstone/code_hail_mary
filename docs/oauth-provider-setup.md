@@ -83,9 +83,31 @@ misleading, requesting fewer breaks the flow.
 - **Token endpoint uses HTTP Basic** client authentication (`token_auth="basic"` in
   the registry); the code sends the client id and secret as a Basic header, never as
   body fields.
+- **An unpublished app only admits accounts on its own allow list.** A Zoom app that
+  has not gone through Marketplace review is in development, and Zoom refuses the
+  consent screen itself for anyone who is not a listed test user — before any redirect,
+  so nothing reaches the callback and the connection sits `connecting` until its state
+  lapses. Add each person under **Manage → your app → Basic Information → App Credentials
+  → Add Test Users**, or publish the app. This is the failure that looks like a broken
+  integration and is not one: `POST /v1/me/connections/zoom` answers 201, the authorize
+  URL is correct, and the round trip simply never comes back.
 - Content synced: cloud recordings, bodied by their transcripts where Zoom generated
   one. Recordings require a plan with cloud recording; the transcript needs audio
   transcription enabled in the account's recording settings.
+
+**Diagnosing a Zoom connection that never completes.** These are the four external
+conditions, in the order they bite, and none of them is a code change:
+
+| Symptom | Cause | Fix (Zoom Marketplace) |
+|---|---|---|
+| Consent page refuses before you approve | app in development, account not a test user | add the account under Add Test Users, or publish |
+| Consent page lists no permissions, or the grant is useless | Scopes tab empty | add the three read scopes above |
+| Approve, then land on `?connect_error=` | redirect URI not on the OAuth allow list | add the callback URI exactly |
+| Connects, but recordings are empty | no cloud-recording plan, or transcription off | enable cloud recording and audio transcription |
+
+Nothing in the application can substitute for any of these: Zoom binds scopes and
+testers to the registered app, and the authorize URL deliberately carries no scope
+parameter precisely because the app — not this codebase — is the source of truth.
 
 ---
 

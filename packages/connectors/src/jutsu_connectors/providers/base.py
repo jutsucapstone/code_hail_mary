@@ -5,8 +5,14 @@ Three decisions live here so ten connectors cannot make them ten ways:
 * **Failure taxonomy.** A provider call fails as `ProviderApiError(transient=...)` —
   429/5xx/network are transient (the job's retry ladder handles them, honouring
   Retry-After via the scheduler's backoff), any other 4xx is permanent (rejected
-  identically every time), and 401/403 is `ProviderAuthError`, its own type because
+  identically every time), and a dead grant is `ProviderAuthError`, its own type because
   the operator action is different: the *grant* died, not the request.
+
+  **401 is always a dead grant; 403 is not.** GitHub and Google both answer 403 when
+  throttling, so classifying every 403 as `ProviderAuthError` permanently failed a busy
+  first sync *and* flipped the employee's connection to "reconnect" — an account that
+  never stopped working. `_is_throttled` reads the evidence a throttle carries and a
+  revocation does not.
 * **ACL floor and ceiling.** Until a fetcher can map provider-side sharing onto
   provider-native *subjects* (ADR 0014: emails are not subjects), every fetched
   document is granted to exactly the connecting user. `owner_acl` is the only way a
@@ -28,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import httpx
 from jutsu_core.models import AclEntry, SourceSystem
@@ -182,6 +188,49 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     return value if value >= 0 else None
 
 
+#: Words a provider uses in a 403 body when it means "slow down" rather than "go away".
+#:
+#: Google returns `error.errors[].reason` of `rateLimitExceeded`, `userRateLimitExceeded`
+#: or `quotaExceeded`; GitHub returns a `message` containing "API rate limit exceeded" or
+#: "secondary rate limit". Matched case-insensitively against the whole body because the
+#: shape differs per provider and the words do not.
+_THROTTLE_WORDS: Final = (
+    "ratelimitexceeded",
+    "userratelimitexceeded",
+    "quotaexceeded",
+    "rate limit exceeded",
+    "secondary rate limit",
+    "too many requests",
+)
+
+
+def _is_throttled(response: httpx.Response) -> bool:
+    """Whether a 403 is a rate limit rather than a dead grant.
+
+    **This distinction is the difference between a sync that resumes and an employee told
+    to reconnect a working account.** A 403 used to be classified unconditionally as
+    `ProviderAuthError`, which is permanent and fires `mark_reauth_required` — but GitHub
+    and Google both answer 403 when throttling, so a busy first sync flipped the
+    connection to "reconnect" and stopped retrying work that would have succeeded in a
+    minute.
+
+    Three signals, cheapest first. Any one of them is enough: a provider that sends a
+    `Retry-After` on a 403 is telling us when to come back, and a grant that is gone does
+    not come back.
+    """
+    if response.headers.get("Retry-After") is not None:
+        return True
+    if response.headers.get("X-RateLimit-Remaining") == "0":
+        return True
+    try:
+        # Bounded: a hostile or broken provider must not make this read a large body into
+        # memory to answer a yes/no question about a header-sized fact.
+        body = response.text[:4096].lower()
+    except Exception:  # a body that cannot be decoded says nothing either way
+        return False
+    return any(word in body for word in _THROTTLE_WORDS)
+
+
 class ProviderHttp:
     """Authenticated JSON/text/bytes calls with one shared failure classification.
 
@@ -221,7 +270,18 @@ class ProviderHttp:
         except httpx.HTTPError as error:
             raise ProviderApiError("provider request failed to complete", transient=True) from error
 
-        if response.status_code in (401, 403):
+        # 401 is always a dead token. 403 is not: GitHub and Google both use it to
+        # throttle, and treating a throttle as a revoked grant permanently fails the job
+        # AND tells the employee to reconnect an account that never stopped working.
+        if response.status_code == 401:
+            raise ProviderAuthError("the provider no longer honours this token")
+        if response.status_code == 403:
+            if _is_throttled(response):
+                raise ProviderApiError(
+                    "the provider rate-limited this sync",
+                    transient=True,
+                    retry_after=_retry_after_seconds(response),
+                )
             raise ProviderAuthError("the provider no longer honours this token")
         if response.status_code == 429:
             raise ProviderApiError(
