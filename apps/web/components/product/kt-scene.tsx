@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useReducedMotion } from "framer-motion";
 
 import { Logo } from "@/components/site/logo";
 import { SplineScene } from "@/components/ui/spline-scene";
@@ -62,6 +61,33 @@ const getWideSnapshot = () => canMatch() && getWideMq().matches;
 const getWideServerSnapshot = () => false;
 
 /**
+ * Reduced motion, read the same way the width is.
+ *
+ * `useReducedMotion` from framer-motion answers `false` on the first render and
+ * corrects itself in an effect. For a toggle driving an animation that is invisible;
+ * for a gate standing in front of a 1.3MB download it is not — the viewer mounted, the
+ * module script went out, and the scene began arriving for exactly the person who had
+ * asked for no animation, before the correction unmounted it. `useSyncExternalStore`
+ * over the same media query is synchronous on the first render, so the gate holds
+ * before anything is requested.
+ */
+const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
+
+let reducedMq: MediaQueryList | null = null;
+const getReducedMq = () => (reducedMq ??= window.matchMedia(REDUCED_QUERY));
+
+const subscribeReduced = (notify: () => void) => {
+  if (!canMatch()) return () => {};
+  const mq = getReducedMq();
+  mq.addEventListener("change", notify);
+  return () => mq.removeEventListener("change", notify);
+};
+// No preference expressed — and on a server, where there is nobody to have one — reads
+// as "motion is welcome", which is the browser default for the query.
+const getReducedSnapshot = () => canMatch() && getReducedMq().matches;
+const getReducedServerSnapshot = () => false;
+
+/**
  * Where the JUTSU mark sits on the robot's chest, as a fraction of the panel.
  *
  * Measured against the rendered scene rather than guessed, and expressed in
@@ -111,19 +137,71 @@ function ChestEmblem({ visible }: { visible: boolean }) {
   );
 }
 
+/**
+ * What stands in the column when the figure cannot.
+ *
+ * The scene had exactly one fallback — `return null` — and a `lg` two-column grid with
+ * nothing in its second column does not read as restraint, it reads as a page that
+ * failed to finish loading. That state is reachable four ways, and only one of them is
+ * rare: `prefers-reduced-motion` (a Windows default under "Animation effects: off"),
+ * unpkg unreachable behind an egress proxy, a browser with no WebGL, and the ordinary
+ * seconds it takes 1.3MB of scene to arrive on a cold cache.
+ *
+ * So the still is not an error state and is not conditional on failure — it is the
+ * poster the panel wears until the figure is actually drawn, and keeps wearing if it
+ * never is. The mark and its backlight are the emblem's own idiom at panel scale
+ * (`ChestEmblem` above), which is what makes the two states look like one design
+ * rather than a placeholder and a picture.
+ *
+ * Deliberately motionless. Under reduced motion this is the whole panel, and a
+ * "tasteful" pulse here would reintroduce exactly what the person switched off.
+ */
+function KtStill({ visible }: { visible: boolean }) {
+  return (
+    <div
+      data-testid="kt-still"
+      className={cn(
+        "pointer-events-none absolute inset-0 flex items-center justify-center",
+        // Matches the emblem's fade so the hand-off reads as one object resolving,
+        // not as two images swapping.
+        "transition-opacity duration-700",
+        visible ? "opacity-100" : "opacity-0",
+      )}
+    >
+      <div className="relative w-40">
+        <span
+          className="absolute -inset-[45%] rounded-full blur-[28px]"
+          style={{
+            background: "radial-gradient(circle, rgba(122,193,66,0.20), transparent 70%)",
+          }}
+        />
+        <Logo className="relative h-auto w-full opacity-70" />
+      </div>
+    </div>
+  );
+}
+
+
 export function KtScene({ className }: { className?: string }) {
   const wide = useSyncExternalStore(subscribeWide, getWideSnapshot, getWideServerSnapshot);
-  const shouldReduceMotion = useReducedMotion();
+  const shouldReduceMotion = useSyncExternalStore(
+    subscribeReduced,
+    getReducedSnapshot,
+    getReducedServerSnapshot,
+  );
   const [sceneReady, setSceneReady] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Without ResizeObserver there is no way to measure and so no way to protect —
   // start visible there rather than silently never rendering.
   const [hasSize, setHasSize] = useState(() => typeof ResizeObserver !== "function");
 
+  // The scene runs only when motion is welcome; the COLUMN exists whenever the grid
+  // does. Separating the two is the whole fix: `active` used to gate the panel itself,
+  // so a reduced-motion reader got an empty half-page rather than a still one.
   const active = wide && !shouldReduceMotion;
 
   useEffect(() => {
-    if (!active) return;
+    if (!wide) return;
     const host = hostRef.current;
     if (host === null || typeof ResizeObserver !== "function") return;
     const observer = new ResizeObserver((entries) => {
@@ -132,13 +210,16 @@ export function KtScene({ className }: { className?: string }) {
     });
     observer.observe(host);
     return () => observer.disconnect();
-  }, [active]);
+  }, [wide]);
 
-  if (!active) return null;
+  // Below `lg` the page gives this no column at all (`hidden lg:block`), so there is
+  // nothing to stand in for and nothing to download.
+  if (!wide) return null;
 
   return (
-    <div aria-hidden="true" className={cn("isolate", className)} ref={hostRef}>
-      {hasSize ? (
+    <div aria-hidden="true" className={cn("isolate relative", className)} ref={hostRef}>
+      <KtStill visible={!sceneReady} />
+      {active && hasSize ? (
         <>
           <SplineScene scene={SCENE} onReady={() => setSceneReady(true)} />
           <ChestEmblem visible={sceneReady} />
