@@ -61,6 +61,57 @@ const VIEWER_SRC = "/spline/spline-viewer.js";
 const UPGRADE_DEADLINE_MS = 30_000;
 const UPGRADE_POLL_MS = 100;
 
+/**
+ * Where the runtime looks for its WebAssembly. Same directory as everything else.
+ */
+const WASM_PATH = "/spline";
+
+/**
+ * Point the runtime's WASM at this origin instead of Spline's CDN.
+ *
+ * **This is what was actually wrong with the robot.** The viewer loads
+ * `process.wasm` (and friends) from
+ * `https://cdn.spline.design/@splinetool/runtime@<v>/build`, an origin `connect-src`
+ * has never listed — so the fetch was refused, the scene never finished, and the panel
+ * sat on its placeholder. It failed silently and it failed from the day the CSP landed,
+ * which is after the scene did: nothing reported it because a blocked decoration looks
+ * exactly like a decoration that has not arrived yet.
+ *
+ * The runtime supports this properly: `wasmPath` is a constructor option on its
+ * Application class, and every loader resolves against `this._wasmPath` rather than
+ * the constant. What it does NOT have is a way through the custom element, whose
+ * factory builds the app with `{renderer}` and nothing else. So the factory is what we
+ * wrap — one method, on a version we pin, to pass the option the runtime already
+ * documents.
+ *
+ * Deliberately not the alternatives: widening `connect-src` to a third-party origin
+ * spends real security on a decoration and would have to be re-argued at every audit,
+ * and rewriting the URL inside the minified bundle would destroy the property that
+ * makes vendoring trustworthy — that the bytes are the vendor's, unmodified.
+ *
+ * Fails open. If a future version renames the method the patch does nothing, the
+ * runtime falls back to its CDN, the fetch is refused, and the panel keeps its still —
+ * exactly today's behaviour, never a crash. `spline-scene.test.ts` fails if the hook
+ * point disappears, so the silence is caught here rather than in production.
+ */
+export function pointWasmAtThisOrigin(constructor: unknown): boolean {
+  const proto = (constructor as { prototype?: Record<string, unknown> } | undefined)?.prototype;
+  if (proto === undefined) return false;
+  if (proto.__jutsuWasmPathPatched === true) return true;
+
+  const create = proto._createApplication;
+  if (typeof create !== "function") return false;
+
+  proto._createApplication = function patched(this: unknown, ...args: unknown[]) {
+    const app = (create as (...a: unknown[]) => Record<string, unknown>).apply(this, args);
+    // The runtime strips trailing slashes from the option; match it exactly.
+    if (app !== null && typeof app === "object") app._wasmPath = WASM_PATH;
+    return app;
+  };
+  proto.__jutsuWasmPathPatched = true;
+  return true;
+}
+
 function useSplineViewer() {
   useEffect(() => {
     if (document.querySelector("script[data-spline-viewer]")) return;
@@ -69,6 +120,16 @@ function useSplineViewer() {
     script.src = VIEWER_SRC;
     script.dataset.splineViewer = "";
     document.head.appendChild(script);
+
+    // The element registers when the module evaluates; patch its factory before any
+    // instance is constructed. `whenDefined` is the only ordering guarantee available —
+    // the script tag's own `load` fires before the module body has necessarily run.
+    void customElements
+      .whenDefined("spline-viewer")
+      .then((constructor) => pointWasmAtThisOrigin(constructor))
+      .catch(() => {
+        /* No element, no scene, and the caller already renders without one. */
+      });
     // Deliberately never removed: a module script cannot be un-executed, and the custom
     // element stays registered for the life of the page either way.
   }, []);
