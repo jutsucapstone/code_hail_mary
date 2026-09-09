@@ -432,18 +432,29 @@ class TestTheClaimIsALease:
         migration_url: str,
     ) -> None:
         """The lease must not turn into "run again every hour": a run that FINISHED is
-        done for the local day, however long ago it was."""
+        done for the local day, however long ago it was.
+
+        **Anchored to today, not aged by an interval.** `mark_started` compares local
+        DATES, so a claim placed ninety minutes before the real clock lands on
+        *yesterday* whenever the suite runs before 01:30 UTC — the day has rolled over,
+        the run is legitimately due again, and the test failed on a property it was
+        never asserting. CI found it at 01:29 UTC; the same tree passed at 23:45. The
+        sibling lease test above records this trap already: an interval measured from
+        the real clock asserts a state that cannot occur. Midnight-plus-five is the
+        earliest instant that is unambiguously *this* local day, which is also the
+        strongest form of "however long ago".
+        """
         org_a, _ = two_orgs
         await _scope(conn, org_a)
         await conn.execute(
             text("SELECT sched.write_schedule('UTC', CAST(1 AS smallint), true, NULL)")
         )
-        await conn.execute(text("SELECT sched.mark_started(:o)"), {"o": str(org_a)})
-        await conn.execute(
-            text("SELECT sched.mark_finished(:o, 'success', 1, 1)"), {"o": str(org_a)}
-        )
         await conn.commit()
-        await _age_claim(migration_url, org_a, minutes=90, finished=True)
+
+        started = datetime.now(UTC).replace(hour=0, minute=5, second=0, microsecond=0)
+        await _set_claim(
+            migration_url, org_a, started_at=started, finished_at=started + timedelta(minutes=1)
+        )
 
         assert (
             await conn.execute(text("SELECT sched.mark_started(:o)"), {"o": str(org_a)})
