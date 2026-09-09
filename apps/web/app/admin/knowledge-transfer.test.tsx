@@ -405,3 +405,50 @@ describe("knowledge transfer gate", () => {
     expect(screen.getByRole("heading", { name: /do not have access/i })).toBeInTheDocument();
   });
 });
+
+describe("revoking a package", () => {
+  it("takes two clicks, because it is terminal and has no undo", async () => {
+    // Revoke shipped on a single click beside a Complete that required two — backwards,
+    // since completing is the intended end of a handover and revoking takes a
+    // recipient's access away mid-flight with nothing to reverse it.
+    const fetchMock = script(
+      { status: 200, body: listPage(ktAdmin()) },
+      { status: 200, body: ktAdmin({ status: "revoked" }) },
+      { status: 200, body: listPage(ktAdmin({ status: "revoked" })) },
+    );
+    renderWithQuery(<KnowledgeTransferPage />);
+    await screen.findByText("Grace Hopper");
+
+    await userEvent.click(screen.getByRole("button", { name: "Revoke KT-JUTSU-AAAA0001" }));
+
+    // The first click asks; nothing has been sent yet.
+    const confirm = screen.getByRole("button", { name: "Confirm revoking KT-JUTSU-AAAA0001" });
+    expect(confirm).toHaveTextContent("Confirm revoke?");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(confirm);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const post = callIndexFor(fetchMock, "/revoke");
+    expect(calledUrl(fetchMock, post)).toBe(`/api/jutsu/v1/kt/${PACKAGE_ID}/revoke`);
+    expect(calledMethod(fetchMock, post)).toBe("POST");
+  });
+
+  it("arms only one action at a time", async () => {
+    // Arming Complete and then Revoke must leave exactly one question on screen — two
+    // armed buttons is how a second click lands on the one the reader forgot about.
+    script({ status: 200, body: listPage(ktAdmin()) });
+    renderWithQuery(<KnowledgeTransferPage />);
+    await screen.findByText("Grace Hopper");
+
+    await userEvent.click(screen.getByRole("button", { name: "Complete KT-JUTSU-AAAA0001" }));
+    await userEvent.click(screen.getByRole("button", { name: "Revoke KT-JUTSU-AAAA0001" }));
+
+    expect(
+      screen.getByRole("button", { name: "Confirm revoking KT-JUTSU-AAAA0001" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Confirm completing KT-JUTSU-AAAA0001" }),
+    ).not.toBeInTheDocument();
+  });
+});

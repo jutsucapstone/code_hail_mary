@@ -471,6 +471,74 @@ class TestOpening:
         ).json()
         assert len(trail["items"]) == 1
 
+    async def test_the_trail_records_which_refusal_fired_while_the_caller_learns_nothing(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """Both halves of the same property, because each is worthless without the other.
+
+        The uniform 404 is what makes a 40-bit code space safe: unknown, bound elsewhere
+        and addressed elsewhere must be indistinguishable to whoever holds the ID. It is
+        also what made a real support case undiagnosable — "B cannot open A's package"
+        was one response and three different fixes, and production could not say which.
+        The reason is therefore recorded server-side, where only an administrator reads
+        it, and the response is asserted to still give nothing away.
+        """
+        await register_owner(client, mailbox)
+        denied = await client.post(
+            "/v1/kt/claim", json={"kt_code": "KT-JUTSU-00000000"}, headers=csrf(client)
+        )
+
+        assert denied.status_code == 404
+        # The caller learns nothing: the reason must not reach the body.
+        assert "unknown_code" not in denied.text
+        await db_session.rollback()
+
+        rows = (
+            await inspector.execute(
+                text("SELECT outcome, meta_json FROM audit_log WHERE action = 'kt.open'")
+            )
+        ).all()
+        assert [r.outcome for r in rows] == ["denied"]
+        assert rows[0].meta_json == {"reason": "unknown_code"}
+
+    async def test_the_wrong_recipient_is_recorded_as_a_different_refusal(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        db_session: AsyncSession,
+        inspector: AsyncSession,
+    ) -> None:
+        """The distinction the trail exists to make: an unknown code and somebody else's
+        package are the same 404 and completely different operator actions."""
+        await register_owner(client, mailbox)
+        await invite_and_accept(client, mailbox, email="leaver@example.com")
+        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        subject = await user_id_of(client, "leaver@example.com")
+        package = await create_kt(
+            client, subject_user_id=subject, recipient_email="intended@example.com"
+        )
+
+        await invite_and_accept(client, mailbox, email="wrong@example.com")
+        refused = await client.post(
+            "/v1/kt/claim", json={"kt_code": package["kt_code"]}, headers=csrf(client)
+        )
+
+        assert refused.status_code == 404
+        await db_session.rollback()
+        reasons = (
+            await inspector.execute(
+                text(
+                    "SELECT meta_json ->> 'reason' AS reason FROM audit_log "
+                    "WHERE action = 'kt.open' AND outcome = 'denied'"
+                )
+            )
+        ).all()
+        assert [r.reason for r in reasons] == ["addressed_to_another_email"]
+
     async def test_a_denied_open_survives_the_request_rollback(
         self,
         client: AsyncClient,

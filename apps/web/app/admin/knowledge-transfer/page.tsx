@@ -688,6 +688,9 @@ export default function KnowledgeTransferPage() {
   // Completion is terminal, so it takes two clicks on the same row: the first turns the
   // button into the question, the second answers it. One row at a time.
   const [confirmingComplete, setConfirmingComplete] = useState<string | null>(null);
+  // Revoke is terminal and has no undo, so it is armed before it fires — the same
+  // two-press pattern as Complete beside it.
+  const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null);
   const [detailsId, setDetailsId] = useState<string | null>(null);
 
   const mayManage = can(capabilities, "kt:manage");
@@ -889,6 +892,7 @@ export default function KnowledgeTransferPage() {
                                   complete.mutate(pkg.id);
                                 } else {
                                   setConfirmingComplete(pkg.id);
+                                  setConfirmingRevoke(null);
                                 }
                               }}
                               className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 ${
@@ -899,14 +903,38 @@ export default function KnowledgeTransferPage() {
                             >
                               {confirmingComplete === pkg.id ? "Confirm complete?" : "Complete"}
                             </button>
+                            {/* Two presses, matching Complete beside it — and Revoke is
+                                the one that needed it more. Completing a handover is the
+                                intended end of one; revoking it takes the recipient's
+                                access away permanently, mid-flight, and there is no undo.
+                                Shipping the gentler action behind a confirmation and the
+                                harsher one on a single click was backwards. */}
                             <button
                               type="button"
-                              aria-label={`Revoke ${pkg.kt_code}`}
+                              aria-label={
+                                confirmingRevoke === pkg.id
+                                  ? `Confirm revoking ${pkg.kt_code}`
+                                  : `Revoke ${pkg.kt_code}`
+                              }
                               disabled={revoke.isPending}
-                              onClick={() => revoke.mutate(pkg.id)}
-                              className="rounded-md border border-hairline-strong px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                              aria-busy={revoke.isPending && revoke.variables === pkg.id}
+                              onClick={() => {
+                                if (confirmingRevoke === pkg.id) {
+                                  revoke.mutate(pkg.id);
+                                } else {
+                                  setConfirmingRevoke(pkg.id);
+                                  // Only one action can be armed at a time, or a second
+                                  // click lands on whichever the reader forgot about.
+                                  setConfirmingComplete(null);
+                                }
+                              }}
+                              className={`rounded-md border px-2.5 py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 ${
+                                confirmingRevoke === pkg.id
+                                  ? "border-destructive/40 bg-destructive/8 font-medium text-destructive"
+                                  : "border-hairline-strong text-muted-foreground hover:border-destructive/40 hover:text-destructive"
+                              }`}
                             >
-                              Revoke
+                              {confirmingRevoke === pkg.id ? "Confirm revoke?" : "Revoke"}
                             </button>
                           </>
                         ) : null}

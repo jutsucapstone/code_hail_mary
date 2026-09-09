@@ -24,6 +24,7 @@ probe, and the trail is where a probe becomes visible.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -535,7 +536,27 @@ async def update_package(
 # ---------------------------------------------------------------------- recipient
 
 
-async def _audit_denied_open(*, org_id: UUID, actor_id: UUID, resource_id: str) -> None:
+logger = logging.getLogger("jutsu.api.kt")
+
+#: Why an open was refused. The CALLER never learns which — a KT ID must confirm
+#: nothing to whoever holds it, so all of these answer 404 or the one §39 sentence.
+#: Recorded server-side because the uniform refusal that makes the code space safe is
+#: also what makes a real support case ("B cannot open A's package") undiagnosable:
+#: unknown code, bound elsewhere and addressed elsewhere are one response and three
+#: completely different fixes.
+DENIED_UNKNOWN_CODE = "unknown_code"
+DENIED_BOUND_TO_ANOTHER = "bound_to_another_user"
+DENIED_ADDRESSED_TO_ANOTHER = "addressed_to_another_email"
+DENIED_REVOKED = "revoked"
+DENIED_COMPLETED = "completed"
+DENIED_EXPIRED = "expired"
+DENIED_UNCLAIMED_ON_READ = "unclaimed_via_read_route"
+DENIED_CLAIM_RACE_LOST = "claim_race_lost"
+
+
+async def _audit_denied_open(
+    *, org_id: UUID, actor_id: UUID, resource_id: str, reason: str
+) -> None:
     """A denied open, committed so it outlives the refusal that follows it.
 
     Every caller raises immediately after this, and `get_db` rolls the request
@@ -546,15 +567,27 @@ async def _audit_denied_open(*, org_id: UUID, actor_id: UUID, resource_id: str) 
     *success* row stays on the request session deliberately: it must commit or roll
     back with the claim it describes.
     """
+    # `outcome` is `success | denied | failure` and nothing else — a reason written
+    # there fails the CHECK constraint from migration 0002, so it goes in `meta_json`.
     async with org_session(org_id) as audit:
         await audit.execute(
             text(
                 "INSERT INTO audit_log (org_id, actor_id, actor_type, action, resource_type, "
-                "resource_id, outcome) "
-                "VALUES (:org, :actor, 'user', 'kt.open', 'kt_package', :rid, 'denied')"
+                "resource_id, outcome, meta_json) "
+                "VALUES (:org, :actor, 'user', 'kt.open', 'kt_package', :rid, 'denied', "
+                "cast(:meta AS jsonb))"
             ),
-            {"org": str(org_id), "actor": str(actor_id), "rid": resource_id},
+            {
+                "org": str(org_id),
+                "actor": str(actor_id),
+                "rid": resource_id,
+                "meta": json.dumps({"reason": reason}),
+            },
         )
+    # Deliberately not the code: it is a capability, and §4.9 admits no exception for
+    # a log line. `request_id`, `org_id` and the opaque `user_id` are already bound to
+    # every record by `RequestContextFilter`, which is what joins this to the request.
+    logger.info("%s", {"event": "kt_open_denied", "reason": reason})
 
 
 async def _open_for(
@@ -612,7 +645,12 @@ async def _open_for(
     )
     row = (await session.execute(lookup, {"code": code, "user": user_id})).first()
     if row is None:
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=code[:64])
+        await _audit_denied_open(
+            org_id=org_id,
+            actor_id=user_id,
+            resource_id=code[:64],
+            reason=DENIED_UNKNOWN_CODE,
+        )
         raise NotFound(_NOT_FOUND)
 
     # Binding BEFORE state. A package that belongs to somebody else is a 404 whatever
@@ -628,17 +666,28 @@ async def _open_for(
         and row.recipient_email != row.caller_email.lower()
     )
     if bound_elsewhere or addressed_elsewhere:
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        await _audit_denied_open(
+            org_id=org_id,
+            actor_id=user_id,
+            resource_id=str(row.id),
+            reason=DENIED_BOUND_TO_ANOTHER if bound_elsewhere else DENIED_ADDRESSED_TO_ANOTHER,
+        )
         raise NotFound(_NOT_FOUND)
 
     if row.revoked_at is not None:
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        await _audit_denied_open(
+            org_id=org_id, actor_id=user_id, resource_id=str(row.id), reason=DENIED_REVOKED
+        )
         raise PermissionDenied(_REVOKED_MESSAGE)
     if row.completed_at is not None:
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        await _audit_denied_open(
+            org_id=org_id, actor_id=user_id, resource_id=str(row.id), reason=DENIED_COMPLETED
+        )
         raise PermissionDenied(_COMPLETED_MESSAGE)
     if row.expires_at <= row.now:
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        await _audit_denied_open(
+            org_id=org_id, actor_id=user_id, resource_id=str(row.id), reason=DENIED_EXPIRED
+        )
         raise PermissionDenied(_EXPIRED_MESSAGE)
 
     if row.recipient_user_id is not None:
@@ -651,7 +700,12 @@ async def _open_for(
         # never decide whose package this is — see `may_claim` in the docstring. The same
         # 404 as an unknown code, because "exists but you have not claimed it" is exactly
         # the fact a KT ID must not confirm to whoever happens to hold it.
-        await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=str(row.id))
+        await _audit_denied_open(
+            org_id=org_id,
+            actor_id=user_id,
+            resource_id=str(row.id),
+            reason=DENIED_UNCLAIMED_ON_READ,
+        )
         raise NotFound(_NOT_FOUND)
 
     # First eligible opener claims it. From here on, everyone else is a 404. The
@@ -671,7 +725,12 @@ async def _open_for(
     if claimed is None:
         row = (await session.execute(lookup, {"code": code, "user": user_id})).first()
         if row is None or row.recipient_user_id != user_id:
-            await _audit_denied_open(org_id=org_id, actor_id=user_id, resource_id=code[:64])
+            await _audit_denied_open(
+                org_id=org_id,
+                actor_id=user_id,
+                resource_id=code[:64],
+                reason=DENIED_CLAIM_RACE_LOST,
+            )
             raise NotFound("No package matches that ID. Check it with your administrator.")
         # The same caller won through a parallel request; that request wrote the
         # success row, so this one records nothing twice.
