@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final
@@ -36,6 +38,8 @@ __all__ = [
     "MisconfiguredStorage",
     "ObjectStore",
     "SignedUpload",
+    "SigningIdentity",
+    "ambient_signing_identity",
     "normalise_filename",
     "object_key",
     "sanitise_original",
@@ -243,6 +247,91 @@ def sniff_mime(head: bytes) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class SigningIdentity:
+    """The account a V4 signature is made as, and a token authorising the signing call.
+
+    Present only when the process holds no private key. `generate_signed_url` given both
+    of these signs through the IAM Credentials API (`signBlob`) instead of locally.
+    """
+
+    service_account_email: str
+    access_token: str
+
+
+#: The CREDENTIALS are cached, never the identity built from them: an access token is
+#: good for about an hour, and a process that cached the token would sign correctly until
+#: it lapsed and then fail for as long as the revision lived. Resolving the credentials is
+#: the expensive part (a metadata-server round trip); refreshing them is the cheap part
+#: google-auth already skips when they are still valid.
+_ambient_credentials: Any = None
+_ambient_lock = threading.Lock()
+
+
+def ambient_signing_identity() -> SigningIdentity | None:
+    """How this process signs, or `None` when it can sign in-process.
+
+    **This is the difference between the Knowledge Basket working and not.** Cloud Run's
+    ambient identity is `compute_engine.Credentials` — a bearer token and nothing to sign
+    with — and `generate_signed_url` answers that with `AttributeError: you need a private
+    key to sign credentials` rather than degrading. Every upload therefore 500'd in
+    production while every test passed, because a test injects a fake blob that signs
+    nothing. Returning the account's email and a live token moves the signature to
+    `signBlob`, which is what this module's docstring has always described and what the
+    runtime account was already granted (`roles/iam.serviceAccountTokenCreator`, on
+    itself).
+
+    `None` means the credentials implement `Signing` — a service-account JSON key, which
+    is how a developer runs this locally. Signing in-process is free and needs no API, so
+    the local path is left exactly as it was.
+
+    Re-read on every call rather than cached: the token is good for about an hour, and a
+    cached one would sign correctly until it lapsed and then fail for the life of the
+    revision — the worst shape a bug can have, because it passes every check made just
+    after a deploy.
+    """
+    global _ambient_credentials
+
+    from google.auth import credentials as ga_credentials
+    from google.auth.transport.requests import Request
+
+    with _ambient_lock:
+        if _ambient_credentials is None:
+            from google.auth import default as ambient_credentials
+
+            # Signing through IAM is a cloud-platform call; the metadata server ignores
+            # the request and returns the instance's own scopes, which already include
+            # it. `Any` for the same reason `_bucket` uses it: google-auth ships no
+            # annotations, and mypy's strictness would otherwise spread
+            # `no-untyped-call` through every caller.
+            resolved, _ = ambient_credentials(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _ambient_credentials = resolved
+
+        credentials: Any = _ambient_credentials
+        # The library's own test, so this cannot drift from what it will accept:
+        # `ensure_signed_credentials` raises for anything that is not `Signing`.
+        if isinstance(credentials, ga_credentials.Signing):
+            return None
+
+        # Every call, because the token behind it expires. `valid` is false when it has
+        # lapsed or was never fetched, so this is one metadata round trip an hour rather
+        # than one per signature.
+        if not credentials.valid:
+            credentials.refresh(Request())
+
+        email = getattr(credentials, "service_account_email", "")
+        if not email or not credentials.token:
+            # Nothing usable to sign with. Say so where it can be read, rather than
+            # returning half an identity that fails inside the storage library.
+            raise MisconfiguredStorage(
+                "the runtime credentials can neither sign locally nor name an account "
+                "for the IAM signBlob API"
+            )
+        return SigningIdentity(service_account_email=email, access_token=credentials.token)
+
+
 class ObjectStore:
     """The bucket, and the four things anything is allowed to do with it.
 
@@ -251,11 +340,22 @@ class ObjectStore:
     than failing at import and taking the whole API down.
     """
 
-    def __init__(self, bucket: str, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        bucket: str,
+        *,
+        client: Any | None = None,
+        signer: Callable[[], SigningIdentity | None] = ambient_signing_identity,
+    ) -> None:
         if not bucket:
             raise MisconfiguredStorage(f"{ENV_BUCKET} is empty")
         self._bucket_name = bucket
         self._client = client
+        # Injected for the same reason `client` is: how this process signs is a property
+        # of the deployment, and a test that resolved it from the ambient environment
+        # would pass or fail on whether the machine running it happened to hold
+        # credentials. The default is the real one.
+        self._signer = signer
 
     @classmethod
     def from_env(cls) -> ObjectStore | None:
@@ -275,6 +375,20 @@ class ObjectStore:
 
             self._client = storage.Client()
         return self._client.bucket(self._bucket_name)
+
+    def _signing(self) -> dict[str, str]:
+        """The two arguments that make V4 signing work without a private key.
+
+        Empty when the process can sign in-process, which keeps the local and test paths
+        byte-for-byte what they were.
+        """
+        identity = self._signer()
+        if identity is None:
+            return {}
+        return {
+            "service_account_email": identity.service_account_email,
+            "access_token": identity.access_token,
+        }
 
     def signed_upload(
         self, key: str, *, content_type: str, max_bytes: int = MAX_UPLOAD_BYTES
@@ -301,6 +415,7 @@ class ObjectStore:
                 method="PUT",
                 content_type=content_type,
                 headers=headers,
+                **self._signing(),
             )
         )
         return SignedUpload(
@@ -325,6 +440,7 @@ class ObjectStore:
                 expiration=_DOWNLOAD_TTL,
                 method="GET",
                 response_disposition=f'attachment; filename="{safe}"',
+                **self._signing(),
             )
         )
         return url

@@ -102,6 +102,12 @@ _TEXT_FORMATS: Final[dict[str, str]] = {
 #:
 #: These are honest limits of the deployed stack, not oversights — saying so in the
 #: interface is the whole point of this table existing.
+#: The one sentence for every legacy Office spelling, so the four cannot drift apart.
+_LEGACY_OFFICE: Final = (
+    "This is an older Office format (.doc, .xls, .ppt). It is stored, but only the "
+    "newer .docx, .xlsx and .pptx formats can be read."
+)
+
 _STORE_ONLY: Final[dict[str, str]] = {
     "image/png": "Images are stored but not searched — there is no text recognition yet.",
     "image/jpeg": "Images are stored but not searched — there is no text recognition yet.",
@@ -118,11 +124,27 @@ _STORE_ONLY: Final[dict[str, str]] = {
     "application/zip": (
         "Archives are stored but not opened. Upload the files inside to make them searchable."
     ),
-    "application/x-ole-storage": (
-        "This is an older Office format (.doc, .xls, .ppt). It is stored, but only the "
-        "newer .docx, .xlsx and .pptx formats can be read."
-    ),
+    # Legacy Office, under all four spellings it arrives as.
+    #
+    # `application/x-ole-storage` is what the BYTES sniff to; the other three are what a
+    # browser DECLARES for `.doc`, `.ppt` and `.xls`. `plan_for` is called by
+    # `start_upload` with the declared type, before any bytes exist — so with only the
+    # sniffed spelling here the file was refused at the door with "That kind of file
+    # cannot be added", and the carefully written sentence below was unreachable by any
+    # input. An employee's decade of `.doc` files could not be uploaded at all.
+    "application/x-ole-storage": _LEGACY_OFFICE,
+    "application/msword": _LEGACY_OFFICE,
+    "application/vnd.ms-powerpoint": _LEGACY_OFFICE,
+    "application/vnd.ms-excel": _LEGACY_OFFICE,
 }
+
+#: Declared types whose bytes legitimately sniff as the OLE container. `_resolve` needs
+#: this because a `.doc` declares `application/msword` and sniffs `application/x-ole-storage`,
+#: which is a disagreement in spelling rather than in substance — exactly like the
+#: OOXML-over-zip case beside it.
+LEGACY_OFFICE_DECLARED: Final = frozenset(
+    {"application/msword", "application/vnd.ms-powerpoint", "application/vnd.ms-excel"}
+)
 
 
 def plan_for(mime: str) -> Extraction | None:

@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from jutsu_api import basket
 from jutsu_api.deps import CurrentPrincipal, Db, StoreDep
+from jutsu_api.queue import ring_doorbell
 from jutsu_api.security import GuardedAPIRoute, requires
 
 router = APIRouter(prefix="/v1/basket", tags=["basket"], route_class=GuardedAPIRoute)
@@ -149,6 +150,13 @@ async def complete_upload(
     into a 4xx would make one bad file in a multi-file drop look like a failed request.
     """
     row = await basket.complete_upload(session, actor=principal, store=store, file_id=file_id)
+    # `complete_upload` enqueues `ingest.document`; a durable row is not a running job.
+    # Every other enqueue in the API rings (a connector sync, the Jobs page, a sign-in),
+    # and this one did not — so in production an uploaded file sat `pending` until some
+    # unrelated doorbell happened to drain the organisation, and the console polled a
+    # row nothing was going to change (ADR 0017). Best-effort by construction: the row
+    # is committed either way and the next ring drains it.
+    await ring_doorbell(principal.org_id)
     return _out(row)
 
 
@@ -203,6 +211,8 @@ async def rename(
 async def retry(file_id: UUID, principal: CurrentPrincipal, session: Db) -> BasketFileOut:
     """Re-run a failed extraction. Only `failed` qualifies — see `retry_file`."""
     row = await basket.retry_file(session, actor=principal, file_id=file_id)
+    # A retry re-opens the job; without a ring it waits exactly as the first attempt did.
+    await ring_doorbell(principal.org_id)
     return _out(row)
 
 

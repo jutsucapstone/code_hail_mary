@@ -309,3 +309,61 @@ class TestAZipContainerCannotSpendUnboundedMemory:
         result = extract(buffer.getvalue(), mime=DOCX)
 
         assert "runbook lives in Confluence" in result.text
+
+
+class TestLegacyOfficeIsAcceptedAndStored:
+    """`.doc`, `.ppt` and `.xls` are on the product's list of accepted formats.
+
+    They were refused at the door. `plan_for` is called by `start_upload` with the
+    DECLARED type, before any bytes exist, and `_STORE_ONLY` held only
+    `application/x-ole-storage` — which is what the bytes SNIFF to, never what a browser
+    declares. So every legacy Office upload got "That kind of file cannot be added to a
+    Knowledge Basket", and the carefully written sentence about older Office formats was
+    unreachable by any input.
+    """
+
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "application/msword",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.ms-excel",
+            "application/x-ole-storage",
+        ],
+    )
+    def test_every_spelling_is_accepted_and_stored(self, declared: str) -> None:
+        plan = plan_for(declared)
+
+        assert plan is not None, f"{declared} is refused at the door"
+        assert plan.mode == "store"
+
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "application/msword",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.ms-excel",
+            "application/x-ole-storage",
+        ],
+    )
+    def test_every_spelling_says_the_same_thing(self, declared: str) -> None:
+        # Four names for one situation; four different sentences would be four different
+        # answers to "why can't you read my file".
+        reason = plan_for(declared).reason  # type: ignore[union-attr]
+
+        assert reason is not None
+        assert ".docx" in reason
+        assert "stored" in reason.lower()
+
+    def test_it_is_never_offered_as_searchable(self) -> None:
+        """The honesty rule. Nothing in this deployment reads an OLE compound file.
+
+        Claiming otherwise would leave the employee waiting for text that never arrives.
+        """
+        for declared in ("application/msword", "application/vnd.ms-powerpoint"):
+            assert plan_for(declared).mode != "text"  # type: ignore[union-attr]
+
+    def test_an_unknown_type_is_still_refused(self) -> None:
+        # Widening the table must not widen it to everything.
+        assert plan_for("application/x-msdownload") is None
+        assert plan_for("application/octet-stream") is None

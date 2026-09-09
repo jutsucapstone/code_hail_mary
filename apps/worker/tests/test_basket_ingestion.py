@@ -276,6 +276,99 @@ class TestAnUploadedFileBecomesSearchableKnowledge:
             ("user", basket["principal"])
         ]
 
+    async def test_the_uploader_can_actually_retrieve_what_they_uploaded(
+        self, session: AsyncSession
+    ) -> None:
+        """The last link, and the one nothing joined up.
+
+        Two facts were each asserted alone: ingestion writes a grant naming
+        `basket:{owner}`, and uploading mints the uploader that same principal. Nothing
+        put them together and asked the retrieval path whether the owner can actually
+        find the file — which is exactly how a grant naming a principal nobody held once
+        shipped, leaving every uploaded file retrievable by nobody, its uploader
+        included. `search_chunks` resolves principals itself from `source_identities`,
+        so this asks the real question through the real predicate.
+
+        The embedding is written directly: what is under test is the ACL join, not the
+        provider, and a paid call would buy nothing here.
+        """
+        from jutsu_retrieval import search_chunks
+
+        store = FakeStore()
+        basket = await a_basket(
+            session, store, body=b"The migration to Postgres 16 was decided in March 2026."
+        )
+        await queue_and_run(session, basket, store)
+        await scope(session, basket["org_id"])
+
+        vector = "[" + ",".join(["0.1"] * 768) + "]"
+        await session.execute(
+            text(
+                "UPDATE chunks SET embedding = CAST(:v AS vector) WHERE document_id IN "
+                "(SELECT id FROM documents WHERE source_id = :s)"
+            ),
+            {"v": vector, "s": basket["source_id"]},
+        )
+        # The real upload path mints this (`link_basket_principal`); `a_basket` bypasses
+        # the API, so the test does what production does. Without it the owner holds no
+        # principal and finds nothing — which is precisely the bug that shipped once.
+        await session.execute(
+            text(
+                "INSERT INTO source_identities (org_id, user_id, source_system, subject, "
+                "linked_by) VALUES (:o, :u, CAST('basket' AS source_system), :s, 'basket_upload')"
+            ),
+            {"o": basket["org_id"], "u": basket["user_id"], "s": str(basket["user_id"])},
+        )
+        await session.commit()
+        await scope(session, basket["org_id"])
+
+        found = await search_chunks(
+            session, user_id=basket["user_id"], query_vector=[0.1] * 768, k=10
+        )
+
+        assert found.items, "the uploader cannot retrieve their own file"
+        assert any("Postgres 16" in item.text for item in found.items)
+
+    async def test_a_colleague_cannot_retrieve_it(self, session: AsyncSession) -> None:
+        """Same organisation, no grant. The basket is per-employee, and retrieval is
+        where that has to hold — a listing filter is not an authorization boundary."""
+        from jutsu_retrieval import search_chunks
+
+        store = FakeStore()
+        basket = await a_basket(session, store, body=b"Nothing a colleague may read.")
+        await queue_and_run(session, basket, store)
+        await scope(session, basket["org_id"])
+
+        vector = "[" + ",".join(["0.1"] * 768) + "]"
+        await session.execute(
+            text(
+                "UPDATE chunks SET embedding = CAST(:v AS vector) WHERE document_id IN "
+                "(SELECT id FROM documents WHERE source_id = :s)"
+            ),
+            {"v": vector, "s": basket["source_id"]},
+        )
+        colleague = uuid.uuid4()
+        await session.execute(
+            text("INSERT INTO users (id, org_id, email, status) VALUES (:i,:o,:e,'active')"),
+            {"i": colleague, "o": basket["org_id"], "e": f"colleague-{colleague}@example.com"},
+        )
+        # The colleague holds a basket principal of their OWN, so what separates them
+        # from the file is the grant and nothing else — not an absent identity, which
+        # would make this pass for the wrong reason.
+        await session.execute(
+            text(
+                "INSERT INTO source_identities (org_id, user_id, source_system, subject, "
+                "linked_by) VALUES (:o, :u, CAST('basket' AS source_system), :s, 'basket_upload')"
+            ),
+            {"o": basket["org_id"], "u": colleague, "s": str(colleague)},
+        )
+        await session.commit()
+        await scope(session, basket["org_id"])
+
+        found = await search_chunks(session, user_id=colleague, query_vector=[0.1] * 768, k=10)
+
+        assert not found.items, "a colleague reached another employee's basket file"
+
     async def test_it_queues_the_embedding_as_its_own_job(self, session: AsyncSession) -> None:
         # The two stages are separate rows on purpose: re-running an embedding must never
         # re-read the object.

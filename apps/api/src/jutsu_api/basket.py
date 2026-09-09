@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID, uuid4
 
-from jutsu_connectors.extraction import plan_for
+from jutsu_connectors.extraction import LEGACY_OFFICE_DECLARED, plan_for
 from jutsu_core.errors import Conflict, NotFound, ServiceUnavailable, ValidationFailed
 from jutsu_core.rbac import Permission
 from jutsu_core.storage import (
@@ -337,6 +337,12 @@ def _resolve(*, declared: str, detected: str | None) -> str | None:
     if detected == declared:
         return declared
     if detected == "application/zip" and _is_ooxml(declared):
+        return declared
+    # The same shape one layer older: a `.doc` declares `application/msword` and its bytes
+    # sniff as the OLE compound-file container every pre-2007 Office document shares. The
+    # signature cannot tell a `.doc` from an `.xls`, which is exactly why all four
+    # spellings carry the same "stored, not searchable" sentence.
+    if detected == "application/x-ole-storage" and declared in LEGACY_OFFICE_DECLARED:
         return declared
     # A declared text type whose bytes are something else is a lie worth refusing.
     return None

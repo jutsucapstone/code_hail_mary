@@ -15,6 +15,7 @@ from jutsu_core.storage import (
     MAX_UPLOAD_BYTES,
     MisconfiguredStorage,
     ObjectStore,
+    SigningIdentity,
     normalise_filename,
     object_key,
     sniff_mime,
@@ -180,7 +181,10 @@ class TestTheSignedUrlIsACapabilityForOneObject:
             def bucket(self, name: str) -> FakeBucket:
                 return FakeBucket()
 
-        store = ObjectStore("jutsu-basket", client=FakeClient())
+        # `signer` stated, not inherited: these assert WHAT is signed, and the
+        # default resolves the ambient identity, which would make the result depend
+        # on whether the machine running the suite happens to hold credentials.
+        store = ObjectStore("jutsu-basket", client=FakeClient(), signer=lambda: None)
         signed = store.signed_upload(object_key(ORG, FILE), content_type="application/pdf")
 
         assert recorded["method"] == "PUT"
@@ -210,7 +214,7 @@ class TestTheSignedUrlIsACapabilityForOneObject:
             def bucket(self, name: str) -> FakeBucket:
                 return FakeBucket()
 
-        ObjectStore("b", client=FakeClient()).signed_upload(
+        ObjectStore("b", client=FakeClient(), signer=lambda: None).signed_upload(
             "k", content_type="text/plain", max_bytes=MAX_UPLOAD_BYTES * 100
         )
 
@@ -236,7 +240,7 @@ class TestTheSignedUrlIsACapabilityForOneObject:
             def bucket(self, name: str) -> FakeBucket:
                 return FakeBucket()
 
-        ObjectStore("b", client=FakeClient()).signed_download(
+        ObjectStore("b", client=FakeClient(), signer=lambda: None).signed_download(
             "k", filename='evil".pdf\r\nX-Injected: yes'
         )
 
@@ -339,3 +343,148 @@ class TestTheSnifferRecognisesWhatThePickerOffers:
         # produce "unknown", not an IndexError inside a request.
         for head in (b"", b"\xff", b"R", b"\x00\x00\x00"):
             assert sniff_mime(head) is None or isinstance(sniff_mime(head), str)
+
+
+class TestSigningWithoutAPrivateKey:
+    """How a URL gets signed when the process holds no key.
+
+    This is the defect that made the Knowledge Basket unusable in production, and it was
+    invisible here: Cloud Run's ambient identity is a bearer token with nothing to sign
+    with, so `generate_signed_url` raised `AttributeError: you need a private key to sign
+    credentials` on every upload — while these tests passed, because a fake blob signs
+    nothing. The signer is injected so that what the deployment can do is a fact the test
+    states rather than a property of the machine running it.
+    """
+
+    @staticmethod
+    def _recorder() -> tuple[dict[str, object], object]:
+        recorded: dict[str, object] = {}
+
+        class FakeBlob:
+            def generate_signed_url(self, **kwargs: object) -> str:
+                recorded.update(kwargs)
+                return "https://storage.example/signed"
+
+        class FakeBucket:
+            def blob(self, key: str) -> FakeBlob:
+                return FakeBlob()
+
+        class FakeClient:
+            def bucket(self, name: str) -> FakeBucket:
+                return FakeBucket()
+
+        return recorded, FakeClient()
+
+    def test_an_upload_signs_through_iam_when_there_is_no_key(self) -> None:
+        recorded, client = self._recorder()
+        identity = SigningIdentity(
+            service_account_email="jutsu-runtime@example.iam.gserviceaccount.com",
+            access_token="fake-access-token",
+        )
+
+        ObjectStore("b", client=client, signer=lambda: identity).signed_upload(
+            object_key(ORG, FILE), content_type="application/pdf"
+        )
+
+        # Both, or neither: the storage library falls back to a local key unless it is
+        # given an account AND a token to call signBlob with.
+        assert recorded["service_account_email"] == identity.service_account_email
+        assert recorded["access_token"] == "fake-access-token"
+
+    def test_a_download_signs_through_iam_too(self) -> None:
+        """`signed_download` had the identical defect, so downloads were broken by the
+        same cause and would have stayed broken had only the upload been fixed."""
+        recorded, client = self._recorder()
+        identity = SigningIdentity(
+            service_account_email="jutsu-runtime@example.iam.gserviceaccount.com",
+            access_token="fake-access-token",
+        )
+
+        ObjectStore("b", client=client, signer=lambda: identity).signed_download(
+            "k", filename="notes.pdf"
+        )
+
+        assert recorded["service_account_email"] == identity.service_account_email
+        assert recorded["access_token"] == "fake-access-token"
+
+    def test_a_process_holding_a_key_signs_in_process(self) -> None:
+        """A service-account JSON key signs locally, needs no API call, and must not be
+        handed an access token — passing one would route a working local signature
+        through a network round trip it does not need."""
+        recorded, client = self._recorder()
+
+        ObjectStore("b", client=client, signer=lambda: None).signed_upload(
+            "k", content_type="text/plain"
+        )
+
+        assert "service_account_email" not in recorded
+        assert "access_token" not in recorded
+
+
+class TestTheSigningTokenIsNotCachedPastItsLife:
+    """An access token is good for about an hour.
+
+    Caching the identity built from one is the worst shape a bug can have: every check
+    made just after a deploy passes, and uploads start failing an hour later for as long
+    as the revision lives. So the credentials are cached and the identity is not.
+    """
+
+    @staticmethod
+    def _fake_credentials() -> object:
+        class FakeCredentials:
+            def __init__(self) -> None:
+                self.service_account_email = "jutsu-runtime@example.iam.gserviceaccount.com"
+                self.token = "first-token"
+                self.valid = False
+                self.refreshes = 0
+
+            def refresh(self, request: object) -> None:
+                self.refreshes += 1
+                self.token = f"token-{self.refreshes}"
+                self.valid = True
+
+        return FakeCredentials()
+
+    def test_a_lapsed_token_is_refreshed_rather_than_reused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jutsu_core import storage
+
+        credentials = self._fake_credentials()
+        monkeypatch.setattr(storage, "_ambient_credentials", credentials)
+
+        first = storage.ambient_signing_identity()
+        assert first is not None
+        assert first.access_token == "token-1"
+
+        # Still valid: no second round trip, same token.
+        second = storage.ambient_signing_identity()
+        assert second is not None
+        assert second.access_token == "token-1"
+        assert credentials.refreshes == 1  # type: ignore[attr-defined]
+
+        # An hour later.
+        credentials.valid = False  # type: ignore[attr-defined]
+        third = storage.ambient_signing_identity()
+        assert third is not None
+        assert third.access_token == "token-2", "a lapsed token must not be handed out again"
+
+    def test_credentials_that_name_no_account_are_refused_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Half an identity fails deep inside the storage library with a message about
+        private keys. Refusing here says what is actually wrong."""
+        from jutsu_core import storage
+
+        class Nameless:
+            service_account_email = ""
+            token = "t"
+            valid = True
+
+            def refresh(self, request: object) -> None:
+                return None
+
+        monkeypatch.setattr(storage, "_ambient_credentials", Nameless())
+
+        with pytest.raises(MisconfiguredStorage):
+            storage.ambient_signing_identity()

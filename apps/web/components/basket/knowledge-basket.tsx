@@ -101,6 +101,11 @@ const BY_EXTENSION: Record<string, string> = {
   wav: "audio/wav",
   m4a: "audio/mp4",
   zip: "application/zip",
+  // Pre-2007 Office. Stored and downloadable, never read for text — the four spellings
+  // all carry the same sentence, and the API refuses to pretend otherwise.
+  doc: "application/msword",
+  ppt: "application/vnd.ms-powerpoint",
+  xls: "application/vnd.ms-excel",
 };
 
 const ACCEPT = Object.keys(BY_EXTENSION)

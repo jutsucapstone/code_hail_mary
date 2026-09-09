@@ -326,6 +326,72 @@ class TestUploading:
 # --------------------------------------------------------------------- who sees what
 
 
+class TestTheWorkerIsActuallyWokenUp:
+    """A durable job row is not a running job.
+
+    `complete_upload` enqueues `ingest.document` and nothing rang for it — while every
+    other enqueue in the API does (a connector sync, the Jobs page, a sign-in). In
+    production that meant an uploaded file sat `pending` until some unrelated doorbell
+    happened to drain the organisation, so the console polled every three seconds
+    against a row nothing was going to change (ADR 0017).
+    """
+
+    @pytest.fixture
+    def rung(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        calls: list[object] = []
+
+        async def _record(org_id: object) -> bool:
+            calls.append(org_id)
+            return True
+
+        monkeypatch.setattr("jutsu_api.routers.basket.ring_doorbell", _record)
+        return calls
+
+    async def test_completing_an_upload_rings_for_its_own_organisation(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        rung: list[object],
+    ) -> None:
+        await register_owner(client, mailbox)
+        await upload(client, store)
+
+        me = (await client.get("/v1/me")).json()
+        # Exactly one ring, carrying only the organisation the session already held —
+        # the worker still cannot enumerate tenants.
+        assert rung == [UUID(me["org_id"])]
+
+    async def test_a_retry_rings_too(
+        self,
+        client: AsyncClient,
+        mailbox: RecordingEmailSender,
+        store: FakeStore,
+        rung: list[object],
+        inspector: AsyncSession,
+    ) -> None:
+        """A retry reopens the job; without a ring it waits exactly as the first
+        attempt did, which is the same bug wearing a different button."""
+        await register_owner(client, mailbox)
+        created = await upload(client, store)
+        await inspector.execute(
+            # `failure_has_reason` refuses a failed row with no reason, which is the
+            # constraint doing its job — a retryable state must say what to retry.
+            text(
+                "UPDATE basket_files SET state = 'failed', failure_reason = 'extraction "
+                "failed', failure_kind = 'transient' WHERE id = :id"
+            ),
+            {"id": UUID(created["id"])},
+        )
+        await inspector.commit()
+        rung.clear()
+
+        retried = await client.post(f"/v1/basket/files/{created['id']}/retry", headers=csrf(client))
+
+        assert retried.status_code == 202, retried.text
+        assert len(rung) == 1
+
+
 class TestOneEmployeeCannotSeeAnother:
     async def test_a_colleague_cannot_list_or_reach_your_files(
         self, client: AsyncClient, mailbox: RecordingEmailSender, store: FakeStore
