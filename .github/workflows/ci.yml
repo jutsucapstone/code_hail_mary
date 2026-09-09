@@ -39,7 +39,18 @@ jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 25 was not headroom, it was a cliff the suite had already reached. Two deploys of
+    # `main` died here inside ninety seconds of each other — 25m23s and 25m21s, both at
+    # 86% of the Python suite, both with zero failures — and GitHub reports a timeout as
+    # `cancelled`, which reads as somebody pressing a button rather than as a gate that
+    # ran out of time. Build, migrate and deploy were skipped behind it, so production
+    # silently stopped receiving commits while every local gate passed.
+    #
+    # Raised with room to grow rather than to the next value that happens to fit: the
+    # suite is ~2,240 tests against real Postgres and Neo4j, it grows most weeks, and a
+    # ceiling set to today's runtime buys another silent stall in a month. A job that
+    # genuinely hangs still fails here, just not one that is merely thorough.
+    timeout-minutes: 45
 
     # A real Postgres, not a stand-in. pgvector, RLS and FORCE ROW LEVEL SECURITY have
     # no in-memory equivalent, so without this the packages/db suite would skip and CI
