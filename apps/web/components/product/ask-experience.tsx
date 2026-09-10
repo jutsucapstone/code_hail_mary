@@ -1,13 +1,16 @@
 "use client";
 
-import { Fragment, useCallback, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { CircleSlash, FileText, Loader2, Sparkles } from "lucide-react";
 
+import { VoiceButton, VoiceStatus } from "@/components/product/ask-voice";
 import { EvidenceSearch } from "@/components/product/evidence-search";
 import { FailureState, LoadingRegion, Skeleton } from "@/components/states";
 import { api, type AskCitation, type AskResponse, type Evidence } from "@/lib/api";
 import { classifyApiError, isRetryable, type Failure } from "@/lib/api-error";
+import { cn } from "@/lib/utils";
+import { joinDictation, type VoiceInput } from "@/lib/voice-input";
 
 /**
  * Ask JUTSU — a grounded answer, its citations, and the evidence it stood on.
@@ -352,11 +355,59 @@ function AnswerCard({ exchange }: { exchange: Exchange }) {
   );
 }
 
-export function AskExperience() {
+export function AskExperience({
+  voice,
+  inlineOrb = false,
+}: {
+  /**
+   * Voice input, owned by the page (`ask-workspace.tsx`). Optional: without it this is
+   * exactly the typed experience it always was.
+   */
+  voice?: VoiceInput;
+  /** A small orb in the status line while listening, for screens with no orb column. */
+  inlineOrb?: boolean;
+} = {}) {
   const [draft, setDraft] = useState("");
   const [thread, setThread] = useState<Exchange[]>([]);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [notConfigured, setNotConfigured] = useState(false);
+  const voiceStatusId = useId();
+
+  // What the box held when a voice session began: dictation appends to it, and Escape
+  // puts it back. `draftRef` mirrors the draft for the session's start handler, which
+  // runs outside render.
+  const draftRef = useRef(draft);
+  const beforeVoiceRef = useRef("");
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  const attachVoice = voice?.attach;
+  useEffect(() => {
+    // Evidence search is a different box, and a transcript has nowhere to go there.
+    if (!attachVoice || notConfigured) return;
+    return attachVoice({
+      onStart: () => {
+        beforeVoiceRef.current = draftRef.current;
+      },
+      onText: (text) => setDraft(joinDictation(beforeVoiceRef.current, text)),
+    });
+  }, [attachVoice, notConfigured]);
+
+  const listening = voice?.listening ?? false;
+  const cancelVoice = voice?.cancel;
+  useEffect(() => {
+    // Escape abandons the session and restores the box. Listened for on the document:
+    // while someone is speaking, focus is on the microphone button, not the input.
+    if (!listening || !cancelVoice) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      cancelVoice();
+      setDraft(beforeVoiceRef.current);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [listening, cancelVoice]);
 
   const ask = useMutation({
     mutationFn: (question: string) => api.ask({ question }),
@@ -378,6 +429,8 @@ export function AskExperience() {
   });
 
   function submit(question: string) {
+    // A question on its way out must not be rewritten by words still arriving.
+    if (voice?.listening) voice.cancel();
     const trimmed = question.trim();
     if (trimmed && !ask.isPending) ask.mutate(trimmed);
   }
@@ -398,42 +451,70 @@ export function AskExperience() {
   }
 
   const latest = thread[0];
+  const voiceReady = voice?.supported ? voice : null;
 
   return (
     <div className="mt-10 flex flex-col gap-6">
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit(draft);
-        }}
-        className="flex flex-col gap-3 sm:flex-row"
-      >
-        <label htmlFor="ask-question" className="sr-only">
-          Your question
-        </label>
-        <input
-          id="ask-question"
-          type="text"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Ask anything about your organisation's memory…"
-          maxLength={4000}
-          className="h-12 flex-1 rounded-xl border border-hairline-strong bg-surface/40 px-4 text-sm text-foreground placeholder:text-muted-foreground/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        />
-        <button
-          type="submit"
-          disabled={ask.isPending || !draft.trim()}
-          aria-busy={ask.isPending}
-          className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-brand px-6 text-[0.9375rem] font-semibold text-brand-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 sm:w-36"
+      <div className="flex flex-col gap-3">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit(draft);
+          }}
+          className="flex flex-col gap-3 sm:flex-row"
         >
-          {ask.isPending ? (
-            <Loader2 aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
-          ) : (
-            <Sparkles aria-hidden="true" className="size-4" />
-          )}
-          {ask.isPending ? "Thinking…" : "Ask"}
-        </button>
-      </form>
+          <label htmlFor="ask-question" className="sr-only">
+            Your question
+          </label>
+          <div className="relative flex min-w-0 flex-1">
+            <input
+              id="ask-question"
+              type="text"
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                if (voice?.error) voice.dismissError();
+              }}
+              // While speaking, the words are the recogniser's to write; typing over
+              // them would be overwritten by the next interim result.
+              readOnly={listening}
+              aria-describedby={voiceReady ? voiceStatusId : undefined}
+              placeholder={
+                listening ? "Listening…" : "Ask anything about your organisation's memory…"
+              }
+              maxLength={4000}
+              className={cn(
+                "h-12 w-full rounded-xl border border-hairline-strong bg-surface/40 px-4 text-sm text-foreground placeholder:text-muted-foreground/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                voiceReady && "pr-12",
+                listening && "border-brand/50",
+              )}
+            />
+            {voiceReady ? (
+              <VoiceButton
+                voice={voiceReady}
+                disabled={ask.isPending}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2"
+              />
+            ) : null}
+          </div>
+          <button
+            type="submit"
+            disabled={ask.isPending || !draft.trim()}
+            aria-busy={ask.isPending}
+            className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-brand px-6 text-[0.9375rem] font-semibold text-brand-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 sm:w-36"
+          >
+            {ask.isPending ? (
+              <Loader2 aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+            ) : (
+              <Sparkles aria-hidden="true" className="size-4" />
+            )}
+            {ask.isPending ? "Thinking…" : "Ask"}
+          </button>
+        </form>
+        {voiceReady ? (
+          <VoiceStatus id={voiceStatusId} voice={voiceReady} showOrb={inlineOrb} />
+        ) : null}
+      </div>
 
       {/*
         The end of the wait, spoken. `LoadingRegion` announces that an answer is being

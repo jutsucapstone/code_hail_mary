@@ -2,19 +2,23 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { Container } from "@/components/site/section";
-import { AskExperience } from "@/components/product/ask-experience";
+import { AskWorkspace } from "@/components/product/ask-workspace";
 import { surfaceBySlug } from "@/lib/surfaces";
 
 const SLUG = "ask";
 
 /**
- * Cited Q&A — both halves now.
+ * Cited Q&A — both halves now, and a question can be spoken.
  *
  * `POST /v1/ask` retrieves under the caller's ACL and composes a grounded answer whose
  * every citation was validated server-side against the retrieved set; uncited or
  * hallucinated answers are refused as insufficient_evidence rather than rendered. On a
  * deployment with no answer provider the component degrades to retrieval with the
  * reason on screen — never a dead Ask box, never a fake answer (§4.11).
+ *
+ * Voice input is the browser's speech recognition writing into the same question box
+ * (`lib/voice-input.ts`). The question still leaves through the one Ask path, so
+ * retrieval, citation and refusal are identical for a spoken question and a typed one.
  */
 export function generateMetadata(): Metadata {
   const surface = surfaceBySlug(SLUG);
@@ -29,7 +33,7 @@ export default function Page() {
 
   return (
     <Container className="py-16 lg:py-24">
-      <div className="max-w-3xl">
+      <AskWorkspace>
         <p className="eyebrow flex items-center gap-2.5 text-brand">
           <span aria-hidden="true" className="h-1 w-1 rounded-full bg-brand" />
           {surface.kind === "differentiator" ? "Differentiator" : "Table stakes"}
@@ -40,9 +44,7 @@ export default function Page() {
         <p className="mt-6 text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
           {surface.purpose}
         </p>
-
-        <AskExperience />
-      </div>
+      </AskWorkspace>
     </Container>
   );
 }

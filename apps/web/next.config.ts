@@ -116,7 +116,15 @@ const nextConfig: NextConfig = {
       { key: "X-Frame-Options", value: "SAMEORIGIN" },
       {
         key: "Permissions-Policy",
-        value: "camera=(), microphone=(), geolocation=()",
+        // The microphone is allowed to THIS origin and nothing else, for Cited Q&A's
+        // voice input. Site-wide rather than on `/ask` alone for the reason the CSP
+        // above is one policy: a Permissions-Policy belongs to the DOCUMENT, and `/ask`
+        // is normally reached by `next/link` from a page whose document would still
+        // say `microphone=()` — a per-route grant would work on a hard load and fail
+        // on the ordinary in-app path. `(self)` names no other origin, no third-party
+        // frame can load to use it (`frame-src 'none'`), and the browser still asks
+        // each person before any capture. Camera and geolocation stay off.
+        value: "camera=(), microphone=(self), geolocation=()",
       },
     ];
 

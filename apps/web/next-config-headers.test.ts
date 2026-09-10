@@ -104,9 +104,27 @@ describe("the headers that were already arriving", () => {
       expect(valueOf(headers, "X-Frame-Options")).toBe("SAMEORIGIN");
       expect(valueOf(headers, "Referrer-Policy")).toBe("strict-origin-when-cross-origin");
       expect(valueOf(headers, "Permissions-Policy")).toBe(
-        "camera=(), microphone=(), geolocation=()",
+        "camera=(), microphone=(self), geolocation=()",
       );
     }
+  });
+
+  it("lets only this origin ask for the microphone, and nobody the camera or location", async () => {
+    // Cited Q&A's voice input needs the microphone, and `()` refuses it before the
+    // browser ever asks the person. What must never appear in that allowlist is a
+    // wildcard or another origin: `(self)` is the grant, the per-person permission
+    // prompt is the second gate, and nothing else gets to stand in front of either.
+    const policy = valueOf(await headersFor("production"), "Permissions-Policy") ?? "";
+    const allowlists = Object.fromEntries(
+      policy.split(",").map((entry) => {
+        const [feature, allowlist] = entry.trim().split("=");
+        return [feature, allowlist];
+      }),
+    );
+
+    expect(allowlists.microphone).toBe("(self)");
+    expect(allowlists.camera).toBe("()");
+    expect(allowlists.geolocation).toBe("()");
   });
 
   it("applies to every path, not just the marketing pages", async () => {
