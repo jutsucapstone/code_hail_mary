@@ -3,7 +3,7 @@
 import { RouteError } from "@/components/route-error";
 
 /**
- * Wraps the six product surfaces.
+ * Wraps the product surfaces.
  */
 export default function Error({
   error,

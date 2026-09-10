@@ -1,11 +1,17 @@
 /**
- * The six product surfaces (spec §3).
+ * The product surfaces (spec §3) the employee console routes today.
  *
  * One list drives the product nav, the stub pages and the middleware matcher, so a
  * surface cannot be routed without also being navigable — or vice versa.
+ * `surfaces.test.ts` holds the route tree under `app/(product)/` to this list.
  *
  * `status` is honest about what exists. §4.11 forbids mock data behind a UI surface, so
  * a stub says it is a stub rather than showing invented answers.
+ *
+ * §3 names six surfaces, and three are deliberately absent until their slices land:
+ * Decision Ledger (S20), Expert Discovery (S21) and Onboarding Copilot (S28). Each was a
+ * "not built yet" page, and an entry here is a nav item and a gated route, so bringing
+ * one back means adding its page in the same change.
  */
 
 export type SurfaceStatus = "stub" | "live";
@@ -34,24 +40,6 @@ export const SURFACES: readonly Surface[] = [
     status: "live",
   },
   {
-    slug: "decisions",
-    name: "Decision Ledger",
-    purpose:
-      "Why did we choose PostgreSQL over MongoDB? The decision, its date, who decided, the meeting it happened in, and what superseded it.",
-    kind: "differentiator",
-    slice: "S20",
-    status: "stub",
-  },
-  {
-    slug: "experts",
-    name: "Expert Discovery",
-    purpose:
-      "A topic in, ranked humans out — scored on demonstrated contribution rather than self-declared CV skills.",
-    kind: "differentiator",
-    slice: "S21",
-    status: "stub",
-  },
-  {
     slug: "risk",
     name: "Knowledge Risk",
     purpose:
@@ -73,15 +61,6 @@ export const SURFACES: readonly Surface[] = [
     kind: "differentiator",
     slice: "S26–S28",
     status: "live",
-  },
-  {
-    slug: "onboarding",
-    name: "Onboarding Copilot",
-    purpose:
-      "What should I read first for Project Falcon? An ordered reading path built from the graph.",
-    kind: "table-stakes",
-    slice: "S28",
-    status: "stub",
   },
 ] as const;
 

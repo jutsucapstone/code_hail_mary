@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 };
 
 /**
- * Shell for the six product surfaces.
+ * Shell for the product surfaces.
  *
  * Shares the marketing design tokens rather than introducing a second system — §16 is
  * explicit that a product looking unrelated to its own landing page reads as
@@ -52,7 +52,7 @@ export default function ProductLayout({ children }: { children: React.ReactNode 
 
           <div className="flex items-center gap-2">
             {/* The organisation is no longer read from the cookie — there is nothing in
-                it to read. Surfacing it here means asking GET /v1/me, which these six
+                it to read. Surfacing it here means asking GET /v1/me, which these
                 surfaces do not do yet, so the badge is simply absent rather than showing
                 a placeholder that would be indistinguishable from real data (§4.11). */}
             <FeedbackToggle />
