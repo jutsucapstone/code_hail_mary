@@ -57,13 +57,13 @@ const MOBILE_VB = { w: 330, h: 480 };
 
 const NODES: GraphNode[] = [
   { id: "p3", label: "Meera", kind: "person", accent: "var(--graph-violet)", note: "Joined 4 months ago; ramped on Atlas.", x: 78, y: 74, mx: 58, my: 56 },
-  { id: "p1", label: "Priya", kind: "person", accent: "var(--brand)", note: "Sole owner on 3 critical projects — bus factor 1.", x: 56, y: 214, mx: 50, my: 218 },
+  { id: "p1", label: "Priya", kind: "person", accent: "var(--brand)", note: "Sole owner on 3 critical projects.", x: 56, y: 214, mx: 50, my: 218 },
   { id: "p2", label: "Arjun", kind: "person", accent: "var(--graph-amber)", note: "Kubernetes cost work across Falcon and Atlas.", x: 84, y: 356, mx: 58, my: 400 },
   { id: "pr1", label: "Falcon", kind: "project", note: "14 decisions, 3 owners, 22 linked meetings.", x: 236, y: 196, mx: 206, my: 130 },
   { id: "pr2", label: "Atlas", kind: "project", note: "Depends on the Falcon storage decision.", x: 432, y: 74, mx: 232, my: 302 },
   { id: "d1", label: "Postgres over Mongo", kind: "decision", note: "Decided 12 Mar — owner Priya, cited to 2 meetings.", x: 420, y: 300, mx: 186, my: 452 },
   { id: "d2", label: "Ship read-only", kind: "decision", note: "Decided 4 Apr — supersedes the write-back plan.", x: 468, y: 186, mx: 206, my: 376 },
-  { id: "s1", label: "Kubernetes", kind: "skill", note: "2 contributors ranked by real contributions.", x: 170, y: 290, mx: 186, my: 216 },
+  { id: "s1", label: "Kubernetes", kind: "skill", note: "2 contributors, each linked to the evidence.", x: 170, y: 290, mx: 186, my: 216 },
   { id: "s3", label: "pgvector", kind: "skill", note: "Introduced by the Postgres decision.", x: 276, y: 384 },
   { id: "s2", label: "GraphRAG", kind: "skill", note: "Emerged from the retrieval decisions on Atlas.", x: 486, y: 392 },
   // Source tiles at the rim: where memory arrives from. Every connector in the

@@ -5,6 +5,12 @@
  * capstone deck (Team Code Hail Mary, Manipal University Jaipur, July 2026).
  * Keeping it here means the marketing narrative can be reviewed and edited
  * without touching layout code, and it stays trivially portable to a CMS.
+ *
+ * Product claims stop at what the console serves (`lib/surfaces.ts`): Cited Q&A and
+ * Knowledge Transfer. The deck also promised a decision ledger, expert discovery,
+ * knowledge-risk scoring, an onboarding copilot and a one-click handover generator;
+ * none of those is built, so none of them is sold here. A surface earns its line on
+ * this page in the same change that puts it in the console.
  */
 
 import { PILOT_PATH } from "@/lib/surfaces";
@@ -41,7 +47,7 @@ export const siteConfig = {
   legalName: "Corporate Memory Graph",
   tagline: "Know. Connect. Remember.",
   description:
-    "JUTSU is an Enterprise Memory OS. One living graph of your people, projects, decisions and skills — with AI agents that answer with citations, find real experts, score knowledge risk and auto-draft handovers.",
+    "JUTSU is an Enterprise Memory OS. One living graph of your people, projects, decisions and skills — with AI that answers with citations and hands a colleague's knowledge to whoever comes next.",
   /**
    * Absolute origin, used for canonical URLs, sitemap, robots and OG tags.
    * Set NEXT_PUBLIC_SITE_URL at build time; the fallback only serves local dev
@@ -242,22 +248,16 @@ export const architecture = {
       summary: "Agents that read the memory, guard it and hand it over.",
       nodes: [
         { name: "GraphRAG Q&A agent", detail: "Cypher + vector fusion" },
-        { name: "Historian & Handover agents", detail: "Gemini" },
-        { name: "Knowledge-risk scoring", detail: "graph centrality" },
-        { name: "Expert discovery", detail: "contribution-weighted ranking" },
+        { name: "Knowledge-transfer copilot", detail: "answers from one package's evidence" },
       ],
     },
     {
       id: "experience",
       label: "Experience · Next.js",
-      summary: "Six surfaces on one memory.",
+      summary: "Cited answers and knowledge transfer, on one memory.",
       nodes: [
-        { name: "Cited Q&A chat", detail: "grounded, traceable" },
-        { name: "Expert finder", detail: "ranked humans" },
-        { name: "Project historian", detail: "living timelines" },
-        { name: "Onboarding copilot", detail: "personalised paths" },
-        { name: "Risk dashboard", detail: "bus-factor view" },
-        { name: "Handover studio", detail: "one-click packs" },
+        { name: "Cited Q&A", detail: "grounded, traceable" },
+        { name: "Knowledge Transfer", detail: "cited KT workspaces" },
       ],
     },
   ],
@@ -274,18 +274,15 @@ export const architecture = {
 export const landscape = {
   eyebrow: "Landscape",
   title: "Why the incumbents don't cover this.",
-  lead: "Glean, Microsoft Viva, Guru and Atlassian Rovo index and search documents. None of them keep a temporal decision ledger, score bus-factor risk, or auto-draft cited handover packs.",
+  lead: "Glean, Microsoft Viva, Guru and Atlassian Rovo index and search documents. None of them turn a departing colleague's context into a cited knowledge-transfer workspace for whoever takes over.",
   moat: "Our moat is the graph of who-decided-what-when — not another index.",
   columns: ["JUTSU", "Glean", "Microsoft Viva", "Guru", "Atlassian Rovo"],
   rows: [
     { capability: "Enterprise document search", values: [true, true, true, true, true] },
     { capability: "Semantic Q&A with citations", values: [true, true, true, true, true] },
-    { capability: "Temporal decision ledger", values: [true, false, false, false, false] },
-    { capability: "Live bus-factor risk scoring", values: [true, false, false, false, false] },
-    { capability: "Auto-drafted cited handover packs", values: [true, false, false, false, false] },
     {
-      capability: "Contribution-scored expert discovery",
-      values: [true, "partial", "partial", false, false],
+      capability: "Cited knowledge-transfer workspace for a departing colleague",
+      values: [true, false, false, false, false],
     },
   ],
   footnote:
@@ -334,7 +331,7 @@ export const howItWorks = {
       id: "ask",
       index: "03",
       title: "Ask, trace, hand over",
-      body: "Query it in plain language and get answers cited to the source. Find who actually knows a topic, see where knowledge risk sits, and generate a leaver handover pack in one click.",
+      body: "Query it in plain language and get answers cited to the source. When someone moves on, open a knowledge-transfer package: their context as a cited workspace, with a copilot and a learning path for whoever takes over.",
       detail: "Every claim carries a citation.",
     },
   ],
@@ -354,11 +351,11 @@ export const faq = {
     },
     {
       q: "How is this different from enterprise search?",
-      a: "Search returns documents. JUTSU keeps a temporal graph of who decided what, when and why — so it answers questions no index can: who owns this, what did we already try, and what breaks if this person leaves.",
+      a: "Search returns documents. JUTSU keeps a temporal graph of who decided what, when and why, and answers from it with citations: what did we already try, why did we choose this, and what did a departing colleague know.",
     },
     {
       q: "What happens to a departing colleague's knowledge?",
-      a: "The knowledge-risk view scores bus-factor continuously, so exposure is visible before a resignation rather than after. When someone does leave, the Handover Generator drafts a cited pack of their open items, decisions, stakeholders and known gotchas.",
+      a: "An administrator creates a knowledge-transfer package over that colleague's context and shares its KT ID with whoever takes over. They get a cited workspace — the decisions, projects, meetings and people in its scope, a copilot that answers only from that evidence, and a learning path built from it. Creating a package grants no access of its own: what they read is still bounded by their own permissions.",
     },
     {
       q: "Where does our data live?",
