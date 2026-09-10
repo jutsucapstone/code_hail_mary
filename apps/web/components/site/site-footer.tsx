@@ -72,9 +72,6 @@ export function SiteFooter() {
                 wrong. */}
             © {year} {siteConfig.org.team}. All rights reserved.
           </p>
-          <p className="font-mono text-xs text-muted-foreground/80">
-            {siteConfig.org.institution} · {siteConfig.org.program}
-          </p>
         </div>
       </Container>
     </footer>

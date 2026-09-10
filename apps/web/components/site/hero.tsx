@@ -1,5 +1,3 @@
-import { Sparkles } from "lucide-react";
-
 import { PrimaryCta, SecondaryCta } from "@/components/site/cta-buttons";
 import { Logo, Wordmark } from "@/components/site/logo";
 import { MemoryGraph } from "@/components/site/memory-graph";
@@ -25,14 +23,7 @@ export function Hero() {
       <Container>
         <div className="grid items-start gap-14 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-16">
           <div className="flex flex-col items-start">
-            <Reveal>
-              <p className="inline-flex items-center gap-2 rounded-full border border-hairline-strong bg-surface/70 px-3.5 py-1.5 backdrop-blur">
-                <Sparkles aria-hidden="true" className="size-3.5 text-brand" />
-                <span className="eyebrow text-muted-foreground">{hero.badge}</span>
-              </p>
-            </Reveal>
-
-            <Reveal delay={0.06} className="mt-8">
+            <Reveal delay={0.06}>
               {/* The lockup owns the gradient here, so the tagline stays plain —
                   two gradients stacked read as a mistake. */}
               <h1 id="hero-heading">

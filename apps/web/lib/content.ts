@@ -99,7 +99,6 @@ export const consoleCta = {
 } as const;
 
 export const hero = {
-  badge: "Private beta · Enterprise Memory OS",
   headline: siteConfig.name,
   tagline: siteConfig.tagline,
   subhead:
