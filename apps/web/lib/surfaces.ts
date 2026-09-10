@@ -1,17 +1,18 @@
 /**
  * The product surfaces (spec §3) the employee console routes today.
  *
- * One list drives the product nav, the stub pages and the middleware matcher, so a
+ * One list drives the product nav, the surface pages and the middleware matcher, so a
  * surface cannot be routed without also being navigable — or vice versa.
  * `surfaces.test.ts` holds the route tree under `app/(product)/` to this list.
  *
  * `status` is honest about what exists. §4.11 forbids mock data behind a UI surface, so
- * a stub says it is a stub rather than showing invented answers.
+ * a surface listed before it works must say it is a stub rather than show invented
+ * answers.
  *
- * §3 names six surfaces, and three are deliberately absent until their slices land:
- * Decision Ledger (S20), Expert Discovery (S21) and Onboarding Copilot (S28). Each was a
- * "not built yet" page, and an entry here is a nav item and a gated route, so bringing
- * one back means adding its page in the same change.
+ * §3 names six surfaces, and four are deliberately absent until their slices land:
+ * Decision Ledger (S20), Expert Discovery (S21), Knowledge Risk (S24–S25) and
+ * Onboarding Copilot (S28). Each was a "not built yet" page, and an entry here is a nav
+ * item and a gated route, so bringing one back means adding its page in the same change.
  */
 
 export type SurfaceStatus = "stub" | "live";
@@ -38,15 +39,6 @@ export const SURFACES: readonly Surface[] = [
     kind: "table-stakes",
     slice: "S18–S19",
     status: "live",
-  },
-  {
-    slug: "risk",
-    name: "Knowledge Risk",
-    purpose:
-      "Live bus-factor per project and topic, showing where knowledge concentrates in a single head. Aggregate first.",
-    kind: "differentiator",
-    slice: "S24–S25",
-    status: "stub",
   },
   {
     slug: "handover",
