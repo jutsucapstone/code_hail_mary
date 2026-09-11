@@ -30,7 +30,9 @@ import { SIGN_IN_PATH } from "@/lib/surfaces";
  * The two consoles keep the differences that are real, as a `variant`:
  *
  * - **sidebar** (admin) — a permission-filtered section list beside a wide column, and an
- *   inner scroll area, because admin sections render tables.
+ *   inner scroll area, because admin sections render tables. The section list scrolls on
+ *   its own too (`ConsoleNav`), because the same clipped height would otherwise cut off
+ *   its last groups.
  * - **inline** (member) — a horizontal section strip over a narrow column that scrolls as
  *   a page. A Member holds almost no permissions, and a sidebar filtered down to nothing
  *   reads as broken rather than as "this is your page".
