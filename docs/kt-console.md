@@ -121,7 +121,7 @@ defaults; `docs/deploy.md` §6 says how to tune one.
 | `kt.readdressed` | `PATCH` with `recipient_email` on an unclaimed package | — (never the address) |
 | `kt.claimed` | first open binds the recipient | — |
 | `kt.opened` | every later open | — |
-| `kt.open` (`denied`) | a refused open, on its own transaction | — |
+| `kt.open` (`denied`) | a refused open, on its own transaction | `reason`, one of `kt.py`'s `DENIED_*` values: `unknown_code`, `bound_to_another_user`, `addressed_to_another_email`, `subject_of_package`, `revoked`, `completed`, `expired`, `unclaimed_via_read_route`, `claim_race_lost` — never the code |
 | `kt.copilot_asked` | every copilot turn | `attempts`, `insufficient_evidence`, `citations`, `sources`, `query_tokens` — never the question |
 | `kt.bookmarked` | a save | `kind` |
 | `kt.conversation_archived` | an archive | `conversation_id` |

@@ -662,6 +662,14 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **Binding before state.** A package bound or addressed to somebody else is a 404
   *whatever its state*. Checking revoked/expired first told the wrong holder the package
   existed and was closed. The right person still gets the exact 403 sentence.
+- **The package's subject can never claim it.** An unaddressed package binds to its first
+  opener, and the subject — often the person handed the ID to pass on — used to qualify:
+  one open bound it for good, a claimed package cannot be re-addressed, and the colleague
+  it was for got the uniform 404 for ever. `_open_for` refuses the subject an unbound
+  package (reason `subject_of_package`, the same 404). "B cannot open A's package" has two
+  other causes the trail tells apart. `unknown_code` is usually B's session sitting in
+  another organisation, because `routers/auth.py` opens an identity's OLDEST membership.
+  `bound_to_another_user` means somebody else opened it first.
 - **`RetrievalWindow` narrows inside the ACL `EXISTS`, and that is the only place a
   narrowing may go.** Two conjuncts on `d.created_at` beside `ACL_PREDICATE`; never a
   `principals`/`org_id` parameter, never a JOIN in the inner scan, never a secondary

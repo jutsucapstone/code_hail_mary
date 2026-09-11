@@ -9,7 +9,9 @@ The security model, stated once and enforced in `_open_for` (§15 of the UI brie
   nothing and is indistinguishable from a typo. No cross-org probe exists.
 * **Recipient identity** — a package bound to an email opens only for the user holding
   that address; an unbound package binds to its FIRST claimer and is a 404 to everyone
-  else afterwards. Holding the code proves nothing once it is claimed.
+  else afterwards. Holding the code proves nothing once it is claimed. The package's own
+  subject is never an eligible claimer: a handover is their context passed to somebody
+  else, and binding it to them would strand the colleague it was for.
 * **Expiry and revocation** — checked server-side on every open. The two sentences the
   UI shows for them come from here, so the frontend cannot soften either.
 * **ACL** — nothing in this module grants a document. The documents endpoint joins
@@ -542,11 +544,12 @@ logger = logging.getLogger("jutsu.api.kt")
 #: nothing to whoever holds it, so all of these answer 404 or the one §39 sentence.
 #: Recorded server-side because the uniform refusal that makes the code space safe is
 #: also what makes a real support case ("B cannot open A's package") undiagnosable:
-#: unknown code, bound elsewhere and addressed elsewhere are one response and three
-#: completely different fixes.
+#: unknown code, bound elsewhere, addressed elsewhere and the subject opening their own
+#: package are one response and four completely different fixes.
 DENIED_UNKNOWN_CODE = "unknown_code"
 DENIED_BOUND_TO_ANOTHER = "bound_to_another_user"
 DENIED_ADDRESSED_TO_ANOTHER = "addressed_to_another_email"
+DENIED_SUBJECT_OF_PACKAGE = "subject_of_package"
 DENIED_REVOKED = "revoked"
 DENIED_COMPLETED = "completed"
 DENIED_EXPIRED = "expired"
@@ -601,9 +604,10 @@ async def _open_for(
 ) -> object:
     """The one authorization path for recipients. Everything KT-scoped calls this.
 
-    Refusals in order: unknown/foreign/typo'd code (404, all identical), revoked (403,
-    the exact sentence §39 requires), expired (403), wrong person (404 — a bound
-    package must not confirm its own existence to the wrong holder).
+    Refusals in order: unknown/foreign/typo'd code (404, all identical); wrong person —
+    bound or addressed to somebody else, or the package's own subject (404, because a
+    package must not confirm its own existence to somebody it can never be for); then
+    revoked, completed and expired (403, the exact sentences §39 requires).
 
     **Every code that arrives here costs a `KT_OPEN` allowance, spent before the
     lookup.** The claim wall was written to turn a 32^8 code space into something no
@@ -665,12 +669,25 @@ async def _open_for(
         and row.recipient_email is not None
         and row.recipient_email != row.caller_email.lower()
     )
-    if bound_elsewhere or addressed_elsewhere:
+    # **The subject is never their own package's recipient.** A handover passes one
+    # person's context to somebody else, and the subject is often the person handed the
+    # ID to pass on. Opening it used to bind it to them, permanently: a claimed package
+    # cannot be re-addressed, so the colleague it was for got this 404 for ever while the
+    # admin list read "Claimed". The subject is refused before anything can bind, and
+    # before state for the reason above — a package that can never be theirs confirms
+    # nothing to them. Only an UNBOUND package: one already bound to its subject before
+    # this rule still opens for them, because the rule stops new self-claims and
+    # re-decides no existing one.
+    own_package = row.recipient_user_id is None and row.subject_user_id == user_id
+    if bound_elsewhere or addressed_elsewhere or own_package:
+        if bound_elsewhere:
+            reason = DENIED_BOUND_TO_ANOTHER
+        elif addressed_elsewhere:
+            reason = DENIED_ADDRESSED_TO_ANOTHER
+        else:
+            reason = DENIED_SUBJECT_OF_PACKAGE
         await _audit_denied_open(
-            org_id=org_id,
-            actor_id=user_id,
-            resource_id=str(row.id),
-            reason=DENIED_BOUND_TO_ANOTHER if bound_elsewhere else DENIED_ADDRESSED_TO_ANOTHER,
+            org_id=org_id, actor_id=user_id, resource_id=str(row.id), reason=reason
         )
         raise NotFound(_NOT_FOUND)
 

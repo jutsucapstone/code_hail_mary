@@ -77,6 +77,22 @@ describe("the KT entry page", () => {
     expect(await screen.findByText(/no package matches that id/i)).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
   });
+
+  it("sends only the trimmed ID and renders a closed package's own sentence", async () => {
+    // The door takes a code and nothing else — no user id, no subject — and a completed,
+    // revoked or expired package answers with the server's sentence, never a softer one.
+    const sentence =
+      "This Knowledge Transfer is complete. Ask your administrator if you need it reopened.";
+    const fetchMock = scriptFetch({ status: 403, body: envelope("permission_denied", sentence) });
+    renderWithQuery(<KnowledgeTransferEntryPage />);
+
+    await userEvent.type(screen.getByLabelText(/kt id/i), "  KT-JUTSU-AAAA0001  ");
+    await userEvent.click(screen.getByRole("button", { name: /open kt/i }));
+
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(sentBody(fetchMock, 0)).toEqual({ kt_code: "KT-JUTSU-AAAA0001" });
+    expect(push).not.toHaveBeenCalled();
+  });
 });
 
 describe("the KT console shell", () => {
