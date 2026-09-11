@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { createElement, StrictMode } from "react";
+import { render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { pointWasmAtThisOrigin } from "@/components/ui/spline-scene";
+import { pointWasmAtThisOrigin, SplineScene } from "@/components/ui/spline-scene";
 
 /**
  * The WASM redirect, and the seam it depends on.
@@ -13,8 +15,8 @@ import { pointWasmAtThisOrigin } from "@/components/ui/spline-scene";
  * That is a real dependency on somebody else's internals, so the point of these tests
  * is not that the wrapper works (it obviously does) but that its DISAPPEARANCE is
  * loud. `_createApplication` going away on a version bump would fail open: no patch,
- * CDN fetch, refused by CSP, panel keeps its still — silently, exactly the bug being
- * fixed here. A red test is the only thing standing between that and another silent
+ * CDN fetch, refused by CSP, an empty column — silently, exactly the bug being fixed
+ * here. A red test is the only thing standing between that and another silent
  * regression.
  */
 
@@ -67,5 +69,53 @@ describe("pointing the runtime's wasm at this origin", () => {
     const app = new Fake()._createApplication() as Record<string, unknown>;
 
     expect(app.name).toBe("app");
+  });
+});
+
+/**
+ * Teardown. The viewer, once removed from the page, kept rendering into a 0×0 canvas
+ * — ~280 WebGPU errors a second, for good — so every unmount must reach its `unload()`.
+ * jsdom has no WebGL; a stand-in element with an `unload` spy is all these need.
+ */
+class FakeViewer extends HTMLElement {
+  unload = vi.fn();
+}
+if (!customElements.get("spline-viewer")) customElements.define("spline-viewer", FakeViewer);
+
+function mountScene(strict = false) {
+  const scene = createElement(SplineScene, { scene: "/spline/kt-robot.splinecode" });
+  const view = render(strict ? createElement(StrictMode, null, scene) : scene);
+  const viewer = view.container.querySelector("spline-viewer");
+  if (!(viewer instanceof FakeViewer)) throw new Error("the scene rendered no viewer");
+  return { ...view, viewer };
+}
+
+describe("unloading the scene", () => {
+  it("unloads it when the component is removed", () => {
+    const { viewer, unmount } = mountScene();
+
+    unmount();
+
+    expect(viewer.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("also unloads a load that finishes after the component is gone", async () => {
+    // `unload()` is a no-op until the scene has loaded, so a column that unmounts mid-
+    // load would otherwise finish into a detached element and leak exactly as before.
+    const { viewer, unmount } = mountScene();
+    unmount();
+
+    viewer.dispatchEvent(new CustomEvent("load-complete"));
+    await Promise.resolve();
+
+    expect(viewer.unload).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a scene on screen alone when StrictMode re-runs effects in development", () => {
+    // StrictMode unmounts and remounts effects without removing the node; unloading
+    // then would blank a robot that is still showing.
+    const { viewer } = mountScene(true);
+
+    expect(viewer.unload).not.toHaveBeenCalled();
   });
 });

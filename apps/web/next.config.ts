@@ -74,7 +74,15 @@ const nextConfig: NextConfig = {
       // `'unsafe-eval'` only in development: React uses `eval` there to reconstruct
       // server-side error stacks in the browser. Neither React nor Next uses it in a
       // production build.
-      `script-src 'self' 'unsafe-inline'${isProduction ? "" : " 'unsafe-eval'"}`,
+      //
+      // `'wasm-unsafe-eval'` everywhere, and it is NOT `'unsafe-eval'`: it lets the page
+      // compile WebAssembly and nothing else — `eval` and `new Function` stay refused. The
+      // Spline runtime behind the KT robot compiles its geometry kernel
+      // (`/spline/process.wasm`) as the scene loads. Without this keyword production
+      // refused it, while development allowed it through `'unsafe-eval'` — so the robot
+      // drew on every local check and never once in production, where the column sat on
+      // its placeholder. The modules still come only from this origin (`connect-src`).
+      `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isProduction ? "" : " 'unsafe-eval'"}`,
       // Next inlines critical CSS, and Tailwind v4's output is a stylesheet rather than
       // inline styles — but the framework's own injection is what forces this.
       "style-src 'self' 'unsafe-inline'",
@@ -99,7 +107,13 @@ const nextConfig: NextConfig = {
       "manifest-src 'self'",
       // Audio and video the employee uploaded, played from the same signed URL. These
       // are `stored` files — kept and playable, never transcribed.
-      `media-src 'self' ${STORAGE_ORIGIN}`,
+      //
+      // `data:` because the KT robot's scene embeds a video texture, and the Spline
+      // viewer plays embedded video by turning its bytes into a `data:video/mp4` URL
+      // (FileReader.readAsDataURL). Refused, the robot drew without that texture and
+      // every visit logged a violation. A `data:` source is bytes already on the page —
+      // it fetches nothing and runs nothing — so this names no new origin.
+      `media-src 'self' data: ${STORAGE_ORIGIN}`,
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",

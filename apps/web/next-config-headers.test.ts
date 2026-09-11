@@ -185,6 +185,19 @@ describe("the content security policy", () => {
     expect(directive(csp, "media-src")).toContain("https://storage.googleapis.com");
   });
 
+  it("plays the KT robot's embedded video texture, and names no new origin to do it", async () => {
+    // The Spline viewer plays a scene's embedded video as a `data:video/mp4` URL, so
+    // `data:` is required. What must never appear is anything that FETCHES: a wildcard,
+    // or a bare scheme that admits every host speaking it.
+    const sources = directive(await cspFor("production"), "media-src").split(/\s+/).slice(1);
+
+    expect(sources).toEqual(["'self'", "data:", "https://storage.googleapis.com"]);
+    for (const source of sources) {
+      expect(source, `${source} is a wildcard`).not.toContain("*");
+      expect(source, `${source} is a bare scheme`).not.toMatch(/^https?:$/);
+    }
+  });
+
   it("names every network origin exactly, never a scheme or a wildcard", async () => {
     // The value of a narrow connect-src is that injected script has nowhere to
     // exfiltrate to. A bare `https:` or a `*.googleapis.com` gives that away for nothing.
@@ -205,14 +218,20 @@ describe("the content security policy", () => {
     }
   });
 
-  it("allows no third-party script origin at all", async () => {
-    // The viewer was the only one, and it is vendored. `'unsafe-inline'` remains a
-    // documented Next 16 limitation (nonces disable static generation, CDN caching and
-    // PPR); what this pins is that no OFF-ORIGIN host may execute script here, which is
-    // the half that governs supply chain.
+  it("allows no third-party script origin, and no JavaScript eval, in production", async () => {
+    // The viewer was the only third-party script, and it is vendored. `'unsafe-inline'`
+    // remains a documented Next 16 limitation (nonces disable static generation, CDN
+    // caching and PPR); what this pins is that no OFF-ORIGIN host may execute script
+    // here, which is the half that governs supply chain.
+    //
+    // `'wasm-unsafe-eval'` is the Spline runtime's WebAssembly and permits compiling
+    // WebAssembly only. `'unsafe-eval'`, which would permit `eval`, must never reach a
+    // production build — a token check, because `'wasm-unsafe-eval'` CONTAINS the
+    // substring `unsafe-eval` and a substring check would pass either way.
     const scriptSrc = directive(await cspFor("production"), "script-src");
 
-    expect(scriptSrc).toBe("script-src 'self' 'unsafe-inline'");
+    expect(scriptSrc).toBe("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'");
+    expect(scriptSrc.split(/\s+/)).not.toContain("'unsafe-eval'");
     expect(scriptSrc).not.toContain("//");
   });
 
