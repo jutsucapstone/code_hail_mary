@@ -140,6 +140,14 @@ package (a claimed one refuses with 409). The admin page shows last activity and
 package, a details panel with the record, the extend / re-address controls (offered only
 where the server would accept them) and the package's activity from the trail.
 
+The recipient is picked from the organisation's own employees, never typed. The list
+leaves out the employee the package is about, who can never claim it, and accounts that
+cannot sign in. A colleague missing from it has to be invited first, because a package
+opens only inside the organisation that issued it. The API refuses the subject as
+recipient on creation and on re-addressing alike (422). On the recipient's side,
+`/handover` names the organisation the session is in (`GET /v1/me/organisation`), because
+sign-in opens a person's oldest membership.
+
 ## What is honestly absent
 
 * **Knowledge for a tenant that has synced nothing.** The worker now runs in production

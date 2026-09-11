@@ -110,14 +110,14 @@ const EXTENSION_CHOICES = [7, 30, 60, 90] as const;
 function PackageControls({ pkg, onChanged }: { pkg: KtAdmin; onChanged: () => void }) {
   const queryClient = useQueryClient();
   const [extendDays, setExtendDays] = useState<number>(30);
-  const [recipient, setRecipient] = useState("");
+  const [recipient, setRecipient] = useState<Employee | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const update = useMutation({
     mutationFn: (body: Parameters<typeof api.ktUpdate>[1]) => api.ktUpdate(pkg.id, body),
     onSuccess: (_updated, body) => {
       setError(null);
-      if (body.recipient_email) setRecipient("");
+      if (body.recipient_email) setRecipient(null);
       toast.success(body.extend_days ? "Expiry extended." : "Package re-addressed.");
       // The record and its trail re-read; the list is the caller's to refresh.
       void queryClient.invalidateQueries({ queryKey: ["kt", pkg.id] });
@@ -178,25 +178,24 @@ function PackageControls({ pkg, onChanged }: { pkg: KtAdmin; onChanged: () => vo
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              const value = recipient.trim();
-              if (!value || update.isPending) return;
+              if (!recipient || update.isPending) return;
               setError(null);
-              update.mutate({ recipient_email: value });
+              update.mutate({ recipient_email: recipient.email });
             }}
             className="flex flex-col gap-3 rounded-xl border border-hairline bg-background p-4"
           >
-            <Field
-              id="kt-readdress"
-              name="readdress"
-              type="email"
-              label="Re-address to"
-              placeholder="The person who should open it"
-              value={recipient}
-              onChange={(event) => setRecipient(event.target.value)}
-            />
+            <fieldset className="flex min-w-0 flex-col gap-3">
+              <legend className="text-xs text-muted-foreground">Re-address to</legend>
+              <RecipientPicker
+                idPrefix="kt-readdress"
+                subjectId={pkg.subject_user_id}
+                value={recipient}
+                onChange={setRecipient}
+              />
+            </fieldset>
             <button
               type="submit"
-              disabled={update.isPending || recipient.trim().length === 0}
+              disabled={update.isPending || !recipient}
               aria-busy={update.isPending}
               className={buttonClass}
             >
@@ -411,6 +410,108 @@ function PackageDetails({
   );
 }
 
+/** Accounts that cannot sign in, so a package addressed to them could never be opened. */
+const UNREACHABLE = new Set(["suspended", "deactivated"]);
+
+/**
+ * Who takes over, chosen from this organisation's people rather than typed.
+ *
+ * A typed address was the handover's weakest link. A typo, the leaver's own address or
+ * somebody outside the organisation each produced a package that opened for nobody, and
+ * the colleague it was for then saw the same "no package matches" as for a wrong ID. The
+ * list rules out all three: it is this organisation's directory (a session anywhere else
+ * could never see the package), minus the employee the package is about, who can never
+ * claim it, and minus accounts that cannot sign in.
+ */
+function RecipientPicker({
+  idPrefix,
+  subjectId,
+  value,
+  onChange,
+}: {
+  idPrefix: string;
+  /** The package's own employee, who is never offered. */
+  subjectId: string | null;
+  value: Employee | null;
+  onChange: (person: Employee | null) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const employees = useQuery({
+    queryKey: ["employees", { q: query || null, cursor: null }],
+    queryFn: () => api.employees({ q: query || null }),
+  });
+  const candidates = (employees.data?.items ?? []).filter(
+    (person) => person.id !== subjectId && !UNREACHABLE.has(person.status),
+  );
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Field
+        id={`${idPrefix}-search`}
+        name={`${idPrefix}-search`}
+        label="Search colleagues"
+        placeholder="Name or email"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        className="sm:w-80"
+      />
+      {employees.error ? (
+        <FailureState
+          failure={classifyApiError(employees.error)}
+          onRetry={() => void employees.refetch()}
+          deniedWhat="searching the people in this organisation"
+        />
+      ) : employees.data && candidates.length === 0 ? (
+        <p className="max-w-prose text-sm text-muted-foreground">
+          Nobody else in this organisation matches.{" "}
+          <Link
+            href="/admin/employees"
+            className="rounded text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          >
+            Invite them from Employees
+          </Link>{" "}
+          first: a package opens only inside the organisation that issued it.
+        </p>
+      ) : employees.data ? (
+        <ul className="flex max-h-44 flex-col gap-1 overflow-y-auto" aria-label="Recipients">
+          {candidates.map((person) => (
+            <li key={person.id}>
+              <button
+                type="button"
+                aria-pressed={value?.id === person.id}
+                onClick={() => onChange(person)}
+                className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${
+                  value?.id === person.id
+                    ? "border-brand/40 bg-brand/8 text-foreground"
+                    : "border-hairline text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {person.display_name ?? person.email}
+                <span className="ml-2 text-xs text-muted-foreground">{person.email}</span>
+                {person.status === "invited" ? (
+                  <span className="ml-2 text-xs text-muted-foreground">· invited</span>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {value ? (
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-foreground">
+          <span>Handing over to {value.display_name ?? value.email}</span>
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="rounded text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          >
+            Clear
+          </button>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   const [subjectQuery, setSubjectQuery] = useState("");
   // The whole person, not just an id: narrowing the search can filter the chosen
@@ -420,7 +521,8 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   const [scope, setScope] = useState<string[]>(["documents", "profile"]);
   const [periodDays, setPeriodDays] = useState<number | null>(null);
   const [validityDays, setValidityDays] = useState<number>(30);
-  const [recipient, setRecipient] = useState("");
+  // The whole person for the same reason as `subject`: the review sentence names them.
+  const [recipient, setRecipient] = useState<Employee | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const scopes = useQuery({ queryKey: ["kt", "scopes"], queryFn: api.ktScopes });
@@ -436,7 +538,7 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
         scope,
         validity_days: validityDays,
         period_days: periodDays,
-        recipient_email: recipient.trim() || null,
+        recipient_email: recipient?.email ?? null,
       }),
     onSuccess: (pkg) => onCreated(pkg),
     onError: (mutationError: unknown) => setError(classifyApiError(mutationError).message),
@@ -484,7 +586,11 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
                 <button
                   type="button"
                   aria-pressed={subject?.id === person.id}
-                  onClick={() => setSubject(person)}
+                  onClick={() => {
+                    setSubject(person);
+                    // The employee a package is about can never be the one it goes to.
+                    if (recipient?.id === person.id) setRecipient(null);
+                  }}
                   className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${
                     subject?.id === person.id
                       ? "border-brand/40 bg-brand/8 text-foreground"
@@ -572,18 +678,22 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
         </fieldset>
       </div>
 
-      <Field
-        id="kt-recipient"
-        name="recipient"
-        type="email"
-        label="Recipient email (optional)"
-        placeholder="Bind the package to one person up front"
-        value={recipient}
-        onChange={(event) => setRecipient(event.target.value)}
-        className="sm:w-96"
-      />
+      {/* Step 5 — who takes over. */}
+      <fieldset className="flex flex-col gap-3">
+        <legend className="text-sm font-medium text-foreground">5 · Recipient</legend>
+        <p className="max-w-prose text-xs text-muted-foreground">
+          The colleague taking over. Only they can open the package. Leave it empty and the
+          first colleague who opens the KT ID receives it instead.
+        </p>
+        <RecipientPicker
+          idPrefix="kt-recipient"
+          subjectId={subject?.id ?? null}
+          value={recipient}
+          onChange={setRecipient}
+        />
+      </fieldset>
 
-      {/* Step 5 — review, in one sentence, then create. */}
+      {/* Step 6 — review, in one sentence, then create. */}
       <div className="flex flex-col gap-3 rounded-xl border border-hairline bg-background p-4">
         <p className="text-sm text-muted-foreground">
           {subject
@@ -592,7 +702,9 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
                 .join(" and ")} from ${
                 periodDays === null ? "their full history" : `the last ${periodDays} days`
               }, openable for ${validityDays} days${
-                recipient.trim() ? ` by ${recipient.trim()}` : " by the first invited recipient"
+                recipient
+                  ? ` by ${recipient.display_name ?? recipient.email}`
+                  : " by the first colleague who opens it"
               }.`
             : "Choose an employee to see the summary."}
         </p>

@@ -90,6 +90,14 @@ def _generate_code() -> str:
 
 _NOT_FOUND = "No package matches that ID. Check it with your administrator."
 
+#: The one refusal for handing a package to the employee it is about, at creation and at
+#: re-addressing alike. It names the rule and no person: the administrator already knows
+#: who they chose.
+_SELF_HANDOVER = (
+    "A package can't be handed over to the employee it is about. "
+    "Choose the colleague who is taking over."
+)
+
 
 async def _audit(
     session: AsyncSession,
@@ -260,6 +268,11 @@ async def create_package(
     ).first()
     if subject is None:
         raise NotFound("That employee was not found.")
+    # The subject can never claim their own package (`_open_for`), so one addressed to
+    # them could never be opened by anybody: the colleague it was for would get the
+    # uniform 404 and nothing to say why. Refused here, where the mistake is made.
+    if recipient_email and recipient_email.strip().lower() == str(subject.email).lower():
+        raise ValidationFailed(_SELF_HANDOVER)
 
     now = datetime.now(tz=UTC)
     package_id = uuid4()
@@ -483,8 +496,9 @@ async def update_package(
     row = (
         await session.execute(
             text(
-                "SELECT id, expires_at, revoked_at, completed_at, recipient_user_id, now() AS now "
-                "FROM kt_packages WHERE id = :id"
+                "SELECT p.id, p.expires_at, p.revoked_at, p.completed_at, p.recipient_user_id, "
+                "u.email AS subject_email, now() AS now "
+                "FROM kt_packages p JOIN users u ON u.id = p.subject_user_id WHERE p.id = :id"
             ),
             {"id": package_id},
         )
@@ -494,6 +508,13 @@ async def update_package(
     if row.revoked_at is not None or row.completed_at is not None:
         view = await get_package(session, package_id=package_id)
         raise Conflict(f"That package is {view.status}; it cannot be changed.")
+    # Decided before either change is applied, so a refused re-address leaves the expiry
+    # exactly as it was. The same rule as creation, for the same reason.
+    if (
+        recipient_email is not None
+        and recipient_email.strip().lower() == str(row.subject_email).lower()
+    ):
+        raise ValidationFailed(_SELF_HANDOVER)
 
     if extend_days is not None:
         if not 1 <= extend_days <= 365:

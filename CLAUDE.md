@@ -668,8 +668,10 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   it was for got the uniform 404 for ever. `_open_for` refuses the subject an unbound
   package (reason `subject_of_package`, the same 404). "B cannot open A's package" has two
   other causes the trail tells apart. `unknown_code` is usually B's session sitting in
-  another organisation, because `routers/auth.py` opens an identity's OLDEST membership.
-  `bound_to_another_user` means somebody else opened it first.
+  another organisation, because `routers/auth.py` opens an identity's OLDEST membership,
+  and `/handover` names the session's organisation (`GET /v1/me/organisation`) so B can
+  see it. `bound_to_another_user` means somebody else opened it first. The admin picks the
+  recipient from the directory, and the API refuses the subject as recipient (422).
 - **`RetrievalWindow` narrows inside the ACL `EXISTS`, and that is the only place a
   narrowing may go.** Two conjuncts on `d.created_at` beside `ACL_PREDICATE`; never a
   `principals`/`org_id` parameter, never a JOIN in the inner scan, never a secondary

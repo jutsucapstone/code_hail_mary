@@ -346,25 +346,72 @@ class TestTheHandover:
         assert own.json()["error"]["message"] == typo.json()["error"]["message"] == NOT_FOUND
         assert "subject" not in own.text
 
-    async def test_a_package_addressed_to_its_own_subject_stays_re_addressable(
+    async def test_a_package_cannot_be_handed_to_its_own_subject(
         self, client: AsyncClient, mailbox: RecordingEmailSender
     ) -> None:
-        """An administrator who types the leaver's own address has made a recoverable
-        mistake. It stays recoverable only while nobody is bound — which the subject's own
-        open used to make untrue."""
-        package = await handover(client, mailbox, recipient_email=LEAVER)
+        """Addressing the leaver's own account is refused where the mistake is made.
 
-        await sign_in(client, mailbox, email=LEAVER)
-        assert (await claim(client, package["kt_code"])).status_code == 404
+        The subject can never claim the package, so one addressed to them could never be
+        opened by anybody, and the colleague it was for would get the uniform 404 with
+        nothing to say why. Creation and re-addressing both refuse it, whatever the case of
+        the address, and the package stays re-addressable to the person taking over.
+        """
+        refusal = (
+            "A package can't be handed over to the employee it is about. "
+            "Choose the colleague who is taking over."
+        )
+        package = await handover(client, mailbox)
+        subject = await user_id_of(client, LEAVER)
 
-        await sign_in(client, mailbox, email=OWNER_EMAIL)
+        created = await client.post(
+            "/v1/kt",
+            json={
+                "subject_user_id": subject,
+                "scope": ["documents"],
+                "validity_days": 30,
+                "recipient_email": LEAVER.upper(),
+            },
+            headers=csrf(client),
+        )
+        assert created.status_code == 422, created.text
+        assert created.json()["error"]["message"] == refusal
+
         readdressed = await client.patch(
+            f"/v1/kt/{package['id']}", json={"recipient_email": LEAVER}, headers=csrf(client)
+        )
+        assert readdressed.status_code == 422, readdressed.text
+        assert readdressed.json()["error"]["message"] == refusal
+
+        handed = await client.patch(
             f"/v1/kt/{package['id']}", json={"recipient_email": SUCCESSOR}, headers=csrf(client)
         )
-        assert readdressed.status_code == 200, readdressed.text
+        assert handed.status_code == 200, handed.text
+        assert handed.json()["recipient_email"] == SUCCESSOR
 
         await sign_in(client, mailbox, email=SUCCESSOR)
         assert (await claim(client, package["kt_code"])).status_code == 200
+
+
+class TestWhereYouAreSignedIn:
+    async def test_a_member_is_told_which_organisation_they_are_signed_into(
+        self, client: AsyncClient, mailbox: RecordingEmailSender
+    ) -> None:
+        """The KT entry names the session's organisation. The production "B cannot open A's
+        package" was a session in another organisation, where the ID does not exist, and
+        nothing on the page said so."""
+        await handover(client, mailbox)
+        await sign_in(client, mailbox, email=SUCCESSOR)
+
+        home = await client.get("/v1/me/organisation")
+        assert home.status_code == 200, home.text
+        assert home.json() == {"name": "Example Analytical"}
+
+        # Another tenant's session reads its own name, and only its own.
+        await register(client, mailbox, OTHER_REGISTRATION)
+        assert (await client.get("/v1/me/organisation")).json() == {"name": "Other Systems"}
+
+    async def test_it_needs_a_session(self, client: AsyncClient) -> None:
+        assert (await client.get("/v1/me/organisation")).status_code == 401
 
 
 class TestAddressedPackages:

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { Container } from "@/components/site/section";
 import { KtScene } from "@/components/product/kt-scene";
@@ -21,6 +21,12 @@ import { classifyApiError } from "@/lib/api-error";
  * somebody else — is the same "no package matches" answer, because a KT ID must never
  * confirm anything to whoever happens to hold it (§15).
  *
+ * The page also names the organisation this session is in. A KT ID exists only inside
+ * the organisation that issued it, and sign-in opens a person's oldest membership, so
+ * somebody who also belongs elsewhere could be in the wrong one with nothing to show it
+ * — which is exactly how "B cannot open A's package" looked in production. The name is
+ * the caller's own; it confirms nothing about any code.
+ *
  * This page replaced the Handover Studio stub: opening a package is live; the cited
  * leaver-pack *generator* still needs the knowledge graph and stays honestly absent.
  */
@@ -28,6 +34,13 @@ export default function KnowledgeTransferEntryPage() {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // Shown, never required: if the name cannot be read the page works exactly as before.
+  const organisation = useQuery({
+    queryKey: ["me", "organisation"],
+    queryFn: api.myOrganisation,
+    retry: false,
+  });
 
   const open = useMutation({
     mutationFn: (ktCode: string) => api.ktClaim(ktCode),
@@ -86,6 +99,14 @@ export default function KnowledgeTransferEntryPage() {
             {open.isPending ? "Opening…" : "Open KT"}
           </button>
         </form>
+
+        {organisation.data?.name ? (
+          <p className="mt-4 max-w-prose text-pretty text-sm text-muted-foreground">
+            Signed in to{" "}
+            <span className="font-medium text-foreground">{organisation.data.name}</span>. A
+            KT ID opens only inside the organisation that issued it.
+          </p>
+        ) : null}
 
         {error ? (
           <div className="mt-4">

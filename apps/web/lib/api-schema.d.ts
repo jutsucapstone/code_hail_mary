@@ -1523,6 +1523,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/organisation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read My Organisation
+         * @description Every role may read its own organisation's name, as `profile:self_read` allows.
+         *
+         *     The id already comes back from `GET /v1/me`; nothing here accepts an organisation from
+         *     the client. The read runs under the caller's own tenant scope, so the only row it can
+         *     ever see is theirs.
+         */
+        get: operations["read_my_organisation_v1_me_organisation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me/profile": {
         parameters: {
             query?: never;
@@ -3048,6 +3072,21 @@ export interface components {
         OrgRenamed: {
             /** Name */
             name: string;
+        };
+        /**
+         * OrganisationName
+         * @description The display name of the organisation this session is signed into, and nothing else.
+         *
+         *     Its own route rather than a field on `Capabilities`, which answers "who am I and what
+         *     may I do" and stays that narrow. This exists so a page can say where somebody is:
+         *     sign-in opens an identity's OLDEST membership (`routers/auth.py`), so a person who
+         *     also belongs to another organisation can be signed into that one without any sign of
+         *     it, and a KT ID or a colleague "missing" there is then a mystery. `null` when the
+         *     name cannot be read, and the page simply says nothing.
+         */
+        OrganisationName: {
+            /** Name */
+            name: string | null;
         };
         /** OrganisationProfile */
         OrganisationProfile: {
@@ -6041,6 +6080,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MyKnowledge"];
+                };
+            };
+        };
+    };
+    read_my_organisation_v1_me_organisation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganisationName"];
                 };
             };
         };

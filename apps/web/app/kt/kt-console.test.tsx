@@ -8,7 +8,9 @@ import { KtShell } from "@/components/kt/kt-shell";
 import {
   calledMethod,
   calledUrl,
+  callIndexFor,
   envelope,
+  routeFetch,
   scriptFetch,
   sentBody,
   type Json,
@@ -51,21 +53,44 @@ function recipientPackage(overrides: Json = {}): Json {
 }
 
 describe("the KT entry page", () => {
+  // The page reads the session's organisation on mount, so every test here routes by URL:
+  // positional scripting would hand the claim's answer to whichever request asked first.
+  const ORGANISATION = { match: "/v1/me/organisation", status: 200, body: { name: "Example Analytical" } };
+
   it("claims through the API and navigates into the workspace", async () => {
-    const fetchMock = scriptFetch({ status: 200, body: recipientPackage() });
+    const fetchMock = routeFetch(ORGANISATION, {
+      match: "/v1/kt/claim",
+      status: 200,
+      body: recipientPackage(),
+    });
     renderWithQuery(<KnowledgeTransferEntryPage />);
 
     await userEvent.type(screen.getByLabelText(/kt id/i), "KT-JUTSU-AAAA0001");
     await userEvent.click(screen.getByRole("button", { name: /open kt/i }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/kt/KT-JUTSU-AAAA0001"));
-    expect(calledUrl(fetchMock, 0)).toBe("/api/jutsu/v1/kt/claim");
-    expect(calledMethod(fetchMock, 0)).toBe("POST");
-    expect(sentBody(fetchMock, 0)).toEqual({ kt_code: "KT-JUTSU-AAAA0001" });
+    const claim = callIndexFor(fetchMock, "/v1/kt/claim");
+    expect(calledUrl(fetchMock, claim)).toBe("/api/jutsu/v1/kt/claim");
+    expect(calledMethod(fetchMock, claim)).toBe("POST");
+    expect(sentBody(fetchMock, claim)).toEqual({ kt_code: "KT-JUTSU-AAAA0001" });
+  });
+
+  it("names the organisation the session is signed into", async () => {
+    // The production "B cannot open A's package" was a session in another organisation,
+    // where the ID does not exist, and nothing on this page said which one it was.
+    routeFetch(ORGANISATION);
+    renderWithQuery(<KnowledgeTransferEntryPage />);
+
+    expect(await screen.findByText("Example Analytical")).toBeInTheDocument();
+    expect(
+      screen.getByText(/opens only inside the organisation that issued it/i),
+    ).toBeInTheDocument();
   });
 
   it("renders the server's refusal for an unknown ID", async () => {
-    scriptFetch({
+    // No organisation route here: an unreadable name hides the line and never the form.
+    routeFetch({
+      match: "/v1/kt/claim",
       status: 404,
       body: envelope("not_found", "No package matches that ID. Check it with your administrator."),
     });
@@ -75,6 +100,7 @@ describe("the KT entry page", () => {
     await userEvent.click(screen.getByRole("button", { name: /open kt/i }));
 
     expect(await screen.findByText(/no package matches that id/i)).toBeInTheDocument();
+    expect(screen.queryByText(/signed in to/i)).not.toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
   });
 
@@ -83,14 +109,20 @@ describe("the KT entry page", () => {
     // revoked or expired package answers with the server's sentence, never a softer one.
     const sentence =
       "This Knowledge Transfer is complete. Ask your administrator if you need it reopened.";
-    const fetchMock = scriptFetch({ status: 403, body: envelope("permission_denied", sentence) });
+    const fetchMock = routeFetch(ORGANISATION, {
+      match: "/v1/kt/claim",
+      status: 403,
+      body: envelope("permission_denied", sentence),
+    });
     renderWithQuery(<KnowledgeTransferEntryPage />);
 
     await userEvent.type(screen.getByLabelText(/kt id/i), "  KT-JUTSU-AAAA0001  ");
     await userEvent.click(screen.getByRole("button", { name: /open kt/i }));
 
     expect(await screen.findByText(sentence)).toBeInTheDocument();
-    expect(sentBody(fetchMock, 0)).toEqual({ kt_code: "KT-JUTSU-AAAA0001" });
+    expect(sentBody(fetchMock, callIndexFor(fetchMock, "/v1/kt/claim"))).toEqual({
+      kt_code: "KT-JUTSU-AAAA0001",
+    });
     expect(push).not.toHaveBeenCalled();
   });
 });

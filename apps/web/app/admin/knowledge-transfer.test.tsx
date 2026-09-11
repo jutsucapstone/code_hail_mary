@@ -85,6 +85,37 @@ function listPage(...items: Json[]): Json {
   return { items, next_cursor: null };
 }
 
+/** The employee `ktAdmin()` is about, and a colleague who could take over from her. */
+const SUBJECT_ID = "99999999-9999-4999-8999-999999999999";
+const NEW_HIRE_ID = "88888888-8888-4888-8888-888888888888";
+
+function employee(overrides: Json = {}): Json {
+  return {
+    id: NEW_HIRE_ID,
+    email: "new.hire@example.com",
+    display_name: "New Hire",
+    jutsu_id: null,
+    role: "member",
+    status: "active",
+    mapping_status: "unmapped",
+    created_at: "2026-08-01T09:00:00Z",
+    last_activity_at: null,
+    ...overrides,
+  };
+}
+
+/** This organisation's directory, as `GET /v1/employees` answers the pickers. */
+const DIRECTORY: Json[] = [
+  employee({ id: SUBJECT_ID, display_name: "Grace Hopper", email: "grace@example.com" }),
+  employee(),
+  employee({
+    id: "77777777-7777-4777-8777-777777777777",
+    display_name: "Left Already",
+    email: "left@example.com",
+    status: "deactivated",
+  }),
+];
+
 /**
  * The positional script, with the package-attachment reads answered out of band.
  *
@@ -93,6 +124,9 @@ function listPage(...items: Json[]): Json {
  * every body by two and make each assertion depend on React's effect order — the exact
  * fragility `routeFetch` exists to avoid. What the panel itself does is proven in
  * `components/admin/kt-attachments.test.tsx`, against its own scripted API.
+ *
+ * The directory the recipient pickers read is answered the same way, for the same
+ * reason: it is data for a picker, never the request a test is about.
  */
 function script(...responses: ScriptedResponse[]) {
   const positional = scriptFetch(...responses);
@@ -100,6 +134,13 @@ function script(...responses: ScriptedResponse[]) {
     const url = String(input);
     if (url.includes("/attachments") || url.includes("/attachable")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: [] }) });
+    }
+    if (url.includes("/v1/employees")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: DIRECTORY, next_cursor: null }),
+      });
     }
     return positional(input, init) as Promise<unknown>;
   });
@@ -319,7 +360,7 @@ describe("knowledge transfer details", () => {
     );
   });
 
-  it("re-addresses a package nobody has opened, with the address as the only field", async () => {
+  it("re-addresses a package nobody has opened to a colleague picked from the directory", async () => {
     const readdressed = ktAdmin({ recipient_email: "new.hire@example.com" });
     const fetchMock = script(
       { status: 200, body: listPage(ktAdmin()) },
@@ -335,7 +376,11 @@ describe("knowledge transfer details", () => {
     await userEvent.click(screen.getByRole("button", { name: "Details for KT-JUTSU-AAAA0001" }));
     const panel = await screen.findByRole("region", { name: "Package details" });
 
-    await userEvent.type(within(panel).getByLabelText("Re-address to"), "new.hire@example.com");
+    const recipients = await within(panel).findByRole("list", { name: "Recipients" });
+    // Never the employee the package is about, and never an account that cannot sign in.
+    expect(within(recipients).queryByRole("button", { name: /grace hopper/i })).not.toBeInTheDocument();
+    expect(within(recipients).queryByRole("button", { name: /left already/i })).not.toBeInTheDocument();
+    await userEvent.click(within(recipients).getByRole("button", { name: /new hire/i }));
     await userEvent.click(within(panel).getByRole("button", { name: "Re-address" }));
 
     await waitFor(() => expect(patchIndex(fetchMock)).toBeGreaterThan(-1));
@@ -343,7 +388,11 @@ describe("knowledge transfer details", () => {
       recipient_email: "new.hire@example.com",
     });
     // The record re-reads and now names its recipient.
-    expect(await within(panel).findByText("new.hire@example.com")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(panel).getByText("Recipient").parentElement).toHaveTextContent(
+        "new.hire@example.com",
+      ),
+    );
   });
 
   it("offers no re-address once the package is bound, and neither control once it is terminal", async () => {
@@ -367,7 +416,7 @@ describe("knowledge transfer details", () => {
     await userEvent.click(screen.getByRole("button", { name: "Details for KT-JUTSU-AAAA0001" }));
     let panel = await screen.findByRole("region", { name: "Package details" });
     expect(await within(panel).findByRole("button", { name: "Extend expiry" })).toBeInTheDocument();
-    expect(within(panel).queryByLabelText("Re-address to")).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("group", { name: "Re-address to" })).not.toBeInTheDocument();
     expect(within(panel).getByText(/can no longer be re-addressed/i)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details for KT-JUTSU-BBBB0002" }));
@@ -393,6 +442,68 @@ describe("knowledge transfer details", () => {
     await userEvent.click(within(panel).getByRole("button", { name: "Close details" }));
 
     expect(screen.queryByRole("region", { name: "Package details" })).not.toBeInTheDocument();
+  });
+});
+
+describe("creating a package", () => {
+  /** The index of the one POST in a script: the create. */
+  function postIndex(fetchMock: ReturnType<typeof scriptFetch>): number {
+    return fetchMock.mock.calls.findIndex(
+      (call) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+  }
+
+  it("hands the package to a colleague picked from the directory, never to its own employee", async () => {
+    const fetchMock = script(
+      { status: 200, body: listPage() },
+      { status: 200, body: { supported: ["documents", "profile"] } },
+      { status: 201, body: ktAdmin({ recipient_email: "new.hire@example.com" }) },
+    );
+    renderWithQuery(<KnowledgeTransferPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "+ Create KT" }));
+    const employees = await screen.findByRole("list", { name: "Employees" });
+    await userEvent.click(within(employees).getByRole("button", { name: /grace hopper/i }));
+
+    const recipients = screen.getByRole("list", { name: "Recipients" });
+    // The employee the package is about is not someone it can be handed to, and neither
+    // is an account that cannot sign in.
+    expect(within(recipients).queryByRole("button", { name: /grace hopper/i })).not.toBeInTheDocument();
+    expect(within(recipients).queryByRole("button", { name: /left already/i })).not.toBeInTheDocument();
+    await userEvent.click(within(recipients).getByRole("button", { name: /new hire/i }));
+    expect(screen.getByText(/openable for 30 days by new hire\./i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Generate KT" }));
+
+    await waitFor(() => expect(postIndex(fetchMock)).toBeGreaterThan(-1));
+    const post = postIndex(fetchMock);
+    expect(calledUrl(fetchMock, post)).toBe("/api/jutsu/v1/kt");
+    expect(sentBody(fetchMock, post)).toMatchObject({
+      subject_user_id: SUBJECT_ID,
+      recipient_email: "new.hire@example.com",
+    });
+    expect(
+      await screen.findByRole("heading", { name: "KT created successfully" }),
+    ).toBeInTheDocument();
+  });
+
+  it("lets a package go unaddressed, to the first colleague who opens it", async () => {
+    const fetchMock = script(
+      { status: 200, body: listPage() },
+      { status: 200, body: { supported: ["documents", "profile"] } },
+      { status: 201, body: ktAdmin() },
+    );
+    renderWithQuery(<KnowledgeTransferPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "+ Create KT" }));
+    const employees = await screen.findByRole("list", { name: "Employees" });
+    await userEvent.click(within(employees).getByRole("button", { name: /grace hopper/i }));
+    expect(screen.getByText(/by the first colleague who opens it\./i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Generate KT" }));
+
+    await waitFor(() => expect(postIndex(fetchMock)).toBeGreaterThan(-1));
+    expect(sentBody(fetchMock, postIndex(fetchMock))).toMatchObject({ recipient_email: null });
   });
 });
 

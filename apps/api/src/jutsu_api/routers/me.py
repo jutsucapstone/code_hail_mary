@@ -5,9 +5,11 @@ what to *allow* — every permission listed here is re-checked server-side on th
 gates. Hiding a button the caller cannot use is a courtesy; the guard on the endpoint
 behind it is the control.
 
-Note what is absent: no email, no display name, no organisation name. Those need a read
-under the tenant scope and belong to the organisation endpoint. This one answers exactly
-"who am I and what may I do", which is what the shell needs before it can render at all.
+Note what is absent from `GET /v1/me`: no email, no display name, no organisation name.
+It answers exactly "who am I and what may I do", which is what the shell needs before it
+can render at all. The organisation's display name has its own small route,
+`GET /v1/me/organisation`, for the pages that must say which organisation a session is
+in; the organisation record itself stays on the admin endpoint.
 """
 
 from __future__ import annotations
@@ -76,6 +78,35 @@ async def read_me(principal: CurrentPrincipal, session: Db) -> Capabilities:
         role=principal.role,
         permissions=sorted(principal.permissions),
     )
+
+
+class OrganisationName(BaseModel):
+    """The display name of the organisation this session is signed into, and nothing else.
+
+    Its own route rather than a field on `Capabilities`, which answers "who am I and what
+    may I do" and stays that narrow. This exists so a page can say where somebody is:
+    sign-in opens an identity's OLDEST membership (`routers/auth.py`), so a person who
+    also belongs to another organisation can be signed into that one without any sign of
+    it, and a KT ID or a colleague "missing" there is then a mystery. `null` when the
+    name cannot be read, and the page simply says nothing.
+    """
+
+    name: str | None
+
+
+@router.get("/organisation")
+@requires(Permission.PROFILE_SELF_READ)
+async def read_my_organisation(principal: CurrentPrincipal, session: Db) -> OrganisationName:
+    """Every role may read its own organisation's name, as `profile:self_read` allows.
+
+    The id already comes back from `GET /v1/me`; nothing here accepts an organisation from
+    the client. The read runs under the caller's own tenant scope, so the only row it can
+    ever see is theirs.
+    """
+    name = (
+        await session.execute(text("SELECT name FROM orgs WHERE id = :o"), {"o": principal.org_id})
+    ).scalar_one_or_none()
+    return OrganisationName(name=str(name) if name else None)
 
 
 class ProfileView(BaseModel):

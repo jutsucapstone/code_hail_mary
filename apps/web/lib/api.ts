@@ -260,6 +260,8 @@ export type KtAdminPage =
 export type KtAdmin = KtAdminPage["items"][number];
 export type KtRecipient =
   paths["/v1/kt/claim"]["post"]["responses"][200]["content"]["application/json"];
+export type MyOrganisation =
+  paths["/v1/me/organisation"]["get"]["responses"][200]["content"]["application/json"];
 export type KtDocumentDetail =
   paths["/v1/kt/{kt_code}/documents/{document_id}"]["get"]["responses"][200]["content"]["application/json"];
 export type KtDocumentPage =
@@ -382,6 +384,14 @@ export const api = {
     call<Evidence>(`/v1/evidence/${encodeURIComponent(chunkId)}`, { method: "GET" }),
 
   me: () => call<MeResponse>("/v1/me", { method: "GET" }),
+
+  /**
+   * The display name of the organisation this session is signed into. Every role may read
+   * it. It exists so a page can say where somebody is: sign-in opens a person's oldest
+   * membership, and a KT ID or a colleague that "does not exist" is otherwise a mystery.
+   * `name` is null when it cannot be read, and callers then say nothing.
+   */
+  myOrganisation: () => call<MyOrganisation>("/v1/me/organisation", { method: "GET" }),
 
   /**
    * The caller's own linked source identities.
