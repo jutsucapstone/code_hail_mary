@@ -28,10 +28,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from jutsu_core.errors import NotFound
-from jutsu_retrieval.evidence import fetch_evidence
+from jutsu_retrieval.evidence import MAX_EVIDENCE_IDS, fetch_evidence, fetch_evidence_many
 from jutsu_retrieval.search import (
     ACL_PREDICATE,
     DEFAULT_EF_SEARCH_LADDER,
+    ORG_SCOPE_SQL,
     _statement,
     search_chunks,
 )
@@ -302,7 +303,7 @@ async def world(db_session: AsyncSession) -> dict[str, Any]:
 
     beta = await make_org(db_session, "beta")
     beta_source = await make_source(db_session, beta)
-    await make_document(
+    _, crosstenant_chunks = await make_document(
         db_session,
         beta,
         beta_source,
@@ -328,6 +329,8 @@ async def world(db_session: AsyncSession) -> dict[str, Any]:
         "secret_chunks": secret_chunks,
         "publicly": publicly,
         "publicly_chunks": publicly_chunks,
+        "crosstenant_chunks": crosstenant_chunks,
+        "alpha_source": alpha_source,
     }
 
 
@@ -1100,3 +1103,192 @@ class TestTheWindowNarrows:
         assert "org_id" not in parameters
         assert "principals" not in parameters
         assert "groups" not in parameters
+
+
+class TestBatchEvidence:
+    """`fetch_evidence_many` — the door GraphRAG's candidates come through (ADR 0022).
+
+    Graph retrieval returns chunk *identifiers* from a store with no row-level security
+    and no knowledge of who is asking. This function is the only thing standing between
+    those identifiers and a model prompt, so every test here hands it an id it must not
+    honour and asserts that nothing comes back.
+
+    **Absence is the refusal.** None of these raise: an unauthorized chunk, another
+    tenant's chunk, a superseded version and an id that never existed are all reported the
+    same way, which is by not being there. Telling them apart is the existence oracle
+    §4.5 forbids, and a graph candidate is exactly the shape of input that would probe it.
+    """
+
+    async def test_authorized_ids_come_back_in_the_order_asked_for(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # Order is the graph's ranking, and re-sorting by database order would discard it.
+        ids = [world["orgwide_chunks"][0], world["direct_chunks"][0]]
+
+        found = await fetch_evidence_many(db_session, user_id=world["ada"], chunk_ids=ids)
+
+        assert [item.chunk_id for item in found] == ids
+
+    async def test_an_unauthorized_chunk_is_absent_rather_than_refused(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # `secret` belongs to this tenant and is granted to somebody else. This is the
+        # case a graph traversal produces constantly: the entity is shared, the document
+        # is not.
+        found = await fetch_evidence_many(
+            db_session,
+            user_id=world["ada"],
+            chunk_ids=[world["direct_chunks"][0], world["secret_chunks"][0]],
+        )
+
+        assert [item.chunk_id for item in found] == [world["direct_chunks"][0]]
+
+    async def test_another_tenant_s_chunk_is_absent(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # §17 test 5 in batch form. Beta granted this document to the *same principal
+        # string* Ada holds in Alpha, so only the tenant scope keeps it out.
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[world["crosstenant_chunks"][0]]
+        )
+
+        assert found == ()
+
+    async def test_an_unknown_id_is_refused_identically(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[uuid.uuid4()]
+        )
+
+        assert found == ()
+
+    async def test_a_public_grant_is_not_honoured_here_either(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # §12's filter covers user, group and org. `public` is fail-closed in search, and
+        # a second door that honoured it would be the way round the first.
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[world["publicly_chunks"][0]]
+        )
+
+        assert found == ()
+
+    async def test_a_superseded_version_is_absent(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # The graph keeps edges pointing at the chunks that evidenced them, and a
+        # re-ingested document supersedes its old version rather than deleting it. So a
+        # stale edge resolves to a superseded chunk, and this is what makes that harmless.
+        _, stale_chunks = await make_document(
+            db_session,
+            world["alpha"],
+            world["alpha_source"],
+            title="stale",
+            grants=[("user", "local:ada@example.com")],
+            embedding=vec(1.0),
+            superseded=True,
+        )
+
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[stale_chunks[0]]
+        )
+
+        assert found == ()
+
+    async def test_a_caller_with_no_identity_retrieves_nothing(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # §17 test 1: no linked source identity, no user or group grant. They still see
+        # the org-wide document, because an org grant is a deliberate statement about
+        # everyone in the tenant.
+        found = await fetch_evidence_many(
+            db_session,
+            user_id=world["nobody"],
+            chunk_ids=[world["direct_chunks"][0], world["orgwide_chunks"][0]],
+        )
+
+        assert [item.chunk_id for item in found] == [world["orgwide_chunks"][0]]
+
+    async def test_duplicate_ids_are_asked_for_once(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        chunk = world["direct_chunks"][0]
+
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[chunk, chunk, chunk]
+        )
+
+        assert [item.chunk_id for item in found] == [chunk]
+
+    async def test_the_batch_is_bounded(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # An unbounded `= ANY(...)` is an unbounded parameter on a request path. The
+        # authorized chunk sits past the ceiling and is therefore not asked for at all.
+        padding = [uuid.uuid4() for _ in range(MAX_EVIDENCE_IDS)]
+
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[*padding, world["direct_chunks"][0]]
+        )
+
+        assert found == ()
+
+    async def test_no_ids_asks_the_database_nothing(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        assert await fetch_evidence_many(db_session, user_id=world["ada"], chunk_ids=[]) == ()
+
+    async def test_a_query_vector_gives_a_measured_similarity(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        # Without this the score would be 1.0 — a graph-contributed passage claiming a
+        # perfect match nobody measured, sitting in a list of real cosine similarities.
+        near = await fetch_evidence_many(
+            db_session,
+            user_id=world["ada"],
+            chunk_ids=[world["direct_chunks"][0]],
+            query_vector=vec(1.0),
+        )
+        far = await fetch_evidence_many(
+            db_session,
+            user_id=world["ada"],
+            chunk_ids=[world["orgwide_chunks"][0]],
+            query_vector=vec(1.0),
+        )
+
+        assert near[0].score == pytest.approx(1.0)
+        assert far[0].score < near[0].score
+
+    async def test_without_a_query_vector_the_score_is_identity(
+        self, db_session: AsyncSession, world: dict[str, Any]
+    ) -> None:
+        found = await fetch_evidence_many(
+            db_session, user_id=world["ada"], chunk_ids=[world["direct_chunks"][0]]
+        )
+
+        assert found[0].score == 1.0
+
+    def test_the_batch_door_runs_the_same_predicate_as_search(self) -> None:
+        """The mechanism, not an outcome.
+
+        Two ACL filters are two chances for one of them to be wrong, and a copy that
+        drifts is invisible in review — both files would still read correctly. This
+        asserts the batch statement contains the imported constant verbatim, so a
+        re-derived predicate fails here rather than in production.
+        """
+        from jutsu_retrieval.evidence import _fetch_many
+
+        for measured in (True, False):
+            statement = _fetch_many(measured=measured)
+            assert ACL_PREDICATE in statement
+            # The document-level tenant conjunct, named exactly.
+            #
+            # `"app.current_org_id" in statement` was the first spelling of this and it
+            # is not enough: `ACL_PREDICATE` contains the GUC itself, in its `org` grant
+            # branch, so the loose assertion passes with `d.org_id` deleted entirely.
+            # A mutation run proved it — removing the conjunct left this test green,
+            # because row-level security was silently doing the work the belt claims to
+            # do. Both must hold, and only this spelling says so.
+            assert f"AND d.org_id = {ORG_SCOPE_SQL}" in statement
+            assert "d.superseded_by IS NULL" in statement

@@ -34,7 +34,15 @@ interface Readiness {
 }
 
 function checkTone(value: string): "good" | "bad" | "neutral" {
-  return value === "ok" ? "good" : value === "failed" ? "bad" : "neutral";
+  // `degraded` is bad, and it is not `failed`. The API draws that line on purpose: a
+  // dependency that is optional (the graph) can be unwell without making JUTSU unready,
+  // so readiness stays green while this row goes red. Rendering it neutral would leave
+  // an operator with no visible difference between "we are not using Neo4j" and "Neo4j
+  // is down", which are the two states this page exists to tell apart.
+  if (value === "ok") return "good";
+  if (value === "failed" || value === "degraded") return "bad";
+  // `not_configured` and `disabled` — statements about the deployment, not faults.
+  return "neutral";
 }
 
 export default function HealthPage() {

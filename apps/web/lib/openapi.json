@@ -57,6 +57,10 @@
             "minLength": 1,
             "title": "Question",
             "type": "string"
+          },
+          "retrieval_mode": {
+            "$ref": "#/components/schemas/RetrievalMode",
+            "default": "auto"
           }
         },
         "required": [
@@ -98,6 +102,9 @@
             "title": "Query Tokens",
             "type": "integer"
           },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalView"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/SearchResultView"
@@ -112,7 +119,8 @@
           "citations",
           "sources",
           "attempts",
-          "query_tokens"
+          "query_tokens",
+          "retrieval"
         ],
         "title": "AskResponse",
         "type": "object"
@@ -3987,6 +3995,66 @@
         "title": "ResumeOut",
         "type": "object"
       },
+      "RetrievalMode": {
+        "description": "What the caller asked for.\n\n`AUTO` is the default and means \"use the graph if it is there\" \u2014 a caller should not\nhave to know the deployment's configuration to get the best answer it can give.\n`VECTOR` is an explicit opt-out, which exists for evaluation and for a caller that\nwants the cheapest path. `HYBRID` asks for the graph and still falls back: refusing to\nanswer because an optional dependency is down would be the single point of failure\nthis whole design exists to avoid.",
+        "enum": [
+          "auto",
+          "vector",
+          "hybrid"
+        ],
+        "title": "RetrievalMode",
+        "type": "string"
+      },
+      "RetrievalView": {
+        "description": "Which retrieval path answered, and what the graph half contributed.\n\nReported rather than requested: `mode` is what *happened*, which is not always what\nwas asked for \u2014 a deployment with no graph, a graph that timed out and a caller who\nasked for vector all answer `vector`, and `fallback_reason` is the only thing that\ntells them apart.\n\n`graph_dropped` counts graph candidates that did not survive the ACL fetch. It is a\ncount of this caller's own denials \u2014 no document, no title, no identifier \u2014 and it is\nhere because an authorization filter with no observable effect is one nobody would\nnotice failing open.",
+        "properties": {
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "graph_added": {
+            "title": "Graph Added",
+            "type": "integer"
+          },
+          "graph_authorized": {
+            "title": "Graph Authorized",
+            "type": "integer"
+          },
+          "graph_candidates": {
+            "title": "Graph Candidates",
+            "type": "integer"
+          },
+          "graph_dropped": {
+            "title": "Graph Dropped",
+            "type": "integer"
+          },
+          "graph_elapsed_ms": {
+            "title": "Graph Elapsed Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "graph_candidates",
+          "graph_authorized",
+          "graph_dropped",
+          "graph_added",
+          "graph_elapsed_ms"
+        ],
+        "title": "RetrievalView",
+        "type": "object"
+      },
       "Role": {
         "enum": [
           "owner",
@@ -4106,6 +4174,10 @@
             "minLength": 1,
             "title": "Query",
             "type": "string"
+          },
+          "retrieval_mode": {
+            "$ref": "#/components/schemas/RetrievalMode",
+            "default": "vector"
           }
         },
         "required": [
@@ -4138,6 +4210,9 @@
             "title": "Query Tokens",
             "type": "integer"
           },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalView"
+          },
           "stats": {
             "$ref": "#/components/schemas/SearchStatsView"
           }
@@ -4145,7 +4220,8 @@
         "required": [
           "items",
           "stats",
-          "query_tokens"
+          "query_tokens",
+          "retrieval"
         ],
         "title": "SearchResponse",
         "type": "object"
@@ -5210,7 +5286,7 @@
     },
     "/readyz": {
       "get": {
-        "description": "Readiness \u2014 whether dependencies are actually reachable.\n\nPostgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session\nand runs `SELECT 1`, so \"ok\" means a connection was made and answered, not that a\nURL is set. Neo4j stays `not_configured` honestly \u2014 the gateway takes no\ndependency on `jutsu-graph` yet, and reporting a store this process never opens\nwould be a health check describing somebody else's health.\n\n`ready` means **no probed dependency failed**. A `not_configured` entry is\nreported but does not block readiness: it is a statement that this deployment\ndoes not use the dependency, which is not an outage.",
+        "description": "Readiness \u2014 whether dependencies are actually reachable.\n\nPostgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session\nand runs `SELECT 1`, so \"ok\" means a connection was made and answered, not that a\nURL is set.\n\n**Postgres is required and Neo4j is optional, and this endpoint is where that\ndifference is expressed.** `ready` means no *required* dependency failed, which is\n`failed` and nothing else. Neo4j reports `not_configured` (this deployment has no\ngraph), `ok` (configured and answering) or `degraded` (configured and not\nanswering) \u2014 and none of the three can make JUTSU unready, because nothing a\ncaller does depends on the graph being up: retrieval falls back to pgvector alone\n(ADR 0022). A `degraded` graph is worth an operator's attention and is not an\noutage, and conflating the two would have a redeploy roll back over an optional\nstore.\n\n`graph_rag` is the feature rather than the store: `disabled` when the flag is off\nhowever healthy Neo4j is, `degraded` when the flag is on and the graph is not\nanswering \u2014 which is precisely the state where answers are still correct and\nquietly less good than they should be.\n\nThe graph probe is bounded and cached (`jutsu_graph.health`). An unreachable host\notherwise costs the driver's full connection timeout on every poll, which turns a\nreadiness endpoint into the thing that fails a deploy.",
         "operationId": "readyz_readyz_get",
         "responses": {
           "200": {

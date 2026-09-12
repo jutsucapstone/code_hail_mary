@@ -80,6 +80,12 @@ class JobKind(StrEnum):
     #: LLM extraction over a document's masked chunks (spec §10). Enqueued when its
     #: embedding completes, and only when the extraction provider is configured.
     EXTRACT_DOCUMENT = "extract.document"
+    #: Projecting a document's extracted claims into the graph (ADR 0022). Enqueued when
+    #: its extraction completes, and only when Neo4j is configured. Last in the chain and
+    #: depended on by nothing: every stage above it is complete before this one is
+    #: queued, so a graph that is unreachable costs this row a retry and costs the
+    #: pipeline nothing.
+    GRAPH_DOCUMENT = "graph.document"
 
 
 class JobState(StrEnum):

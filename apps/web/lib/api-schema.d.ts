@@ -37,13 +37,26 @@ export interface paths {
          *
          *     Postgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session
          *     and runs `SELECT 1`, so "ok" means a connection was made and answered, not that a
-         *     URL is set. Neo4j stays `not_configured` honestly — the gateway takes no
-         *     dependency on `jutsu-graph` yet, and reporting a store this process never opens
-         *     would be a health check describing somebody else's health.
+         *     URL is set.
          *
-         *     `ready` means **no probed dependency failed**. A `not_configured` entry is
-         *     reported but does not block readiness: it is a statement that this deployment
-         *     does not use the dependency, which is not an outage.
+         *     **Postgres is required and Neo4j is optional, and this endpoint is where that
+         *     difference is expressed.** `ready` means no *required* dependency failed, which is
+         *     `failed` and nothing else. Neo4j reports `not_configured` (this deployment has no
+         *     graph), `ok` (configured and answering) or `degraded` (configured and not
+         *     answering) — and none of the three can make JUTSU unready, because nothing a
+         *     caller does depends on the graph being up: retrieval falls back to pgvector alone
+         *     (ADR 0022). A `degraded` graph is worth an operator's attention and is not an
+         *     outage, and conflating the two would have a redeploy roll back over an optional
+         *     store.
+         *
+         *     `graph_rag` is the feature rather than the store: `disabled` when the flag is off
+         *     however healthy Neo4j is, `degraded` when the flag is on and the graph is not
+         *     answering — which is precisely the state where answers are still correct and
+         *     quietly less good than they should be.
+         *
+         *     The graph probe is bounded and cached (`jutsu_graph.health`). An unreachable host
+         *     otherwise costs the driver's full connection timeout on every poll, which turns a
+         *     readiness endpoint into the thing that fails a deploy.
          */
         get: operations["readyz_readyz_get"];
         put?: never;
@@ -1889,6 +1902,8 @@ export interface components {
             k: number;
             /** Question */
             question: string;
+            /** @default auto */
+            retrieval_mode: components["schemas"]["RetrievalMode"];
         };
         /**
          * AskResponse
@@ -1909,6 +1924,7 @@ export interface components {
             insufficient_evidence: boolean;
             /** Query Tokens */
             query_tokens: number;
+            retrieval: components["schemas"]["RetrievalView"];
             /** Sources */
             sources: components["schemas"]["SearchResultView"][];
         };
@@ -3360,6 +3376,49 @@ export interface components {
             unclear: number;
         };
         /**
+         * RetrievalMode
+         * @description What the caller asked for.
+         *
+         *     `AUTO` is the default and means "use the graph if it is there" — a caller should not
+         *     have to know the deployment's configuration to get the best answer it can give.
+         *     `VECTOR` is an explicit opt-out, which exists for evaluation and for a caller that
+         *     wants the cheapest path. `HYBRID` asks for the graph and still falls back: refusing to
+         *     answer because an optional dependency is down would be the single point of failure
+         *     this whole design exists to avoid.
+         * @enum {string}
+         */
+        RetrievalMode: "auto" | "vector" | "hybrid";
+        /**
+         * RetrievalView
+         * @description Which retrieval path answered, and what the graph half contributed.
+         *
+         *     Reported rather than requested: `mode` is what *happened*, which is not always what
+         *     was asked for — a deployment with no graph, a graph that timed out and a caller who
+         *     asked for vector all answer `vector`, and `fallback_reason` is the only thing that
+         *     tells them apart.
+         *
+         *     `graph_dropped` counts graph candidates that did not survive the ACL fetch. It is a
+         *     count of this caller's own denials — no document, no title, no identifier — and it is
+         *     here because an authorization filter with no observable effect is one nobody would
+         *     notice failing open.
+         */
+        RetrievalView: {
+            /** Fallback Reason */
+            fallback_reason?: string | null;
+            /** Graph Added */
+            graph_added: number;
+            /** Graph Authorized */
+            graph_authorized: number;
+            /** Graph Candidates */
+            graph_candidates: number;
+            /** Graph Dropped */
+            graph_dropped: number;
+            /** Graph Elapsed Ms */
+            graph_elapsed_ms: number;
+            /** Mode */
+            mode: string;
+        };
+        /**
          * Role
          * @enum {string}
          */
@@ -3410,6 +3469,8 @@ export interface components {
             k: number;
             /** Query */
             query: string;
+            /** @default vector */
+            retrieval_mode: components["schemas"]["RetrievalMode"];
         };
         /** SearchResponse */
         SearchResponse: {
@@ -3419,6 +3480,7 @@ export interface components {
             next_cursor?: string | null;
             /** Query Tokens */
             query_tokens: number;
+            retrieval: components["schemas"]["RetrievalView"];
             stats: components["schemas"]["SearchStatsView"];
         };
         /**

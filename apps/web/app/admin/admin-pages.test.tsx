@@ -363,6 +363,32 @@ describe("health page", () => {
     expect(await screen.findByText(/jobs waiting/i)).toBeInTheDocument();
   });
 
+  it("shows a degraded optional dependency while the service stays ready", async () => {
+    // The state this page exists to make visible: the graph is configured and not
+    // answering, so retrieval has quietly fallen back to pgvector. Readiness is green
+    // because Neo4j is optional (ADR 0022) — if this row rendered neutral too, nothing
+    // on the page would distinguish it from "we do not use a graph".
+    scriptFetch(
+      {
+        status: 200,
+        body: {
+          status: "ready",
+          checks: { postgres: "ok", neo4j: "degraded", graph_rag: "degraded" },
+          request_id: "r1",
+        },
+      },
+      { status: 200, body: { by_state: {}, dead_letter: 0, failed_24h: 0 } },
+    );
+    renderWithQuery(<HealthPage />);
+
+    expect(await screen.findByText("neo4j")).toBeInTheDocument();
+    // The check's name is rendered verbatim and in mono: it is a key an operator will
+    // grep for in `/readyz`, not a sentence.
+    expect(screen.getByText("graph_rag")).toBeInTheDocument();
+    expect(screen.getAllByText("degraded")).toHaveLength(2);
+    expect(screen.getByText("ready")).toBeInTheDocument();
+  });
+
   it("denies without org:read", () => {
     caps.current = capabilities({ permissions: ["profile:self_read"] });
     scriptFetch();

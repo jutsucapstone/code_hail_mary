@@ -22,8 +22,11 @@ from fastapi.responses import JSONResponse
 from jutsu_core import InternalError, JutsuError, RateLimited, ValidationFailed
 from jutsu_core.logs import configure as configure_logging
 from jutsu_db.engine import ping as postgres_ping
+from jutsu_graph.health import GraphStatus
+from jutsu_graph.health import probe as graph_probe
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from jutsu_api.graphrag import graphrag_enabled
 from jutsu_api.logging_context import FIELDS, RequestContextFilter, bind, clear
 from jutsu_api.queue import transport as doorbell_transport
 from jutsu_api.routers import auth as auth_router
@@ -44,6 +47,22 @@ from jutsu_api.security import public
 REQUEST_ID_HEADER: Final = "x-request-id"
 
 logger = logging.getLogger("jutsu.api")
+
+
+def _graph_rag_state(graph: GraphStatus) -> str:
+    """The feature's state, which is not the store's.
+
+    Four states rather than three, because "the graph is up and we are not using it" and
+    "the graph is down and we wish we were" are different operator problems and the same
+    user experience. The flag is checked first: a deployment that has turned GraphRAG off
+    reports `disabled` whatever Neo4j is doing, because that is the honest description of
+    what answers are being built from.
+    """
+    if not graphrag_enabled():
+        return "disabled"
+    if graph is GraphStatus.NOT_CONFIGURED:
+        return "not_configured"
+    return "ok" if graph is GraphStatus.OK else "degraded"
 
 
 def _configure_logging() -> None:
@@ -283,17 +302,32 @@ def create_app() -> FastAPI:
 
         Postgres is probed for real: `jutsu_db.engine.ping()` opens an unscoped session
         and runs `SELECT 1`, so "ok" means a connection was made and answered, not that a
-        URL is set. Neo4j stays `not_configured` honestly — the gateway takes no
-        dependency on `jutsu-graph` yet, and reporting a store this process never opens
-        would be a health check describing somebody else's health.
+        URL is set.
 
-        `ready` means **no probed dependency failed**. A `not_configured` entry is
-        reported but does not block readiness: it is a statement that this deployment
-        does not use the dependency, which is not an outage.
+        **Postgres is required and Neo4j is optional, and this endpoint is where that
+        difference is expressed.** `ready` means no *required* dependency failed, which is
+        `failed` and nothing else. Neo4j reports `not_configured` (this deployment has no
+        graph), `ok` (configured and answering) or `degraded` (configured and not
+        answering) — and none of the three can make JUTSU unready, because nothing a
+        caller does depends on the graph being up: retrieval falls back to pgvector alone
+        (ADR 0022). A `degraded` graph is worth an operator's attention and is not an
+        outage, and conflating the two would have a redeploy roll back over an optional
+        store.
+
+        `graph_rag` is the feature rather than the store: `disabled` when the flag is off
+        however healthy Neo4j is, `degraded` when the flag is on and the graph is not
+        answering — which is precisely the state where answers are still correct and
+        quietly less good than they should be.
+
+        The graph probe is bounded and cached (`jutsu_graph.health`). An unreachable host
+        otherwise costs the driver's full connection timeout on every poll, which turns a
+        readiness endpoint into the thing that fails a deploy.
         """
+        graph = await graph_probe()
         checks: dict[str, str] = {
             "postgres": "ok" if await postgres_ping() else "failed",
-            "neo4j": "not_configured",
+            "neo4j": graph.value,
+            "graph_rag": _graph_rag_state(graph),
         }
         ready = all(v != "failed" for v in checks.values())
         return {

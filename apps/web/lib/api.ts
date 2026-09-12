@@ -175,6 +175,14 @@ type AcceptResponse =
 
 type SearchBody =
   paths["/v1/search"]["post"]["requestBody"]["content"]["application/json"];
+/** `retrieval_mode` has a server default, which the generator marks as required — the
+ *  same shape as `k` on the KT copilot, and the same rule: which retrieval path answers
+ *  a search is the server's decision, not the browser's. This endpoint defaults to
+ *  `vector` because it paginates and the cursor is a keyset over the vector ordering
+ *  (ADR 0022); a browser that pinned the value here would keep answering with whatever
+ *  was right on the day it was built. Derived, not written. */
+type SearchArgs = Omit<SearchBody, "retrieval_mode"> &
+  Partial<Pick<SearchBody, "retrieval_mode">>;
 export type Evidence =
   paths["/v1/evidence/{chunk_id}"]["get"]["responses"][200]["content"]["application/json"];
 
@@ -363,7 +371,7 @@ export const api = {
    * `stats.exhausted` means the search stopped short of `k`, which usually means the
    * caller is not authorized to see `k` documents. It is not an error.
    */
-  search: (body: SearchBody) =>
+  search: (body: SearchArgs) =>
     call<SearchResponse>("/v1/search", {
       method: "POST",
       body: JSON.stringify(body),

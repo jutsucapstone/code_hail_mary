@@ -6,6 +6,11 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "jutsu-core",
     "jutsu-db",
+    # The graph half of hybrid retrieval (ADR 0022). An *optional* dependency at runtime
+    # and a hard one at build time: the package is always installed, `GRAPHRAG_ENABLED`
+    # and `NEO4J_URI` decide whether anything connects, and every path through
+    # `jutsu_api.graphrag` falls back to pgvector when they do not.
+    "jutsu-graph",
     "jutsu-retrieval",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",

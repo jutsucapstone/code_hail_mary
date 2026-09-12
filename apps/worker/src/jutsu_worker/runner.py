@@ -42,13 +42,21 @@ from jutsu_worker.extraction import (
     ExtractionTransport,
     extract_document,
 )
+from jutsu_worker.graph_sync import graph_configured, graph_sync_job_key, sync_document_graph
 from jutsu_worker.ingest import (
     record_failure,
     run_document_job,
     run_embedding_job,
     run_source_job,
 )
-from jutsu_worker.jobs import Job, JobKind, JobState, claim_job
+from jutsu_worker.jobs import (
+    Job,
+    JobKind,
+    JobState,
+    claim_job,
+    enqueue_job,
+    reopen_completed_job,
+)
 from jutsu_worker.pipeline import IngestOutcome
 from jutsu_worker.sync import mark_sync_unavailable, run_sync_job
 
@@ -58,6 +66,7 @@ __all__ = [
     "process_document",
     "process_embedding",
     "process_extraction",
+    "process_graph_sync",
     "process_source",
 ]
 
@@ -235,19 +244,71 @@ async def process_extraction(
 
     try:
         async with org_session(org_id) as session:
+            document_id = uuid.UUID(str(job.payload["document_id"]))
             result = await extract_document(
                 session,
                 org_id=org_id,
-                document_id=uuid.UUID(str(job.payload["document_id"])),
+                document_id=document_id,
                 transport=transport or AnthropicExtractionTransport(),
             )
             from jutsu_worker.jobs import complete_job
+
+            # The graph projection is the next stage, queued in the same transaction as
+            # this job's completion — a crash between the two re-runs an idempotent
+            # enqueue rather than losing it, exactly as embedding queues extraction.
+            #
+            # Reopened when it already exists, and that is the line that makes
+            # re-extraction reach the graph: the key is the document, so a second
+            # extraction of the same document finds a completed `graph.document` row and
+            # `enqueue_job` would return None and do nothing at all.
+            if graph_configured():
+                key = graph_sync_job_key(org_id, document_id)
+                created = await enqueue_job(
+                    session,
+                    org_id=org_id,
+                    kind=JobKind.GRAPH_DOCUMENT,
+                    idempotency_key=key,
+                    payload={"document_id": str(document_id)},
+                )
+                if created is None:
+                    await reopen_completed_job(session, idempotency_key=key)
 
             await complete_job(session, job_id=job.id)
             return result.stored
     except Exception as error:
         state = await _record_failure(job, error)
         logger.info("extraction_job_failed job=%s state=%s", job.id, state.value)
+        return JOB_FAILED
+
+
+async def process_graph_sync(
+    org_id: uuid.UUID, *, job_id: uuid.UUID | None = None
+) -> int | _JobFailed | None:
+    """Project one document's claims into the graph. Returns edges written, or None if idle.
+
+    The last stage, and the only one whose store is optional. A failure here is recorded
+    on this row and reaches nothing else: the document is ingested, its chunks are
+    embedded, its claims are extracted, and pgvector retrieval has been answering
+    questions about it since the embedding committed.
+    """
+    job = await _claim(org_id, JobKind.GRAPH_DOCUMENT, job_id)
+    if job is None:
+        return None
+
+    try:
+        async with org_session(org_id) as session:
+            report = await sync_document_graph(
+                session,
+                org_id=org_id,
+                document_id=uuid.UUID(str(job.payload["document_id"])),
+            )
+            from jutsu_worker.jobs import complete_job
+
+            await complete_job(session, job_id=job.id)
+            return report.edges_written if report is not None else 0
+    except Exception as error:
+        state = await _record_failure(job, error)
+        logger.info("graph_sync_job_failed job=%s state=%s", job.id, state.value)
         return JOB_FAILED
 
 
@@ -275,7 +336,7 @@ async def drain_org(
 
     Embedding jobs are attempted only when the embedding provider is configured;
     unconfigured, they stay `pending` where the Jobs page can see them, which is the
-    honest outcome. Extraction jobs are gated at enqueue time already.
+    honest outcome. Extraction and graph jobs are gated at enqueue time already.
 
     Two bounds, learned live: `max_seconds` stops a drain before arq's job timeout
     kills it mid-provider-call (a 40-document extraction backlog on a large model
@@ -301,6 +362,7 @@ async def drain_org(
         "embed.document": 0,
         "connector.sync": 0,
         "extract.document": 0,
+        "graph.document": 0,
     }
     ran = 0
 
@@ -350,6 +412,17 @@ async def drain_org(
 
             if await process_extraction(org_id, transport=extraction_transport) is not None:
                 counts["extract.document"] += 1
+                ran += 1
+                progressed = True
+                continue
+
+            # Last, and skipped entirely when there is no graph — the same stance
+            # embedding takes towards an unconfigured provider. Nothing enqueues these
+            # rows in that case either, so the skip is belt over braces: it matters only
+            # for an organisation whose rows were queued while a graph was configured and
+            # whose configuration has since been removed.
+            if graph_configured() and await process_graph_sync(org_id) is not None:
+                counts["graph.document"] += 1
                 ran += 1
                 progressed = True
                 continue

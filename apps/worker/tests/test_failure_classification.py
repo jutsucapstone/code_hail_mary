@@ -76,6 +76,42 @@ class TestTheNeighbouringKinds:
     ) -> None:
         assert classify(error) == (expected, retryable)
 
+    def test_a_graph_outage_is_transient_and_retryable(self) -> None:
+        """The optional store, and therefore the one most often unwell.
+
+        An unreachable graph must retry: the projection is idempotent, the claims are
+        already in Postgres, and the work costs nothing to repeat. Recorded as
+        `PROVIDER_TRANSIENT` rather than `INTERNAL` so an operator reading `failure_kind`
+        sees "the graph was down", which is a different action from "there is a bug here".
+        """
+        from neo4j.exceptions import ServiceUnavailable
+
+        # The driver ships `py.typed` but leaves its exception constructors unannotated,
+        # so a strict build reads this as a call into untyped code. Ignored narrowly,
+        # here, rather than loosening the setting for every third-party call in the suite.
+        kind, retryable = classify(ServiceUnavailable("no route to host"))  # type: ignore[no-untyped-call]
+
+        assert kind is FailureKind.PROVIDER_TRANSIENT
+        assert retryable is True
+
+    def test_a_refused_graph_credential_is_permanent(self) -> None:
+        # A wrong password is refused identically every time. Five attempts reach one
+        # conclusion five times, and the configuration is what has to change.
+        from neo4j.exceptions import AuthError
+
+        kind, retryable = classify(AuthError("the client is unauthorized"))
+
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_a_graph_that_was_never_configured_is_permanent(self) -> None:
+        from jutsu_graph.driver import MissingGraphSettings
+
+        kind, retryable = classify(MissingGraphSettings("NEO4J_URI must be set"))
+
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
     def test_an_unrecognised_error_is_internal_and_retryable(self) -> None:
         """The safe direction: bounded attempts, then dead-letter."""
         assert classify(ExtractionRejected("unknown")) == (FailureKind.INTERNAL, True)

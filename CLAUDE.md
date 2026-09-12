@@ -260,6 +260,43 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   requires `org_id` to be present on a node. A write that omits it creates a node no
   scoped query can ever see.
 
+### GraphRAG traps (`jutsu_api.graphrag`, `jutsu_graph.{knowledge,ingest,retrieval}`)
+
+- **The graph is not an authorization surface, and the ACL gate is one function.**
+  Retrieval returns chunk *identifiers*; `fetch_evidence_many` resolves them under
+  `ACL_PREDICATE` against the caller's own principals. Anything that returned graph
+  content directly — a quote on an edge, a title on a node, a passage cached anywhere —
+  would be evidence that never passed an ACL check (ADR 0022).
+- **A graph failure must never become a request failure.** `retrieve` runs
+  `search_chunks` FIRST and treats everything after it as optional: flag off, no
+  `NEO4J_URI`, a timeout, a raised exception and a paginated request all return the vector
+  result with a reason attached. A `raise` added anywhere in that path turns an optional
+  store into a single point of failure for questions pgvector can answer alone.
+- **`/readyz` may report `degraded` and must stay `ready`.** Only `failed` means an
+  outage, and only Postgres says it. Making Neo4j able to fail readiness would have Cloud
+  Run roll back a deploy over a store nothing depends on.
+- **The readiness probe is bounded and cached, and that is load-bearing.** An unreachable
+  host otherwise costs the driver's full connection timeout on *every* poll.
+- **Two gates, not one.** `NEO4J_URI` decides whether the worker *writes* the graph;
+  `GRAPHRAG_ENABLED` decides whether retrieval *reads* it. Collapsing them would mean
+  enabling the feature against an empty graph.
+- **Fusion is by rank because the two scores are incomparable.** A cosine similarity and
+  an extractor's confidence are both in `[0, 1]` and mean different things. Averaging or
+  thresholding across them is the mistake RRF exists to avoid; `k = 60` is §12's constant.
+- **`/v1/search` defaults to `vector` and `/v1/ask` to `auto`, deliberately.**
+  `next_cursor` is a keyset over the vector ordering, so a fused first page followed by a
+  vector second page can skip a passage fusion displaced. Making search default to hybrid
+  breaks pagination quietly.
+- **Idempotence is in the identifiers.** `entity_key` and `edge_id` are hashes of what
+  they identify, so re-extraction MERGEs rather than duplicating. A generated id — a
+  `uuid4`, a timestamp — would double the graph on every re-run and nothing would fail.
+- **A re-extraction closes edges, it never deletes them.** `sync_document` supersedes what
+  the current run did not re-assert (`valid_to`), so `as_of` still finds the old state.
+- **There is no reranker and no entity resolution.** §12 ends with a cross-encoder and §11
+  owns fuzzy merging; neither is built. Do not approximate either — a similarity-sorted
+  "rerank" undoes the fusion, and a fuzzy key function is an irreversible merge nobody can
+  see.
+
 ### Identity and ACL traps
 
 - **Email is not an authorization identity.** `users.email` is display and compatibility

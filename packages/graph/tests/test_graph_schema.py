@@ -32,8 +32,32 @@ from jutsu_graph.migrations import (
 )
 from neo4j.exceptions import ConstraintError
 
-EXPECTED_CONSTRAINTS = {"person_org_email", "doc_source_id", "project_key"}
-EXPECTED_INDEXES = {"decision_time", "topic_name", "decision_text"}
+#: 001's objects, and then 002's (ADR 0022). Listed per migration rather than merged,
+#: because the round-trip test asserts they all disappear on `downgrade` and come back on
+#: `upgrade` — and a set that quietly stopped naming a migration's objects would let that
+#: migration's down file leave half of them behind without failing anything.
+EXPECTED_CONSTRAINTS = {
+    "person_org_email",
+    "doc_source_id",
+    "project_key",
+    "person_org_key",
+    "decision_org_key",
+    "meeting_org_key",
+}
+EXPECTED_INDEXES = {
+    "decision_time",
+    "topic_name",
+    "decision_text",
+    "document_org_document_id",
+    "person_org_name",
+    "project_org_name",
+    "decision_org_name",
+    "meeting_org_name",
+    "mentions_id",
+    "evidenced_by_id",
+    "mentions_org_document",
+    "evidenced_by_org_document",
+}
 
 
 @pytest.fixture(name="schema")
@@ -68,7 +92,7 @@ async def schema_objects(settings: GraphSettings) -> dict[str, set[str]]:
 class TestMigrationFiles:
     def test_the_shipped_migrations_load(self) -> None:
         migrations = load_migrations()
-        assert [migration.version for migration in migrations] == ["001"]
+        assert [migration.version for migration in migrations] == ["001", "002"]
         assert migrations[0].name == "constraints"
 
     def test_every_migration_has_a_down_file(self) -> None:
@@ -118,8 +142,8 @@ class TestUpgradeAndLedger:
         await downgrade(settings=schema)
         assert await applied_versions(settings=schema) == []
 
-        assert await upgrade(settings=schema) == ["001"]
-        assert await applied_versions(settings=schema) == ["001"]
+        assert await upgrade(settings=schema) == ["001", "002"]
+        assert await applied_versions(settings=schema) == ["001", "002"]
 
     async def test_upgrade_is_idempotent(self, schema: GraphSettings) -> None:
         """The M1 discipline: a second run adds nothing, proven rather than assumed."""
@@ -157,12 +181,13 @@ class TestDowngrade:
         assert EXPECTED_CONSTRAINTS <= before["constraints"]
         assert EXPECTED_INDEXES <= before["indexes"]
 
-        assert await downgrade(settings=schema) == ["001"]
+        # Newest first, which is the order a rollback has to happen in.
+        assert await downgrade(settings=schema) == ["002", "001"]
         during = await schema_objects(schema)
         assert not (EXPECTED_CONSTRAINTS & during["constraints"])
         assert not (EXPECTED_INDEXES & during["indexes"])
 
-        assert await upgrade(settings=schema) == ["001"]
+        assert await upgrade(settings=schema) == ["001", "002"]
         assert await schema_objects(schema) == before
 
     async def test_downgrade_clears_the_ledger(self, schema: GraphSettings) -> None:
@@ -170,7 +195,9 @@ class TestDowngrade:
         assert await applied_versions(settings=schema) == []
 
     async def test_downgrade_to_a_target_keeps_it(self, schema: GraphSettings) -> None:
-        assert await downgrade(target="001", settings=schema) == []
+        # Everything after the target is reverted and the target itself is kept, which is
+        # what Alembic's `downgrade <revision>` means and what an operator expects.
+        assert await downgrade(target="001", settings=schema) == ["002"]
         assert await applied_versions(settings=schema) == ["001"]
 
 

@@ -35,6 +35,7 @@ from jutsu_worker.runner import (
     process_document,
     process_embedding,
     process_extraction,
+    process_graph_sync,
     process_source,
 )
 
@@ -123,6 +124,22 @@ async def extract_document_job(
     return result if isinstance(result, int) else None
 
 
+async def graph_document_job(
+    ctx: dict[str, Any], org_id: str, job_id: str | None = None
+) -> int | None:
+    """Dispatch entry point for one queued graph projection (ADR 0022).
+
+    Same authorization stance as every other dispatch function here: the arguments hint
+    at where to look, row-level security decides what that scope can see — and the graph
+    write it leads to is scoped by `write_session`, which binds the same organisation and
+    refuses any statement that does not reference it.
+    """
+    result = await process_graph_sync(
+        uuid.UUID(org_id), job_id=uuid.UUID(job_id) if job_id else None
+    )
+    return result if isinstance(result, int) else None
+
+
 #: arq job ids for the three follow-ups, deterministic so a burst collapses into one
 #: each. `drain-more` rather than `drain-now` for the first: it is the name already in
 #: use, and renaming it would orphan whatever is queued across a deploy.
@@ -203,6 +220,7 @@ class WorkerSettings:
         embed_document,
         sync_connection,
         extract_document_job,
+        graph_document_job,
         func(drain_org_jobs, keep_result=0),
     ]
 

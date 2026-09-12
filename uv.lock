@@ -764,6 +764,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jutsu-core" },
     { name = "jutsu-db" },
+    { name = "jutsu-graph" },
     { name = "jutsu-retrieval" },
     { name = "openpyxl" },
     { name = "pydantic", extra = ["email"] },
@@ -785,6 +786,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jutsu-core", editable = "packages/core" },
     { name = "jutsu-db", editable = "packages/db" },
+    { name = "jutsu-graph", editable = "packages/graph" },
     { name = "jutsu-retrieval", editable = "packages/retrieval" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9" },
@@ -920,6 +922,7 @@ dependencies = [
     { name = "jutsu-core" },
     { name = "jutsu-db" },
     { name = "jutsu-evals" },
+    { name = "jutsu-graph" },
     { name = "jutsu-retrieval" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -934,6 +937,7 @@ requires-dist = [
     { name = "jutsu-core", editable = "packages/core" },
     { name = "jutsu-db", editable = "packages/db" },
     { name = "jutsu-evals", editable = "packages/evals" },
+    { name = "jutsu-graph", editable = "packages/graph" },
     { name = "jutsu-retrieval", editable = "packages/retrieval" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]

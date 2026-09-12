@@ -62,6 +62,7 @@ __all__ = [
     "SearchPage",
     "SearchStats",
     "search_chunks",
+    "vector_literal",
 ]
 
 #: Counts, identifiers and timings only. Never the question, never chunk text, never a
@@ -197,8 +198,13 @@ class SearchPage:
     next_cursor: tuple[float, UUID] | None
 
 
-def _vector_literal(vector: Sequence[float]) -> str:
-    """pgvector's text form. Bound as a parameter and cast in SQL, never concatenated."""
+def vector_literal(vector: Sequence[float]) -> str:
+    """pgvector's text form. Bound as a parameter and cast in SQL, never concatenated.
+
+    Public because `evidence.py` scores a batch of chunks against the same query vector
+    when the caller has one, and two spellings of this encoding would be two chances to
+    produce a vector Postgres reads differently from the one that was searched with.
+    """
     return "[" + ",".join(repr(float(value)) for value in vector) + "]"
 
 
@@ -375,7 +381,7 @@ async def search_chunks(
 
     statement = _statement(paginated=after is not None, windowed=within is not None)
     params: dict[str, object] = {
-        "query": _vector_literal(query_vector),
+        "query": vector_literal(query_vector),
         # asyncpg maps a Python list to a Postgres array, which is what `= ANY(...)`
         # needs. Sorted so the parameter is stable for logging and for plan caching;
         # the set semantics are unaffected.

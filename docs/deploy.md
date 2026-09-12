@@ -751,6 +751,68 @@ shows whether it is indexed at all, which is a separate question from where it r
 
 ---
 
+### 12. Neo4j, if the graph is wanted (optional)
+
+**Everything in this section is optional and the pipeline knows it.** Until these three
+secrets exist, the deploy skips the graph migration step, mounts no Neo4j credentials, and
+the API reports `neo4j: not_configured` — retrieval is pgvector alone, exactly as it has
+always been (ADR 0022). Nothing here is on the critical path of a deploy.
+
+**Do not run Neo4j on Cloud Run.** A graph database needs durable disk and a long-lived
+process; a Cloud Run container has an ephemeral filesystem and scales to zero. Use AuraDB
+(the managed service), which is what `packages/graph`'s driver pin targets — Neo4j 5, with
+`neo4j+s://` and TLS on by default.
+
+Create the instance in the AuraDB console, in the region nearest `asia-south1`, and keep
+the credentials it shows you **once** at creation. Then put them in Secret Manager under
+the three names the pipeline looks for:
+
+```bash
+printf 'neo4j+s://XXXXXXXX.databases.neo4j.io' | gcloud secrets create jutsu-neo4j-uri --data-file=-
+printf 'neo4j' | gcloud secrets create jutsu-neo4j-user --data-file=-
+printf 'THE-PASSWORD-AURA-SHOWED-YOU' | gcloud secrets create jutsu-neo4j-password --data-file=-
+```
+
+`printf`, not `echo`: `echo` appends a newline, and a password with a trailing newline
+fails authentication in a way that looks exactly like a wrong password.
+
+Grant the runtime service account access to each, the same way §6 does for every other
+secret:
+
+```bash
+for s in jutsu-neo4j-uri jutsu-neo4j-user jutsu-neo4j-password; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member "serviceAccount:jutsu-runtime@PROJECT.iam.gserviceaccount.com" \
+    --role roles/secretmanager.secretAccessor
+done
+```
+
+The next deploy then: applies the graph migrations (constraints and indexes — it writes no
+data and deletes none), mounts the credentials on the API and the worker, and starts
+projecting extracted claims into the graph as `graph.document` jobs.
+
+**Answers do not use the graph yet, and that is deliberate.** Retrieval reads from it only
+when `GRAPHRAG_ENABLED` is true, which is a separate switch (below). Leave it off until
+`/readyz` reports `neo4j: ok` and the admin Jobs view shows `graph.document` jobs
+completing — the graph has to be populated before reading from it is worth anything.
+
+**Turning it on.** Set the repository variable `JUTSU_GRAPHRAG_ENABLED` to `true` and
+redeploy (`workflow_dispatch` is enough; no commit is needed). `/readyz` then reports
+`graph_rag: ok`, and `/v1/ask` responses carry `retrieval.mode: "hybrid"`.
+
+**Turning it off** is the same variable set to `false` and a redeploy, and it needs no
+code change, no image rebuild and no coordination with the graph itself. A deployment with
+the flag on and AuraDB unreachable answers from pgvector and reports `graph_rag: degraded`
+— correct answers, a worse selection of evidence, and nothing for a user to notice.
+
+**What to watch after enabling.** `jsonPayload.event` in Cloud Logging carries
+`graph_retrieval_used` (with `candidates`, `authorized`, `dropped`, `added`,
+`elapsed_ms`), `graph_retrieval_fallback` and `graph_retrieval_failed`. A persistent
+`dropped` far above `authorized` means the graph is suggesting evidence its callers may
+not read, which is the ACL doing its job and a hint that the traversal is too broad.
+
+---
+
 ## GitHub configuration
 
 **Secrets** (Settings → Secrets and variables → Actions → Secrets):
@@ -765,6 +827,12 @@ shows whether it is indexed at all, which is a separate question from where it r
 
 **Variables**: none are required, and `NEXT_PUBLIC_SITE_URL` should be **deleted** if it
 exists.
+
+`JUTSU_GRAPHRAG_ENABLED` is the one variable worth setting deliberately, and only once
+§12's secrets exist and the graph has been populated. Unset or `false` — the default —
+means answers are built from pgvector alone. It lives here rather than in `deploy.yml`
+because it is the one setting expected to be flipped back and forth during a rollout,
+which is a different kind of change from the origin the deploy file pins.
 
 It used to live here. The trouble is that it is compiled into the client bundle, so it was
 never a secret and never varied — one deployment, one public origin — and holding it out

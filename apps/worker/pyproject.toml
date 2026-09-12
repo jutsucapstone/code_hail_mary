@@ -10,6 +10,10 @@ dependencies = [
     "jutsu-core",
     "jutsu-db",
     "jutsu-connectors",
+    # Graph ingestion (ADR 0022). Optional at runtime in exactly the way the API's copy
+    # is: with no `NEO4J_URI` the worker enqueues no `graph.document` jobs at all, and
+    # ingestion, embedding and extraction are untouched by its absence.
+    "jutsu-graph",
     "jutsu-retrieval",
     # `make seed` writes a run receipt, which is the only record of what a seed cost.
     "jutsu-evals",

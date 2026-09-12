@@ -26,6 +26,13 @@ An empty result is a 200 with an empty list, never a 404. A caller with no linke
 identity retrieves nothing, and that is the system working: they hold no `user` or
 `group` grant. Distinguishing "nothing matched" from "nothing you may see" is precisely
 the existence oracle §4.5 forbids.
+
+**Both routes retrieve through `jutsu_api.graphrag.retrieve`**, which runs the same
+`search_chunks` first and then, where the graph is enabled and reachable, fuses in
+candidates the graph suggested — every one of them re-authorized in SQL before it is
+returned. On a deployment without a graph, with the flag off, or with Neo4j unreachable,
+that function is `search_chunks` plus a reason string, so these endpoints answer exactly
+as they did before GraphRAG existed (ADR 0022).
 """
 
 from __future__ import annotations
@@ -38,7 +45,6 @@ from fastapi import APIRouter, Depends
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from jutsu_retrieval import DEFAULT_K
-from jutsu_retrieval.search import search_chunks
 from pydantic import BaseModel, Field
 
 from jutsu_api.answers import (
@@ -49,6 +55,7 @@ from jutsu_api.answers import (
     synthesise_answer,
 )
 from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.graphrag import RetrievalMode, RetrievalReport, retrieve
 from jutsu_api.rate_limit import spend_search_budget
 from jutsu_api.retrieval import (
     MAX_QUERY_CHARS,
@@ -86,6 +93,19 @@ class SearchRequest(BaseModel):
     k: int = Field(default=DEFAULT_K, ge=1, le=MAX_K)
     #: Opaque keyset token from a previous response's `next_cursor`.
     cursor: str | None = None
+    #: Which retrieval path to use. **Defaults to `vector` here, and only here.**
+    #:
+    #: This endpoint paginates, and `next_cursor` is a keyset over the *vector* ordering.
+    #: A fused ranking is not in that order, so a fused first page followed by a vector
+    #: second page can skip a passage that fusion displaced. Rather than pretend
+    #: otherwise, the paginated surface keeps exactly the contract it has always had, and
+    #: a caller who is not paginating can ask for `hybrid` explicitly. `/v1/ask` — which
+    #: returns one bounded set and never paginates — defaults to `auto` instead.
+    #:
+    #: A cursor plus `hybrid` is not an error: the graph half is skipped and the response
+    #: says `paginated`, because refusing the request would be a worse answer than the
+    #: correct one.
+    retrieval_mode: RetrievalMode = RetrievalMode.VECTOR
 
 
 class SearchResultView(BaseModel):
@@ -130,6 +150,45 @@ class SearchStatsView(BaseModel):
     exhausted: bool
 
 
+class RetrievalView(BaseModel):
+    """Which retrieval path answered, and what the graph half contributed.
+
+    Reported rather than requested: `mode` is what *happened*, which is not always what
+    was asked for — a deployment with no graph, a graph that timed out and a caller who
+    asked for vector all answer `vector`, and `fallback_reason` is the only thing that
+    tells them apart.
+
+    `graph_dropped` counts graph candidates that did not survive the ACL fetch. It is a
+    count of this caller's own denials — no document, no title, no identifier — and it is
+    here because an authorization filter with no observable effect is one nobody would
+    notice failing open.
+    """
+
+    #: `vector` or `hybrid`.
+    mode: str
+    graph_candidates: int
+    graph_authorized: int
+    graph_dropped: int
+    #: Passages the graph contributed that the vector search had not already found.
+    graph_added: int
+    graph_elapsed_ms: int
+    #: `disabled`, `not_configured`, `paginated`, `timeout`, `error` — or null when the
+    #: graph half ran.
+    fallback_reason: str | None = None
+
+
+def _retrieval_view(report: RetrievalReport) -> RetrievalView:
+    return RetrievalView(
+        mode=report.path.value,
+        graph_candidates=report.graph_candidates,
+        graph_authorized=report.graph_authorized,
+        graph_dropped=report.graph_dropped,
+        graph_added=report.graph_added,
+        graph_elapsed_ms=report.graph_elapsed_ms,
+        fallback_reason=report.fallback_reason,
+    )
+
+
 class SearchResponse(BaseModel):
     items: list[SearchResultView]
     stats: SearchStatsView
@@ -141,6 +200,9 @@ class SearchResponse(BaseModel):
     #: Surfaced because §20 asks for cost to be visible on the paid path rather than
     #: reconstructed from a bill.
     query_tokens: int
+    #: Which path answered. Always present; `mode` is `vector` on every deployment that
+    #: has not enabled the graph, which is the default.
+    retrieval: RetrievalView
 
 
 @router.post("/search")
@@ -170,13 +232,17 @@ async def search(
 
     vector, query_tokens = await embedder.embed(payload.query)
 
-    page = await search_chunks(
+    outcome = await retrieve(
         session,
+        org_id=principal.org_id,
         user_id=principal.user_id,
+        query=payload.query,
         query_vector=vector,
         k=payload.k,
         after=after,
+        mode=payload.retrieval_mode,
     )
+    page = outcome.page
 
     return SearchResponse(
         items=[
@@ -191,8 +257,12 @@ async def search(
                 score=item.score,
                 occurred_at=item.occurred_at,
             )
-            for item in page.items
+            for item in outcome.evidence
         ],
+        # The vector half's own numbers, unchanged. They describe the index scan that
+        # produced `page`, not the fusion — `exhausted` in particular is a statement
+        # about the ACL and the ladder, and reporting a fused count there would make it
+        # mean something different on a deployment with a graph.
         stats=SearchStatsView(
             attempts=page.stats.attempts,
             ef_search=page.stats.ef_search,
@@ -206,6 +276,7 @@ async def search(
             else None
         ),
         query_tokens=query_tokens,
+        retrieval=_retrieval_view(outcome.report),
     )
 
 
@@ -214,6 +285,11 @@ class AskRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
     k: int = Field(default=DEFAULT_K, ge=1, le=MAX_K)
+    #: `auto` here, unlike `/v1/search`: this endpoint returns one bounded set and never
+    #: paginates, so the objection that keeps fusion off the paginated surface does not
+    #: apply. A deployment with no graph, or with the flag off, answers exactly as it did
+    #: before — `auto` means "use it if it is there", not "require it".
+    retrieval_mode: RetrievalMode = RetrievalMode.AUTO
 
 
 class CitationView(BaseModel):
@@ -238,6 +314,10 @@ class AskResponse(BaseModel):
     sources: list[SearchResultView]
     attempts: int
     query_tokens: int
+    #: Which path assembled `sources`. A graph-contributed passage is cited exactly like
+    #: any other — by chunk, document and source system — because the citation is the
+    #: evidence, and the graph is an index over evidence rather than a source of it.
+    retrieval: RetrievalView
 
 
 def get_answer_transport() -> AnswerTransport:
@@ -278,16 +358,19 @@ async def ask(
 
     vector, query_tokens = await embedder.embed(payload.question)
 
-    page = await search_chunks(
+    retrieved = await retrieve(
         session,
+        org_id=principal.org_id,
         user_id=principal.user_id,
+        query=payload.question,
         query_vector=vector,
         k=payload.k,
         after=None,
+        mode=payload.retrieval_mode,
     )
 
     outcome = await synthesise_answer(
-        transport, question=payload.question, evidence=list(page.items)
+        transport, question=payload.question, evidence=list(retrieved.evidence)
     )
 
     return AskResponse(
@@ -306,10 +389,11 @@ async def ask(
                 score=item.score,
                 occurred_at=item.occurred_at,
             )
-            for item in page.items
+            for item in retrieved.evidence
         ],
         attempts=outcome.attempts,
         query_tokens=query_tokens,
+        retrieval=_retrieval_view(retrieved.report),
     )
 
 

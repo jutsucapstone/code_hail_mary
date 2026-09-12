@@ -15,18 +15,37 @@ from fastapi.testclient import TestClient
 from jutsu_api.main import REQUEST_ID_HEADER, create_app
 from jutsu_core import AclDenied, NotFound, ValidationFailed
 from jutsu_db.engine import dispose_engine
+from jutsu_graph.health import GraphStatus
+
+
+async def _no_graph(**_: object) -> GraphStatus:
+    """The graph probe, for tests that are not about the graph."""
+    return GraphStatus.NOT_CONFIGURED
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    yield TestClient(create_app())
-    # /readyz now really pings Postgres, and the first ping caches an engine bound to
-    # THIS TestClient's private event loop. jutsu_db caches one engine per process, so
-    # without this dispose the next db-touching test — on its own loop — inherits a pool
-    # whose connections belong to a loop that no longer runs. That is the `org_session
-    # caches one engine per process` trap, and under pytest-randomly it surfaces as a
-    # different test failing on every seed. Observed as an intermittent preflight
-    # failure before this line existed.
+    """The app, with `/readyz`'s graph probe scripted.
+
+    **Nothing in this file may open a real Neo4j connection**, and the reason is the
+    shape of the driver rather than a preference. `jutsu_graph` caches one driver per
+    process, bound to whichever event loop created it, and a `TestClient` runs on a
+    private loop that is closed the moment the test ends. A pool created here therefore
+    cannot be used by the next test *or closed by it* — `AsyncDriver.close()` raises when
+    its sockets belong to a dead loop, so even the teardown that tried to clean up became
+    an error with no test of its own in the traceback.
+
+    The endpoint's graph contract — which word appears for which `GraphStatus` — is
+    asserted in `TestGraphReadiness` with a scripted probe, and the probe's own behaviour
+    against a live store belongs in `packages/graph`, where a running Neo4j is a declared
+    dependency of the suite. Neither needs a driver here.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("jutsu_api.main.graph_probe", _no_graph)
+        yield TestClient(create_app())
+    # Postgres is still really pinged, and its engine is cached per process in the same
+    # way. SQLAlchemy's dispose tolerates being called from another loop — it terminates
+    # rather than closing gracefully — which is why this one line has always been enough.
     asyncio.run(dispose_engine())
 
 
@@ -47,11 +66,99 @@ class TestHealth:
         """
         body = client.get("/readyz").json()
         assert body["checks"]["postgres"] in ("ok", "failed")
-        assert body["checks"]["neo4j"] == "not_configured"
-        # Readiness follows the probe: a reachable database is ready even while Neo4j
-        # is honestly not configured; an unreachable one is degraded.
+        # Readiness follows the **required** dependency alone. Neo4j is optional and
+        # cannot move this verdict — `TestGraphReadiness` is where that is proven.
         expected = "ready" if body["checks"]["postgres"] == "ok" else "degraded"
         assert body["status"] == expected
+
+
+class TestGraphReadiness:
+    """Neo4j is reported honestly and is never allowed to make JUTSU unready (ADR 0022).
+
+    The failure this guards against is a redeploy rolling back over an optional store: if
+    an unreachable graph made `/readyz` say `degraded`, Cloud Run's own check would fail
+    the deploy of a service whose retrieval was working perfectly the whole time.
+
+    The probe is monkeypatched rather than pointed at a real database, because the states
+    that matter are the ones a healthy development machine cannot produce on demand — and
+    because `jutsu_graph.health.probe` caches its answer, which would otherwise leak
+    between tests.
+    """
+
+    @staticmethod
+    def _client(
+        monkeypatch: pytest.MonkeyPatch, status: GraphStatus, *, enabled: bool
+    ) -> TestClient:
+        async def scripted(**_: object) -> GraphStatus:
+            return status
+
+        monkeypatch.setattr("jutsu_api.main.graph_probe", scripted)
+        monkeypatch.setenv("GRAPHRAG_ENABLED", "true" if enabled else "false")
+        return TestClient(create_app())
+
+    def test_an_unconfigured_graph_is_reported_and_is_not_an_outage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = self._client(monkeypatch, GraphStatus.NOT_CONFIGURED, enabled=False)
+
+        body = client.get("/readyz").json()
+
+        assert body["checks"]["neo4j"] == "not_configured"
+        assert body["checks"]["graph_rag"] == "disabled"
+        assert body["status"] == "ready"
+        asyncio.run(dispose_engine())
+
+    def test_a_configured_and_answering_graph_is_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = self._client(monkeypatch, GraphStatus.OK, enabled=True)
+
+        body = client.get("/readyz").json()
+
+        assert body["checks"]["neo4j"] == "ok"
+        assert body["checks"]["graph_rag"] == "ok"
+        asyncio.run(dispose_engine())
+
+    def test_an_unreachable_graph_is_degraded_and_still_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole contract in one assertion: the operator is told, and the platform is
+        # not. Answers are still correct — they are being built from pgvector alone.
+        client = self._client(monkeypatch, GraphStatus.DEGRADED, enabled=True)
+
+        body = client.get("/readyz").json()
+
+        assert body["checks"]["neo4j"] == "degraded"
+        assert body["checks"]["graph_rag"] == "degraded"
+        assert body["status"] == "ready"
+        asyncio.run(dispose_engine())
+
+    def test_the_feature_reads_disabled_even_when_the_store_is_healthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two different operator problems: "the graph is down" and "the graph is up and
+        # we are not using it". The store's line and the feature's line say so separately.
+        client = self._client(monkeypatch, GraphStatus.OK, enabled=False)
+
+        body = client.get("/readyz").json()
+
+        assert body["checks"]["neo4j"] == "ok"
+        assert body["checks"]["graph_rag"] == "disabled"
+        asyncio.run(dispose_engine())
+
+    def test_only_a_failed_check_makes_the_service_unready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`failed` is the only word that means an outage, and only Postgres says it.
+
+        Asserted on the vocabulary rather than on an outcome: a future check reporting
+        `degraded` for something required would pass every other test in this class while
+        silently removing the gate.
+        """
+        client = self._client(monkeypatch, GraphStatus.DEGRADED, enabled=True)
+
+        body = client.get("/readyz").json()
+
+        assert "failed" not in {value for key, value in body["checks"].items() if key != "postgres"}
+        asyncio.run(dispose_engine())
 
 
 class TestRequestId:

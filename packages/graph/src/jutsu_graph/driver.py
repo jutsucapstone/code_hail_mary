@@ -181,11 +181,21 @@ def get_driver(settings: GraphSettings | None = None) -> AsyncDriver:
 
 
 async def close_driver() -> None:
-    """Drop the pool. Call on shutdown, and between tests that swap databases."""
+    """Drop the pool. Call on shutdown, and between tests that swap databases.
+
+    The cached reference is cleared **whether or not the close succeeds**. Closing can
+    fail for reasons that have nothing to do with the driver being wanted again — a pool
+    whose sockets belong to an event loop that has already closed raises on shutdown, and
+    that is the ordinary case in a test suite where every async test gets its own loop.
+    Leaving the global set after such a failure would hand the next `get_driver()` a
+    driver nobody can use, for the lifetime of the process.
+    """
     global _driver
     if _driver is not None:
-        await _driver.close()
-    _driver = None
+        try:
+            await _driver.close()
+        finally:
+            _driver = None
 
 
 class GraphSession:

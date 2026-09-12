@@ -46,6 +46,7 @@ from jutsu_connectors.providers.base import (
     ProviderAuthError,
 )
 from jutsu_core import SourceSystem
+from jutsu_graph.driver import MissingGraphSettings
 from jutsu_retrieval.embeddings import Embedder
 from jutsu_retrieval.errors import (
     EmbeddingBudgetExceeded,
@@ -54,6 +55,7 @@ from jutsu_retrieval.errors import (
     TruncatedInput,
 )
 from jutsu_retrieval.persistence import embed_pending_chunks
+from neo4j import exceptions as neo4j_errors
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -604,6 +606,19 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
     if isinstance(error, ReauthRequired | CredentialsUnavailable):
         return FailureKind.PROVIDER_PERMANENT, False
     if isinstance(error, TransientRefreshError):
+        return FailureKind.PROVIDER_TRANSIENT, True
+    # The graph, which is optional and therefore the store most likely to be absent or
+    # unwell. Unreachable, an expired session or a transient server error all recover on
+    # their own, so they retry; a refused credential and a missing configuration do not
+    # recover without somebody changing something, so they fail permanently rather than
+    # spending five attempts to be refused five times. `AuthError` is a `ClientError`
+    # subclass, so it is tested first.
+    if isinstance(error, MissingGraphSettings | neo4j_errors.AuthError):
+        return FailureKind.PROVIDER_PERMANENT, False
+    if isinstance(
+        error,
+        neo4j_errors.ServiceUnavailable | neo4j_errors.SessionExpired | neo4j_errors.TransientError,
+    ):
         return FailureKind.PROVIDER_TRANSIENT, True
     # The connectors' own failures, which used to fall all the way through to INTERNAL.
     # That was wrong in both directions: a grant revoked at the provider — the employee
