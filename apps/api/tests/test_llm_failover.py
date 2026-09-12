@@ -308,10 +308,16 @@ class TestTheBudget:
         # The per-provider timeout is a ceiling, not an entitlement: with two seconds of
         # total budget left, a thirty-second provider timeout would let one vendor
         # overrun the request's own deadline.
+        #
+        # `approx`, because the slice is the remaining budget — two seconds minus however
+        # long it took to get here. Windows' `time.monotonic()` has ~16 ms granularity and
+        # returned exactly 2.0, so an exact comparison passed locally; Linux's nanosecond
+        # clock returned 1.99999903 and failed in CI. What the test is about is that the
+        # provider got two seconds rather than thirty.
         claude = FakeProvider("claude")
         await ask(chain(claude, provider_timeout_s=30.0, total_timeout_s=2.0))
 
-        assert claude.timeouts == [2.0]
+        assert claude.timeouts == pytest.approx([2.0], abs=0.05)
 
     async def test_the_chain_stops_when_the_budget_is_gone(self) -> None:
         # M. A slow first provider must not be able to spend the whole request and then
