@@ -1599,6 +1599,30 @@ export interface paths {
         patch: operations["update_my_profile_v1_me_profile_patch"];
         trace?: never;
     };
+    "/v1/ops/answer-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Answer Providers
+         * @description Which model providers this deployment can fall back to, and in what order.
+         *
+         *     Behind `org:read` rather than public, unlike `/readyz`: which AI vendors a company
+         *     has contracts with is not something an unauthenticated caller needs to learn, and
+         *     readiness is polled by infrastructure that has no session to check.
+         */
+        get: operations["read_answer_providers_v1_ops_answer_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/current": {
         parameters: {
             query?: never;
@@ -1892,6 +1916,34 @@ export interface components {
             destination: string;
             /** Jutsu Id */
             jutsu_id: string;
+        };
+        /**
+         * AnswerProviderEntry
+         * @description One LLM provider, as configuration rather than as a live probe.
+         */
+        AnswerProviderEntry: {
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+            /** State */
+            state: string;
+        };
+        /**
+         * AnswerProvidersOut
+         * @description The answer chain, in the order it would be tried.
+         *
+         *     Deliberately **not** a live check. Calling four vendors to render a diagnostic page
+         *     would spend money on every page load, and an outage at the primary would make the
+         *     page slow at exactly the moment somebody opened it to find out why things were slow.
+         *     What answers are actually reaching users is in the logs, per request, as
+         *     `llm_provider_attempt` and `llm_request_success` (ADR 0023).
+         */
+        AnswerProvidersOut: {
+            /** Available */
+            available: boolean;
+            /** Providers */
+            providers: components["schemas"]["AnswerProviderEntry"][];
         };
         /** AskRequest */
         AskRequest: {
@@ -6215,6 +6267,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_answer_providers_v1_ops_answer_providers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnswerProvidersOut"];
                 };
             };
         };

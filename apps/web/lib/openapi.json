@@ -42,6 +42,52 @@
         "title": "AcceptResult",
         "type": "object"
       },
+      "AnswerProviderEntry": {
+        "description": "One LLM provider, as configuration rather than as a live probe.",
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "state",
+          "model"
+        ],
+        "title": "AnswerProviderEntry",
+        "type": "object"
+      },
+      "AnswerProvidersOut": {
+        "description": "The answer chain, in the order it would be tried.\n\nDeliberately **not** a live check. Calling four vendors to render a diagnostic page\nwould spend money on every page load, and an outage at the primary would make the\npage slow at exactly the moment somebody opened it to find out why things were slow.\nWhat answers are actually reaching users is in the logs, per request, as\n`llm_provider_attempt` and `llm_request_success` (ADR 0023).",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerProviderEntry"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers",
+          "available"
+        ],
+        "title": "AnswerProvidersOut",
+        "type": "object"
+      },
       "AskRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8858,6 +8904,28 @@
         "summary": "Update My Profile",
         "tags": [
           "me"
+        ]
+      }
+    },
+    "/v1/ops/answer-providers": {
+      "get": {
+        "description": "Which model providers this deployment can fall back to, and in what order.\n\nBehind `org:read` rather than public, unlike `/readyz`: which AI vendors a company\nhas contracts with is not something an unauthenticated caller needs to learn, and\nreadiness is polled by infrastructure that has no session to check.",
+        "operationId": "read_answer_providers_v1_ops_answer_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerProvidersOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Answer Providers",
+        "tags": [
+          "operations"
         ]
       }
     },

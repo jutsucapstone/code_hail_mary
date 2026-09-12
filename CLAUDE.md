@@ -297,6 +297,38 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   "rerank" undoes the fusion, and a fuzzy key function is an irreversible merge nobody can
   see.
 
+### Answer provider traps (`jutsu_api.llm`)
+
+- **The chain is a transport, not a pipeline.** It implements the `AnswerTransport`
+  protocol and sits strictly below prompt composition and above nothing: retrieval, ACL
+  filtering, evidence numbering, the citation gate, the retry and the refusal are all
+  outside it (ADR 0023). Anything added here that needed a session, a tenant or a
+  document would mean the layer had grown into the application.
+- **Every provider gets the identical frozen `LLMRequest`.** A chain that trimmed the
+  prompt, appended an error or re-retrieved between attempts would pass every ordering
+  test and quietly answer a different question on the second try.
+- **`refused` (4xx that is not 429) continues the chain and never retries the provider.**
+  Stopping instead would let one stale key take down a request three vendors would have
+  answered; retrying would spend attempts being told the same thing. A genuinely malformed
+  request therefore costs four fast refusals — bounded, and loud in the logs.
+- **An ungrounded answer is NOT a provider failure.** The citation gate is downstream and
+  unchanged; treating "did not cite" as a fault would let the chain shop for a vendor
+  willing to answer without evidence. An *empty* completion IS a fault, because "" reaching
+  the gate renders a malfunction as "the evidence does not support this".
+- **`answers_configured()` is a chain-wide question now.** It reads "any provider
+  configured", not `ANTHROPIC_API_KEY`. Its import of `jutsu_api.llm` is function-local to
+  break a real cycle — `llm` imports `answers` for the refusal sentinel and the model name.
+- **OpenRouter ships no default model on purpose.** Unset means "skip this provider". A
+  default slug from a marketplace catalogue would look configured and fail every call.
+- **Lists accept semicolons as well as commas**, because `--set-env-vars` splits on commas
+  and production has to be able to set `LLM_PROVIDER_ORDER` without rewriting that flag
+  into gcloud's `^@^` form.
+- **A fresh `httpx.AsyncClient` per call, not a module-level one.** Same event-loop-bound
+  pool trap as the database engine and the Neo4j driver.
+- **Extraction is deliberately NOT in the chain.** `apps/worker` still calls Anthropic
+  directly: it is a durable job with bounded retries, so an outage delays it instead of
+  failing a request, and a second vendor would change what the corpus was extracted with.
+
 ### Identity and ACL traps
 
 - **Email is not an authorization identity.** `users.email` is display and compatibility

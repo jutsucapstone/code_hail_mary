@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.llm import provider_status
 from jutsu_api.operations import (
     list_audit,
     list_jobs,
@@ -176,6 +177,50 @@ async def read_jobs(
 async def read_jobs_stats(principal: CurrentPrincipal, session: Db) -> JobStatsOut:
     stats = await read_job_stats(session)
     return JobStatsOut(**asdict(stats))
+
+
+class AnswerProviderEntry(BaseModel):
+    """One LLM provider, as configuration rather than as a live probe."""
+
+    provider: str
+    #: `configured` or `not_configured`. Never a key, never part of one.
+    state: str
+    #: The model id this provider would ask for. Empty when unconfigured. A model id is
+    #: not a secret — it is on every invoice and in the vendor's public catalogue — and
+    #: it is the one thing an operator needs to see when a fallback answers oddly.
+    model: str
+
+
+class AnswerProvidersOut(BaseModel):
+    """The answer chain, in the order it would be tried.
+
+    Deliberately **not** a live check. Calling four vendors to render a diagnostic page
+    would spend money on every page load, and an outage at the primary would make the
+    page slow at exactly the moment somebody opened it to find out why things were slow.
+    What answers are actually reaching users is in the logs, per request, as
+    `llm_provider_attempt` and `llm_request_success` (ADR 0023).
+    """
+
+    providers: list[AnswerProviderEntry]
+    #: True when at least one provider is configured — the same question `/v1/ask`
+    #: answers with a 503 before spending anything.
+    available: bool
+
+
+@router.get("/ops/answer-providers")
+@requires(Permission.ORG_READ)
+async def read_answer_providers(principal: CurrentPrincipal, session: Db) -> AnswerProvidersOut:
+    """Which model providers this deployment can fall back to, and in what order.
+
+    Behind `org:read` rather than public, unlike `/readyz`: which AI vendors a company
+    has contracts with is not something an unauthenticated caller needs to learn, and
+    readiness is polled by infrastructure that has no session to check.
+    """
+    entries = [AnswerProviderEntry(**row) for row in provider_status()]
+    return AnswerProvidersOut(
+        providers=entries,
+        available=any(entry.state == "configured" for entry in entries),
+    )
 
 
 @router.get("/sources")

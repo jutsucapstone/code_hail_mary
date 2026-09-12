@@ -18,9 +18,11 @@ every span the PII pass covered.
 
 **Model choice lives on the server** (`JUTSU_ANSWER_MODEL`, default `claude-opus-5`).
 The frontend is deliberately model-agnostic — it renders answers and citations, and the
-day the model changes nothing in a browser knows.
+day the model changes nothing in a browser knows. That held when Claude was the only
+provider and it still holds now that three fallbacks sit behind it (ADR 0023): which
+vendor answered is observability, never part of the response.
 
-Configuration is honest: no `ANTHROPIC_API_KEY` means `POST /v1/ask` answers 503
+Configuration is honest: a deployment with **no provider configured at all** answers 503
 `answers are not configured` before any budget is spent — retrieval keeps working, and
 the UI says which half is missing rather than pretending.
 """
@@ -33,16 +35,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-import anthropic
-from jutsu_core.errors import ServiceUnavailable
-
 __all__ = [
+    "INSUFFICIENT_EVIDENCE",
     "AnswerOutcome",
     "AnswerTransport",
-    "AnthropicTransport",
     "Citation",
     "Groundable",
     "Turn",
+    "answer_model",
     "answers_configured",
     "synthesise_answer",
 ]
@@ -90,7 +90,7 @@ _DEFAULT_MODEL = "claude-opus-5"
 
 #: The token the model is told to emit when the evidence cannot answer. Checked with
 #: `in` rather than equality so a polite sentence around it still counts as a refusal.
-_INSUFFICIENT = "INSUFFICIENT_EVIDENCE"
+INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
 
 _MARKER = re.compile(r"\[(\d{1,3})\]")
 
@@ -131,8 +131,22 @@ class AnswerOutcome:
 
 
 def answers_configured() -> bool:
-    """Whether this deployment can synthesise answers at all."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    """Whether this deployment can synthesise answers at all — through **any** provider.
+
+    It used to read `ANTHROPIC_API_KEY` and nothing else, which was exactly right while
+    Claude was the only vendor. With a fallback chain (ADR 0023) it would be a bug: a
+    deployment holding a Groq key and no Anthropic key can answer every question, and
+    gating on the primary's key would refuse all of them while a working provider sat
+    configured and idle.
+
+    **The import is function-local to break a cycle, not out of taste.** `jutsu_api.llm`
+    imports this module for the refusal sentinel and the model name, so importing it back
+    at module scope would be circular. The same idiom `parse_xlsx` and the worker's runner
+    already use, for the same mechanical reason.
+    """
+    from jutsu_api.llm import any_provider_configured
+
+    return any_provider_configured()
 
 
 def answer_model() -> str:
@@ -146,43 +160,21 @@ class AnswerTransport(Protocol):
     implementation talks to a paid provider, so every test injects a fake — and the
     grounding gate is tested against deliberately misbehaving fakes, which no live
     model can be asked to be on demand.
+
+    **The implementation lives in `jutsu_api.llm`** (ADR 0023). It used to be
+    `AnthropicTransport`, right here: one class, one vendor, one `anthropic` call. That
+    class is gone rather than kept beside the chain, because two Claude implementations
+    are two error mappings, two model lookups and two refusal conventions that drift the
+    first time one of them is touched. `llm.ClaudeProvider` is the same code with its
+    exceptions translated into the chain's taxonomy, and it is the only Claude path.
+
+    Nothing else about this module moved. The prompt, the passage numbering, the marker
+    gate, the single retry and the refusal are here, above the transport, exactly where
+    they were — which is what makes a fallback provider indistinguishable to everything
+    downstream.
     """
 
     async def complete(self, *, system: str, prompt: str) -> str: ...
-
-
-class AnthropicTransport:
-    """The real call, through the official SDK.
-
-    Thinking is left at the model's default (adaptive on this model family); the answer
-    format is controlled by the system prompt and validated by `_grounded`, not trusted.
-    """
-
-    async def complete(self, *, system: str, prompt: str) -> str:
-        client = anthropic.AsyncAnthropic()
-        try:
-            response = await client.messages.create(
-                model=answer_model(),
-                max_tokens=4096,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-        except anthropic.RateLimitError as exc:
-            raise ServiceUnavailable(
-                "The answer service is briefly over capacity. Try again shortly."
-            ) from exc
-        except anthropic.APIStatusError as exc:
-            # The provider's message can carry request details; classify, never forward.
-            raise ServiceUnavailable("The answer service did not respond.") from exc
-        except anthropic.APIConnectionError as exc:
-            raise ServiceUnavailable("The answer service is unreachable.") from exc
-
-        if response.stop_reason == "refusal":
-            # The safety layer declined. Not an evidence problem, but the honest
-            # rendering is the same: no answer, no invented text.
-            return _INSUFFICIENT
-
-        return "".join(block.text for block in response.content if block.type == "text")
 
 
 def _compose_prompt(
@@ -215,7 +207,7 @@ def _grounded(text: str, evidence: Sequence[Groundable]) -> tuple[str, list[Cita
     to keep out of the product.
     """
     cleaned = text.strip()
-    if not cleaned or _INSUFFICIENT in cleaned:
+    if not cleaned or INSUFFICIENT_EVIDENCE in cleaned:
         return None
 
     markers = [int(m) for m in _MARKER.findall(cleaned)]

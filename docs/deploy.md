@@ -813,6 +813,115 @@ not read, which is the ACL doing its job and a hint that the traversal is too br
 
 ---
 
+### 13. Answer provider failover (optional)
+
+Claude answers every question until it cannot. These three fallbacks exist for the minutes
+when it cannot, and **all of them are optional** — with none configured, the answer path is
+Claude alone, exactly as it shipped (ADR 0023).
+
+```
+                        JUTSU REQUEST
+                              │
+                    AUTH  →  TENANT / ACL
+                              │
+                    PGVECTOR + GRAPH RETRIEVAL
+                              │
+                    RANKING → CITATION CONTEXT
+                              │
+                    NORMALISED LLM REQUEST          ← the chain starts here
+                              │
+                        ┌─────────┐
+                        │ CLAUDE  │ primary
+                        └────┬────┘
+                             │ timeout / 429 / 5xx / refused
+                        ┌────▼─────┐
+                        │ CEREBRAS │
+                        └────┬─────┘
+                             │
+                       ┌─────▼──────┐
+                       │ OPENROUTER │ (its own model list inside one attempt)
+                       └─────┬──────┘
+                             │
+                        ┌────▼────┐
+                        │  GROQ   │
+                        └────┬────┘
+                             │
+                    RESPONSE NORMALISER             ← the chain ends here
+                              │
+                    CITATION VALIDATION  →  USER
+```
+
+**Create the secrets you want, and skip the ones you do not.** The pipeline checks each by
+name and mounts only what exists:
+
+```bash
+printf '%s' 'YOUR-CEREBRAS-KEY'   | gcloud secrets create jutsu-cerebras-api-key --data-file=-
+printf '%s' 'YOUR-OPENROUTER-KEY' | gcloud secrets create jutsu-openrouter-api-key --data-file=-
+printf '%s' 'YOUR-GROQ-KEY'       | gcloud secrets create jutsu-groq-api-key --data-file=-
+```
+
+`printf`, never `echo` — a trailing newline in a bearer token fails authentication in a way
+that looks exactly like a wrong key. Then grant the runtime account access, as §6 does for
+every other secret:
+
+```bash
+for s in jutsu-cerebras-api-key jutsu-openrouter-api-key jutsu-groq-api-key; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member "serviceAccount:jutsu-runtime@PROJECT.iam.gserviceaccount.com" \
+    --role roles/secretmanager.secretAccessor
+done
+```
+
+**Claude's key is unchanged.** It is still `jutsu-anthropic-api-key`, mounted as
+`ANTHROPIC_API_KEY`, and the model is still `JUTSU_ANSWER_MODEL`. Renaming a working
+production secret to match a naming scheme is an outage in exchange for tidiness.
+
+**Models and bounds are repository variables**, not secrets — a model id is on every
+invoice and in the vendor's public catalogue:
+
+| Variable | Default if unset | Notes |
+|---|---|---|
+| `JUTSU_LLM_PROVIDER_ORDER` | `claude;cerebras;openrouter;groq` | **Semicolons.** See below. |
+| `JUTSU_CEREBRAS_MODEL` | `gpt-oss-120b` | Verified against their catalogue 2026-09-12 |
+| `JUTSU_GROQ_MODEL` | `openai/gpt-oss-120b` | Marked *production*, not preview |
+| `JUTSU_OPENROUTER_MODEL` | *(none — provider skipped)* | Pick a current slug from openrouter.ai/models |
+| `JUTSU_OPENROUTER_FALLBACK_MODELS` | *(none)* | Semicolon-separated; becomes OpenRouter's own `models` array |
+| `JUTSU_LLM_PROVIDER_TIMEOUT_SECONDS` | `30` | Per provider |
+| `JUTSU_LLM_TOTAL_TIMEOUT_SECONDS` | `90` | The whole chain |
+| `JUTSU_LLM_MAX_PROVIDER_ATTEMPTS` | `4` | Hard cap on paid attempts per question |
+
+**Why semicolons.** `gcloud run deploy --set-env-vars` splits its own argument on commas,
+so a comma-separated list cannot be passed without switching that entire flag to gcloud's
+`^@^` alternate-delimiter form — rewriting one long production-critical line to configure
+one list. The application accepts both separators, so production uses semicolons and `.env`
+can use either.
+
+**Re-check the model ids before you rely on them.** Vendors retire models on their own
+schedule. A retired id answers 4xx, which JUTSU classifies as `refused`: that provider is
+skipped and the chain continues, so the symptom is a fallback that never contributes rather
+than an outage — which is exactly the kind of quiet that the diagnostic below exists for.
+
+**What to watch.** `GET /v1/ops/answer-providers` (behind `org:read`) lists each provider
+as configured or not, with the model it would use — no keys, no live calls. What actually
+happened is in Cloud Logging under `jsonPayload.event`:
+
+| Event | Means |
+|---|---|
+| `llm_request_success` with `fallback_used: false` | Normal. Claude answered. |
+| `llm_request_success` with `fallback_used: true` | A fallback saved a request. Worth an alert if it becomes common. |
+| `llm_provider_attempt` with `success: false` | One provider failed; `error_class` says how. |
+| `llm_provider_fallback` | The chain moved on, `from` → `to`. |
+| `llm_request_failed` | Every configured provider failed. The caller got a 503. |
+| `llm_budget_exhausted` | The total timeout ran out before the chain did. Providers left untried. |
+
+A steady trickle of `error_class: refused` from one provider means its key or its model id
+is wrong — that provider has been silently skipped since the day it was configured.
+
+**Rollback** is a repository variable: set `JUTSU_LLM_PROVIDER_ORDER` to `claude` and
+redeploy, and the chain is the primary alone. No code change, no image rebuild.
+
+---
+
 ## GitHub configuration
 
 **Secrets** (Settings → Secrets and variables → Actions → Secrets):
