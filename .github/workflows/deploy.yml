@@ -318,6 +318,15 @@ jobs:
       # above it, under the queue's dispatch deadline. Deployed BEFORE the API, which
       # learns this service's URL in its own step.
       #
+      # Taking a secret OUT of this list does not unmount it — see the merge-semantics
+      # note above the API's deploy, which chose that trade deliberately. Measured on
+      # 2026-09-13: the removed LLM vendor's key was still mounted on both services after
+      # the deploy that took it out of every file in this repository. Retiring one is the
+      # manual `--remove-secrets` that note calls the right ceremony for an action that
+      # revokes — which is also why no name is spelled here: `test_no_legacy_provider`
+      # forbids a retired vendor's variable anywhere in this file, comments included, and
+      # a comment is precisely where a name creeps back into a mount.
+      #
       # The API's secret set minus mail and the email pepper: the worker refreshes
       # provider tokens (the OAuth client pairs), decrypts them (JUTSU_CONNECTION_KEY),
       # extracts (the LLM chain — the same three keys, in the same order, that the API

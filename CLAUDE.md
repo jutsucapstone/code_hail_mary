@@ -430,6 +430,15 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   production.** `gcloud run deploy --set-env-vars` splits its own argument on commas, so a
   comma-separated `LLM_PROVIDER_ORDER` cannot be set without rewriting that entire flag
   into gcloud's `^@^` form. It looks like defensive parsing; it is the deployment.
+- **This gate proves a removal from the REPOSITORY, and a repository is not a running
+  service.** `deploy.yml` mounts secrets with `--update-secrets`, which merges — a
+  deliberate trade its own comment records, because `--set-secrets` would let every push
+  silently wipe a secret an operator added out of band. The consequence is that deleting
+  a secret from that list removes it from the pipeline and leaves it mounted on the
+  service: measured 2026-09-13, `ANTHROPIC_API_KEY` was still on `jutsu-api` and
+  `jutsu-worker` after the deploy that took it out of every file here. Retiring one is
+  the manual `--remove-secrets` the comment calls the right ceremony for an action that
+  revokes. `gcloud run services describe` is the only evidence about a live service.
 - **A deploy can now succeed with no model provider at all.** The vendor secret used to be
   mounted unconditionally; the three replacements are resolved by `describe` and skipped
   when absent, so a project without them ships a working frontend, a working search and
