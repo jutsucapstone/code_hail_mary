@@ -895,6 +895,12 @@ invoice and in the vendor's public catalogue:
 | `JUTSU_LLM_TOTAL_TIMEOUT_SECONDS` | `90` | The whole chain |
 | `JUTSU_LLM_MAX_PROVIDER_ATTEMPTS` | `3` | Hard cap on paid attempts per question |
 
+**`gpt-oss-120b` is a reasoning model.** It emits reasoning tokens before its answer,
+and `max_tokens` bounds the two together — so an over-tight budget returns no content at
+all rather than a short answer, and JUTSU reads that as a provider fault and falls over to
+the next vendor. The defaults (4096 for answers, 8192 for extraction) leave ample room;
+this matters only if somebody lowers them.
+
 **All three default to the same model family on purpose.** The citation gate is a
 formatting contract — `[n]` markers against numbered passages, or `INSUFFICIENT_EVIDENCE`
 and nothing else — and models from different families keep it differently. A fallback from

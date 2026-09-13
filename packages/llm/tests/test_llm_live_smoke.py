@@ -28,6 +28,7 @@ import os
 
 import pytest
 from jutsu_llm import (
+    DEFAULT_MAX_TOKENS,
     DEFAULT_ORDER,
     FailoverTransport,
     LLMRequest,
@@ -49,6 +50,18 @@ pytestmark = pytest.mark.skipif(
 _SYSTEM = "You are a terse assistant. Answer in one short sentence."
 _PROMPT = "Reply with the single word: ready"
 
+#: **The answer path's own budget, not a small one, and that is the whole point.**
+#:
+#: `gpt-oss-120b` reasons before it answers, and `max_tokens` bounds the reasoning and the
+#: content TOGETHER. Asked for one word inside 32 tokens, OpenRouter spent all of them on
+#: `reasoning`, returned `content: null` with `finish_reason: length`, and the adapter
+#: correctly called that an empty completion — so this file failed against three healthy
+#: vendors and looked like an outage. Measured 2026-09-13.
+#:
+#: Smoke-testing a budget production never uses proves nothing about production, so this
+#: is `DEFAULT_MAX_TOKENS`. The cost is a few dozen tokens more per provider.
+_MAX_TOKENS = DEFAULT_MAX_TOKENS
+
 
 @pytest.mark.parametrize("name", DEFAULT_ORDER)
 async def test_each_configured_provider_answers(name: str) -> None:
@@ -65,7 +78,7 @@ async def test_each_configured_provider_answers(name: str) -> None:
         pytest.skip(f"{name} is not configured on this machine")
 
     response = await provider.generate(
-        LLMRequest(system=_SYSTEM, prompt=_PROMPT, max_tokens=32), timeout_s=30.0
+        LLMRequest(system=_SYSTEM, prompt=_PROMPT, max_tokens=_MAX_TOKENS), timeout_s=30.0
     )
 
     assert response.content.strip()
@@ -86,7 +99,9 @@ async def test_the_configured_chain_answers_end_to_end() -> None:
         pytest.skip("no provider is configured on this machine")
 
     transport = FailoverTransport(providers)
-    answer = await transport.generate(LLMRequest(system=_SYSTEM, prompt=_PROMPT, max_tokens=32))
+    answer = await transport.generate(
+        LLMRequest(system=_SYSTEM, prompt=_PROMPT, max_tokens=_MAX_TOKENS)
+    )
 
     assert answer.content.strip()
     print(

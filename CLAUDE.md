@@ -439,6 +439,16 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   `jutsu-worker` after the deploy that took it out of every file here. Retiring one is
   the manual `--remove-secrets` the comment calls the right ceremony for an action that
   revokes. `gcloud run services describe` is the only evidence about a live service.
+- **`gpt-oss-120b` REASONS before it answers, and `max_tokens` bounds both halves.** A
+  request whose budget the reasoning exhausts comes back `content: null` with
+  `finish_reason: "length"`, which the adapter reads as an empty completion and treats as
+  a provider fault — correctly, since another vendor may do better, but the *cause* is a
+  budget rather than a malfunction. Measured 2026-09-13: one word asked for inside 32
+  tokens produced 16 tokens of reasoning and no content, and the live smoke test failed
+  against three healthy vendors as if they were down. Production's 4096 (answers) and
+  8192 (extraction) are comfortable; never smoke-test with a smaller budget than
+  production uses, and never read "empty completion" as "the vendor is broken" without
+  checking `finish_reason`.
 - **A deploy can now succeed with no model provider at all.** The vendor secret used to be
   mounted unconditionally; the three replacements are resolved by `describe` and skipped
   when absent, so a project without them ships a working frontend, a working search and
