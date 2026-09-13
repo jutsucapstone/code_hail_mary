@@ -1,22 +1,22 @@
 """The provider chain: one request, several vendors, in order, until one answers.
 
-    LLMRequest ──▶ claude ──fail──▶ cerebras ──fail──▶ openrouter ──fail──▶ groq
-                     │                 │                   │                  │
-                     └─────────────────┴───────────────────┴──────────────────┘
-                                              │
-                                       first answer wins
+    LLMRequest ──▶ cerebras ──fail──▶ openrouter ──fail──▶ groq
+                      │                   │                  │
+                      └───────────────────┴──────────────────┘
+                                     │
+                              first answer wins
 
-**Sequential, never speculative.** Four vendors asked at once would answer faster and cost
-four times as much for every question, including the overwhelming majority that Claude
-answers on the first try. One request is one attempt per provider, bounded by
-`LLM_MAX_PROVIDER_ATTEMPTS`, and the chain stops at the first answer (§27).
+**Sequential, never speculative.** Three vendors asked at once would answer marginally
+faster and cost three times as much for every question, including the overwhelming
+majority the first provider answers immediately. One request is one attempt per provider,
+bounded by `LLM_MAX_PROVIDER_ATTEMPTS`, and the chain stops at the first answer.
 
 **The chain is a transport, not a pipeline.** It implements the `AnswerTransport` protocol
 that `answers.py` has always called, so it sits strictly *below* prompt composition and
 strictly *above* nothing at all. Retrieval, ACL filtering, evidence numbering, the citation
 gate, the one retry and the refusal all live upstream and downstream exactly where they
 were; this file cannot see a tenant, a document or a principal, and does not know that
-retrieval exists (ADR 0023).
+retrieval exists (ADR 0024).
 
 **Every provider receives the identical request object**, frozen, built once before the
 loop. There is no path by which attempt two differs from attempt one — no appended error
@@ -38,8 +38,8 @@ from typing import Final
 
 from jutsu_core.errors import ServiceUnavailable
 
-from jutsu_api.llm.providers import build_provider
-from jutsu_api.llm.types import (
+from jutsu_llm.providers import build_provider
+from jutsu_llm.types import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
@@ -52,6 +52,7 @@ __all__ = [
     "DEFAULT_ORDER",
     "DEFAULT_PROVIDER_TIMEOUT_S",
     "DEFAULT_TOTAL_TIMEOUT_S",
+    "AllProvidersFailed",
     "FailoverTransport",
     "build_chain",
     "configured_order",
@@ -62,15 +63,27 @@ __all__ = [
 #: Counts, timings, provider names and error classes. Never a prompt, never an answer,
 #: never a key — §4.9 applies here more than anywhere, because this module holds the one
 #: string in the request path that contains the customer's retrieved evidence.
-logger = logging.getLogger("jutsu.api.llm")
+#:
+#: `jutsu.llm`, not `jutsu.api.llm`: the worker's extraction runs through this same chain,
+#: so a name claiming the API would mislabel half the lines it emits. Log *filters* in
+#: `docs/deploy.md` §13 are written against `jsonPayload.event`, not the logger name, so
+#: nothing an operator has configured depends on the old spelling.
+logger = logging.getLogger("jutsu.llm")
 
-#: Claude first, and that is the product decision this whole layer is arranged around:
-#: the primary is unchanged and the rest exist for the minutes when it is not answering.
-DEFAULT_ORDER: Final = ("claude", "cerebras", "openrouter", "groq")
+#: Cerebras, then OpenRouter, then Groq (ADR 0024).
+#:
+#: Three independent companies serving one model family. The order is capability-neutral
+#: — they run the same model — so it is really a cost-and-latency order, and it is
+#: configuration rather than a constant anybody has to redeploy to change.
+DEFAULT_ORDER: Final = ("cerebras", "openrouter", "groq")
 
 DEFAULT_PROVIDER_TIMEOUT_S: Final = 30.0
 DEFAULT_TOTAL_TIMEOUT_S: Final = 90.0
-DEFAULT_MAX_ATTEMPTS: Final = 4
+
+#: One attempt per provider, and there are three. Bounded here as well as by the length of
+#: the chain, so adding a fourth vendor is a deliberate act rather than a silent increase
+#: in what one question can cost.
+DEFAULT_MAX_ATTEMPTS: Final = 3
 
 #: The sentences JUTSU already shows when the answer service is unavailable. Reused rather
 #: than replaced: a caller must not be able to tell from the wording that a fallback chain
@@ -82,6 +95,27 @@ _MESSAGES: Final[dict[str, str]] = {
     "refused": "The answer service did not respond.",
 }
 _DEFAULT_MESSAGE: Final = "The answer service did not respond."
+
+
+class AllProvidersFailed(ServiceUnavailable):
+    """Every configured provider was asked and none answered.
+
+    A `ServiceUnavailable` subclass, so the API is unchanged: same 503, same code, same
+    sentence, and `details` stays empty — a caller must not learn from an error that a
+    chain exists or which vendor was unwell (§11).
+
+    The subclass exists for the *worker*, which is not an HTTP caller and does need the
+    distinction. `jutsu_worker.ingest.classify` decides a failed job's `failure_kind` and
+    whether it is retried, and "every vendor is rate limited" and "every vendor refused
+    this request" call for opposite answers. Before the chain those arrived as the SDK's
+    own exception classes; `error_class` is what carries the same information now.
+    """
+
+    def __init__(self, message: str, *, error_class: str) -> None:
+        super().__init__(message)
+        #: The taxonomy label of the LAST provider's failure — `rate_limited`, `timeout`,
+        #: `unavailable`, `refused`, or `not_configured` when the chain was empty.
+        self.error_class = error_class
 
 
 def _float_env(name: str, default: float) -> float:
@@ -174,12 +208,17 @@ def provider_status(order: Sequence[str] | None = None) -> list[dict[str, str]]:
 
 
 class FailoverTransport:
-    """An `AnswerTransport` that tries several providers in order.
+    """The one way JUTSU talks to a model. Tries several providers in order.
 
-    Drop-in for `AnthropicTransport`: same method, same arguments, same return type, and
-    the same `ServiceUnavailable` on the way out when nothing can answer. A deployment
-    with only Claude configured behaves exactly as it did before this existed — one
-    provider, one attempt, the same error sentences (§31).
+    It satisfies two protocols that happen to be the same shape — `answers.AnswerTransport`
+    for the answer path and `extraction.ExtractionTransport` for the worker — which is why
+    there is one chain rather than one per feature (ADR 0024). Both call
+    `complete(system=…, prompt=…)` and get a string back, or `ServiceUnavailable` when no
+    provider could answer.
+
+    A deployment with one provider configured is a chain of one: one attempt, and the same
+    error sentences. That is what makes adding or removing a vendor a configuration change
+    rather than a code change.
     """
 
     __slots__ = ("_max_attempts", "_providers", "_timeout_s", "_total_s")
@@ -223,9 +262,10 @@ class FailoverTransport:
             # answered — `answers_configured()` normally catches this before a budget is
             # spent, and this is the backstop for a key that vanished mid-process.
             logger.warning("%s", {"event": "llm_no_providers_configured"})
-            raise ServiceUnavailable(
+            raise AllProvidersFailed(
                 "Answers are not configured for this deployment yet. Retrieval still "
-                "works — an administrator must add the answer provider's credentials."
+                "works — an administrator must add the answer provider's credentials.",
+                error_class="not_configured",
             )
 
         deadline = time.monotonic() + self._total_s
@@ -311,4 +351,6 @@ class FailoverTransport:
         )
         # One of the sentences JUTSU already shows. The caller learns that answers are
         # unavailable, not how many vendors were asked or which of them was unwell.
-        raise ServiceUnavailable(_MESSAGES.get(last_class, _DEFAULT_MESSAGE))
+        raise AllProvidersFailed(
+            _MESSAGES.get(last_class, _DEFAULT_MESSAGE), error_class=last_class
+        )

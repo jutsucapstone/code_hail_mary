@@ -21,6 +21,8 @@ from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from conftest import configure_answers, unconfigure_answers
+
 REGISTRATION = {
     "full_name": "Ada Lovelace",
     "work_email": "ada@example.com",
@@ -1248,7 +1250,7 @@ class TestKtHandoverSummary:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        configure_answers(monkeypatch)
         client, scripted = handover
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
@@ -1281,7 +1283,7 @@ class TestKtHandoverSummary:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        configure_answers(monkeypatch)
         client, scripted = handover
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
@@ -1310,7 +1312,7 @@ class TestKtHandoverSummary:
         mailbox: RecordingEmailSender,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        configure_answers(monkeypatch)
         client, scripted = handover
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
@@ -1335,7 +1337,7 @@ class TestKtHandoverSummary:
         mailbox: RecordingEmailSender,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        unconfigure_answers(monkeypatch)
         client, _scripted = handover
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")

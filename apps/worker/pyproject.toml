@@ -14,11 +14,14 @@ dependencies = [
     # is: with no `NEO4J_URI` the worker enqueues no `graph.document` jobs at all, and
     # ingestion, embedding and extraction are untouched by its absence.
     "jutsu-graph",
+    # The same provider chain the API answers through (ADR 0024). Extraction is a model
+    # call like any other, and a background job that can only reach one vendor stops the
+    # moment that vendor does — which is what happened.
+    "jutsu-llm",
     "jutsu-retrieval",
     # `make seed` writes a run receipt, which is the only record of what a seed cost.
     "jutsu-evals",
     "arq>=0.26",
-    "anthropic>=1.2.0",
     # Decrypting stored provider tokens for sync fetchers (Fernet).
     "cryptography>=50.0.1",
     # The production worker is a private Cloud Run service rung by Cloud Tasks (ADR 0017).

@@ -138,3 +138,31 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
 @pytest.fixture
 def mailbox() -> RecordingEmailSender:
     return RecordingEmailSender()
+
+
+#: Every environment variable that can put a provider into the answer chain.
+#:
+#: All three, in both directions, and that is not thoroughness for its own sake: the root
+#: conftest loads `.env`, so a developer with a real key in it would otherwise leave the
+#: chain configured through a test that means to remove it — and the test would pass or
+#: fail depending on whose machine ran it.
+_PROVIDER_KEY_ENV = ("CEREBRAS_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY")
+
+
+def configure_answers(monkeypatch: pytest.MonkeyPatch, provider: str = "CEREBRAS") -> None:
+    """Make `answers_configured()` true, with exactly one provider in the chain.
+
+    Exactly one, so a test that reaches a transport reaches a predictable one. The value
+    is never used: every test in this suite overrides the transport dependency, and a
+    request that got as far as a real POST would fail on the fake key rather than spend
+    anything.
+    """
+    for name in _PROVIDER_KEY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(f"{provider}_API_KEY", "test-key-never-used")
+
+
+def unconfigure_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty the chain: no vendor at all, which is the 503 path."""
+    for name in _PROVIDER_KEY_ENV:
+        monkeypatch.delenv(name, raising=False)

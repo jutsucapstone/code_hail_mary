@@ -11,7 +11,8 @@ So the pipeline gains one link at the end and nothing else changes:
     ingest.document → embed.document → extract.document → graph.document
 
 **Nothing upstream depends on this link existing.** With no `NEO4J_URI` the job is never
-enqueued (the same gate extraction uses for `ANTHROPIC_API_KEY`), and ingestion, embedding
+enqueued (the same shape of gate extraction uses for its provider keys), and ingestion,
+embedding
 and extraction behave exactly as they did before. With Neo4j configured but down, the job
 fails, is retried with backoff, and every other stage is untouched — documents keep
 arriving, chunks keep embedding, and pgvector retrieval keeps answering.

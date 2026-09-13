@@ -36,7 +36,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import anthropic
 from jutsu_connectors import PathEscape, UnparsableMessage
 from jutsu_connectors.extraction import UnsupportedContent
 from jutsu_connectors.providers.base import (
@@ -47,6 +46,7 @@ from jutsu_connectors.providers.base import (
 )
 from jutsu_core import SourceSystem
 from jutsu_graph.driver import MissingGraphSettings
+from jutsu_llm import AllProvidersFailed
 from jutsu_retrieval.embeddings import Embedder
 from jutsu_retrieval.errors import (
     EmbeddingBudgetExceeded,
@@ -633,17 +633,24 @@ def classify(error: BaseException) -> tuple[FailureKind, bool]:
         if error.transient:
             return FailureKind.PROVIDER_TRANSIENT, True
         return FailureKind.PROVIDER_PERMANENT, False
-    # Anthropic SDK errors from the extraction transport. Order matters: RateLimitError
-    # and InternalServerError are both APIStatusError subclasses, so the transient checks
-    # come first and the remaining 4xx statuses are permanent — a bad key or a nonexistent
-    # model is rejected identically every time, and retrying it five times burns real
-    # attempts to be told so five times.
-    if isinstance(
-        error,
-        anthropic.RateLimitError | anthropic.InternalServerError | anthropic.APIConnectionError,
-    ):
-        return FailureKind.PROVIDER_TRANSIENT, True
-    if isinstance(error, anthropic.APIStatusError):
+    # The LLM chain, when EVERY configured provider failed. One error class now stands
+    # where a vendor SDK's exception hierarchy used to, and it carries the same decision:
+    # capacity and reachability recover on their own, a refusal and a missing key do not.
+    #
+    # Reaching here at all means EVERY configured vendor failed the same request, which
+    # is a much stronger signal than one vendor failing it — and it is why extraction can
+    # no longer be stopped for five days by one provider answering 400 to everything
+    # (ADR 0024). A single provider's failure never reaches this function: the chain falls
+    # over to the next one and the job succeeds.
+    if isinstance(error, AllProvidersFailed):
+        if error.error_class in ("rate_limited", "timeout", "unavailable"):
+            return FailureKind.PROVIDER_TRANSIENT, True
+        # `refused` (every vendor rejected the request) and `not_configured` (no keys at
+        # all) are both permanent: the identical request is refused identically every
+        # time, so five attempts reach one conclusion five times. An unrecognised class
+        # lands here too — see `test_an_unrecognised_error_class_is_permanent_rather_than_
+        # a_retry_loop` for why this is the safe direction where the fall-through at the
+        # end of this function is not.
         return FailureKind.PROVIDER_PERMANENT, False
     if isinstance(error, FileNotFoundError | OSError):
         return FailureKind.SOURCE_UNAVAILABLE, True

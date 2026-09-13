@@ -25,6 +25,8 @@ from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from conftest import configure_answers, unconfigure_answers
+
 REGISTRATION = {
     "full_name": "Ada Lovelace",
     "work_email": "ada@example.com",
@@ -82,7 +84,7 @@ async def client(
 
     await dispose_engine()
     monkeypatch.setenv("DATABASE_URL", database_url)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+    configure_answers(monkeypatch)
 
     app = create_app()
 
@@ -300,7 +302,7 @@ class TestCopilot:
         self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         code, _ = await recipient_in_package(client, mailbox)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        unconfigure_answers(monkeypatch)
 
         response = await ask(client, code, "What was decided?")
 

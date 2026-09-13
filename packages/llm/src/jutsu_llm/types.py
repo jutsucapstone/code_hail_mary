@@ -13,7 +13,7 @@ into two strings *before* anything provider-shaped is reached — `answers.py` d
 list it built. So a request here carries `system` and `prompt`, not a `retrieved_context`
 field that nothing would populate. Inventing richer fields would mean either duplicating
 prompt assembly at the provider layer or shipping fields that are always empty, and both
-are worse than describing what actually travels (ADR 0023).
+are worse than describing what actually travels (ADR 0024).
 
 That is also what makes "every provider receives semantically equivalent input" exact
 rather than approximate: every provider receives the *identical* two strings.
@@ -26,6 +26,7 @@ from typing import Final, Protocol
 
 __all__ = [
     "DEFAULT_MAX_TOKENS",
+    "INSUFFICIENT_EVIDENCE",
     "LLMProvider",
     "LLMRequest",
     "LLMResponse",
@@ -37,10 +38,21 @@ __all__ = [
     "ProviderUnavailable",
 ]
 
-#: What `AnthropicTransport` has always asked for. Carried on the request rather than read
-#: from configuration inside each adapter, so four providers cannot drift into generating
-#: different lengths for the same question.
+#: The generation length the answer path has always asked for. Carried on the request
+#: rather than read from configuration inside each adapter, so three providers cannot
+#: drift into generating different lengths for the same question.
 DEFAULT_MAX_TOKENS: Final = 4096
+
+#: The token a model is told to emit when the evidence cannot answer the question.
+#:
+#: It lives here, in the provider layer, for one reason: an adapter has to normalise a
+#: vendor's *safety refusal* — `finish_reason: content_filter` and its spellings — into
+#: something the application already understands, and that something is this string.
+#: `jutsu_api.answers` puts it in the system prompt and `_grounded` checks for it; both
+#: import it from here so there is exactly one spelling of the word the whole system turns
+#: on. Two copies that drifted by a character would produce answers that silently stopped
+#: being recognised as refusals.
+INSUFFICIENT_EVIDENCE: Final = "INSUFFICIENT_EVIDENCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +176,7 @@ class LLMProvider(Protocol):
     and translate the vendor's failures into the taxonomy above. They do not retry, do not
     know about each other, do not touch a database, and never see a tenant id — everything
     about authorization, retrieval and citations happened before the chain was entered and
-    happens again after it returns (ADR 0023).
+    happens again after it returns (ADR 0024).
     """
 
     @property

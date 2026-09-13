@@ -11,7 +11,7 @@ called is a chain nobody has tested.
 `JUTSU_LIVE_LLM_SMOKE=1` and CI never runs it:
 
     JUTSU_LIVE_LLM_SMOKE=1 uv run --env-file .env pytest \\
-        apps/api/tests/test_llm_live_smoke.py -q -s
+        packages/llm/tests/test_llm_live_smoke.py -q -s
 
 A provider with no key is skipped rather than failed: "not configured" is a deployment
 fact, and a smoke test that failed on it would be unrunnable on every machine that holds
@@ -27,9 +27,12 @@ from __future__ import annotations
 import os
 
 import pytest
-from jutsu_api.llm import (
+from jutsu_llm import (
+    DEFAULT_ORDER,
+    FailoverTransport,
     LLMRequest,
     ProviderNotConfigured,
+    build_chain,
     build_provider,
     configured_order,
 )
@@ -47,7 +50,7 @@ _SYSTEM = "You are a terse assistant. Answer in one short sentence."
 _PROMPT = "Reply with the single word: ready"
 
 
-@pytest.mark.parametrize("name", ["claude", "cerebras", "openrouter", "groq"])
+@pytest.mark.parametrize("name", DEFAULT_ORDER)
 async def test_each_configured_provider_answers(name: str) -> None:
     """Credential, endpoint, model id and response shape — all four at once.
 
@@ -78,8 +81,6 @@ async def test_the_configured_chain_answers_end_to_end() -> None:
     deployment's configured order actually answers, which is the claim the availability
     layer exists to make.
     """
-    from jutsu_api.llm import FailoverTransport, build_chain
-
     providers = build_chain()
     if not providers:
         pytest.skip("no provider is configured on this machine")

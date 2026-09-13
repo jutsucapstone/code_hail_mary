@@ -19,7 +19,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from jutsu_db.engine import dispose_engine, org_session
-from jutsu_worker.extraction import extract_document
+from jutsu_llm import AllProvidersFailed, LLMRequest, LLMResponse
+from jutsu_worker.extraction import EXTRACTION_MAX_TOKENS, UNRESOLVED, extract_document
 from jutsu_worker.runner import JOB_FAILED, process_extraction
 from sqlalchemy import text
 
@@ -64,14 +65,40 @@ CHUNK_TEXT = (
 )
 
 
+#: What the scripted transports below claim answered. Two distinct vendors, because the
+#: provenance assertions have to be able to tell the first call from the second — a
+#: retry may well be served by a different provider than the call it is retrying, and
+#: the claims that get stored are the retry's.
+FIRST_PROVIDER = "cerebras"
+FIRST_MODEL = "gpt-oss-120b"
+SECOND_PROVIDER = "openrouter"
+SECOND_MODEL = "openai/gpt-oss-120b"
+
+
 class ScriptedExtractor:
+    """The chain's `generate`, scripted, and recording what it was asked for.
+
+    `generate` rather than `complete`: extraction reads `provider` and `model` off the
+    response and writes them into every claim, so a fake returning a bare string could
+    not exercise the provenance the run is judged on.
+    """
+
     def __init__(self, *responses: str) -> None:
         self._responses = list(responses)
         self.calls = 0
+        self.requests: list[LLMRequest] = []
 
-    async def complete(self, *, system: str, prompt: str) -> str:
+    async def generate(self, request: LLMRequest) -> LLMResponse:
         self.calls += 1
-        return self._responses.pop(0)
+        self.requests.append(request)
+        # The second answer comes from the second vendor, as a real fallback would.
+        first = self.calls == 1
+        return LLMResponse(
+            content=self._responses.pop(0),
+            provider=FIRST_PROVIDER if first else SECOND_PROVIDER,
+            model=FIRST_MODEL if first else SECOND_MODEL,
+            latency_ms=7,
+        )
 
 
 def claims_json(*claims: dict[str, object]) -> str:
@@ -153,6 +180,11 @@ class TestQuoteGate:
         assert payload["quote"] == quote
         assert payload["extractor_version"]
         assert payload["prompt_hash"]
+        # Provenance names the model that ACTUALLY answered, not a configured default.
+        # With a fallback chain those differ whenever the primary is unwell, and
+        # non-negotiable 1 asks for the real one.
+        assert payload["model"] == FIRST_MODEL
+        assert payload["provider"] == FIRST_PROVIDER
 
     async def test_a_fabricated_quote_is_discarded_and_counted(self) -> None:
         """The exact §4.2 defect: fluent, plausible, and not in the source."""
@@ -256,15 +288,140 @@ class TestRunSemantics:
         assert stats["parse_failed"] is True
 
 
+class TestTheProvenanceNamesWhatAnswered:
+    """Which model produced a claim, recorded from the response rather than from config.
+
+    This is the half of ADR 0024 that extraction does not share with the answer path.
+    `/v1/ask` composes a prompt, reads `.content` and throws the rest away; extraction
+    *persists* what it was told, and non-negotiable 1 requires `model` on every piece of
+    evidence. Reading it from an environment variable was correct when there was one
+    vendor and one model id; with a chain it names the model JUTSU hoped would answer,
+    which on the day a fallback fires is a different model from the one that did.
+    """
+
+    async def test_the_run_and_its_claims_name_the_model_that_answered(self) -> None:
+        org_id = uuid.uuid4()
+        document_id = await seed_document(org_id)
+        model = ScriptedExtractor(
+            claims_json(
+                {
+                    "type": "decision",
+                    "chunk": 1,
+                    "quote": "the team decided to move the ledger to PostgreSQL",
+                    "summary": "Move the ledger",
+                    "confidence": 0.9,
+                }
+            )
+        )
+
+        async with org_session(org_id) as session:
+            await extract_document(session, org_id=org_id, document_id=document_id, transport=model)
+
+        async with org_session(org_id) as session:
+            run = (
+                await session.execute(text("SELECT model, stats_json FROM extraction_runs"))
+            ).one()
+            payload = (
+                await session.execute(text("SELECT payload_json FROM extraction_claims"))
+            ).scalar_one()
+        assert run.model == FIRST_MODEL
+        assert run.stats_json["provider"] == FIRST_PROVIDER
+        assert payload["model"] == FIRST_MODEL
+        assert payload["provider"] == FIRST_PROVIDER
+
+    async def test_a_retry_answered_by_a_second_vendor_is_what_gets_recorded(self) -> None:
+        """The claims stored are the retry's, so the provenance must be the retry's too.
+
+        A chain can answer the first call from Cerebras and the retry from OpenRouter —
+        they are independent attempts — and recording the first attempt's model against
+        claims the second one produced would be a false attribution written by the code
+        that is supposed to prevent them.
+        """
+        org_id = uuid.uuid4()
+        document_id = await seed_document(org_id)
+        model = ScriptedExtractor(
+            "not json at all",
+            claims_json(
+                {
+                    "type": "decision",
+                    "chunk": 1,
+                    "quote": "the team decided to move the ledger to PostgreSQL",
+                    "summary": "Move the ledger",
+                    "confidence": 0.9,
+                }
+            ),
+        )
+
+        async with org_session(org_id) as session:
+            result = await extract_document(
+                session, org_id=org_id, document_id=document_id, transport=model
+            )
+
+        assert model.calls == 2
+        assert result.stored == 1
+        async with org_session(org_id) as session:
+            run = (
+                await session.execute(text("SELECT model, stats_json FROM extraction_runs"))
+            ).one()
+            payload = (
+                await session.execute(text("SELECT payload_json FROM extraction_claims"))
+            ).scalar_one()
+        assert run.model == SECOND_MODEL
+        assert run.stats_json["provider"] == SECOND_PROVIDER
+        assert payload["model"] == SECOND_MODEL
+        assert payload["provider"] == SECOND_PROVIDER
+
+    async def test_a_document_with_nothing_to_read_names_no_model(self) -> None:
+        """No call, so no model — and the row says so rather than naming a plausible one.
+
+        `extraction_runs.model` is NOT NULL, so the row has to say something. A model id
+        would be provenance for a call that never happened.
+        """
+        org_id = uuid.uuid4()
+        document_id = await seed_document(org_id)
+        async with org_session(org_id) as session:
+            await session.execute(
+                text("DELETE FROM chunks WHERE document_id = :doc"), {"doc": document_id}
+            )
+        model = ScriptedExtractor()
+
+        async with org_session(org_id) as session:
+            result = await extract_document(
+                session, org_id=org_id, document_id=document_id, transport=model
+            )
+
+        assert model.calls == 0
+        assert result.chunks_total == 0
+        async with org_session(org_id) as session:
+            run = (
+                await session.execute(text("SELECT model, stats_json FROM extraction_runs"))
+            ).one()
+        assert run.model == UNRESOLVED
+        assert run.stats_json["provider"] == UNRESOLVED
+
+    async def test_extraction_asks_for_its_own_token_ceiling_not_the_answer_paths(self) -> None:
+        """A document's worth of claims does not fit in a paragraph's worth of tokens.
+
+        Carried on the request rather than configured inside the chain, so the chain does
+        not have to know which caller it is serving — and so a truncated extraction is a
+        number in this file rather than a silent shortfall in a nightly job.
+        """
+        org_id = uuid.uuid4()
+        document_id = await seed_document(org_id)
+        model = ScriptedExtractor(claims_json())
+
+        async with org_session(org_id) as session:
+            await extract_document(session, org_id=org_id, document_id=document_id, transport=model)
+
+        assert [request.max_tokens for request in model.requests] == [EXTRACTION_MAX_TOKENS]
+
+
 class TestQueueIntegration:
     async def test_a_rate_limited_model_lands_retry_scheduled_with_its_kind(self) -> None:
         """The work transaction dies with the provider error inside it; the classified
         failure must still land on the row — runner discipline, a NEW transaction —
         or the job sits in a working state until its lease expires, kindless, and the
         429 reads as a crash instead of a provider saying "not now"."""
-        import anthropic
-        import httpx2
-
         org_id = uuid.uuid4()
         document_id = await seed_document(org_id)
         job_id = uuid.uuid4()
@@ -284,10 +441,13 @@ class TestQueueIntegration:
             )
 
         class RateLimited:
-            async def complete(self, *, system: str, prompt: str) -> str:
-                request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
-                response = httpx2.Response(429, request=request)
-                raise anthropic.RateLimitError("status 429", response=response, body=None)
+            """Every vendor over capacity — what the chain raises once it has run out."""
+
+            async def generate(self, request: LLMRequest) -> LLMResponse:
+                raise AllProvidersFailed(
+                    "The answer service is briefly over capacity. Try again shortly.",
+                    error_class="rate_limited",
+                )
 
         outcome = await process_extraction(org_id, job_id=job_id, transport=RateLimited())
         assert outcome is JOB_FAILED

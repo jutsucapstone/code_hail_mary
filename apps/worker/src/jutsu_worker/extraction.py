@@ -19,10 +19,12 @@ The non-negotiables this module exists to satisfy, and where each one lives:
 read, minus every span the PII pass covered. Masking tokens are named as opaque in the
 prompt so the model does not guess at them.
 
-**Model choice**: `JUTSU_EXTRACTION_MODEL`, default `claude-opus-5`, through the
-official SDK. The spec's §5 stack names Gemini for LLM work; extraction runs on the
-Claude API by the product owner's explicit direction ("I will provide Claude API") —
-recorded here because a silent stack substitution is the §22.9 failure mode.
+**Model choice is `jutsu_llm`'s** (ADR 0024) — the same provider chain the answer path
+uses, for the same reason: a background job that can only reach one vendor stops the
+moment that vendor does. Extraction spent five days failing `provider_permanent` on every
+document because its single provider was returning 400 to every request, and nothing could
+take over. The model that actually answered is recorded per run and per claim, so
+provenance names a model rather than a configuration.
 """
 
 from __future__ import annotations
@@ -30,26 +32,25 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import anthropic
+from jutsu_llm import LLMRequest, LLMResponse, any_provider_configured
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 __all__ = [
     "CLAIM_TYPES",
+    "EXTRACTION_MAX_TOKENS",
     "EXTRACTOR_VERSION",
-    "AnthropicExtractionTransport",
+    "UNRESOLVED",
     "ExtractionResult",
     "ExtractionTransport",
     "extract_document",
     "extraction_configured",
     "extraction_job_key",
-    "extraction_model",
 ]
 
 logger = logging.getLogger("jutsu.worker.extraction")
@@ -57,6 +58,16 @@ logger = logging.getLogger("jutsu.worker.extraction")
 EXTRACTOR_VERSION = "1.0.0"
 
 CLAIM_TYPES = ("decision", "person", "project", "meeting", "responsibility")
+
+#: What a run and a claim record as their provider AND their model before anything has
+#: answered, and what they keep if nothing ever does. One value for both fields on
+#: purpose: they are unknown for the same reason at the same moment, and two constants
+#: would be two things to keep in step for no reader's benefit.
+#:
+#: Not a model id and not a vendor name, deliberately: `extraction_runs.model` is NOT NULL
+#: and a plausible-looking placeholder there would be provenance naming something that
+#: produced nothing (non-negotiable 1).
+UNRESOLVED = "unresolved"
 
 #: One call's context ceiling, in characters of masked chunk text. Documents longer
 #: than this are extracted over their first window and the run's stats say how much was
@@ -90,11 +101,12 @@ Rules, in order of importance:
 
 
 def extraction_configured() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    """Whether any provider is configured — checked at enqueue time as well as here.
 
-
-def extraction_model() -> str:
-    return os.environ.get("JUTSU_EXTRACTION_MODEL", "").strip() or "claude-opus-5"
+    Chain-wide rather than one vendor's key: with three interchangeable providers, "can
+    we extract" is true whenever any of them can answer.
+    """
+    return any_provider_configured()
 
 
 def extraction_job_key(org_id: uuid.UUID, document_id: uuid.UUID) -> str:
@@ -104,24 +116,26 @@ def extraction_job_key(org_id: uuid.UUID, document_id: uuid.UUID) -> str:
     return f"extract.document:{org_id}:{document_id}"
 
 
+#: Extraction asks for more output than the answer path: a document's worth of claims is
+#: longer than a paragraph with citations. Carried on the request so the chain does not
+#: have to know which caller it is serving.
+EXTRACTION_MAX_TOKENS = 8192
+
+
 class ExtractionTransport(Protocol):
-    """One model call, behind the same seam every paid provider sits behind here."""
+    """One model call, through the shared chain.
 
-    async def complete(self, *, system: str, prompt: str) -> str: ...
+    `generate` rather than `complete`, and that is the point of the change: the response
+    carries the provider and model that actually answered, so a claim's provenance names
+    the model that produced it instead of the model configuration hoped for. With a
+    fallback chain those are different things — the answer may well come from the second
+    or third vendor — and non-negotiable 1 requires the real one.
 
+    `jutsu_llm.FailoverTransport` satisfies this exactly; the tests supply scripted
+    implementations that misbehave on purpose.
+    """
 
-class AnthropicExtractionTransport:
-    async def complete(self, *, system: str, prompt: str) -> str:
-        client = anthropic.AsyncAnthropic()
-        response = await client.messages.create(
-            model=extraction_model(),
-            max_tokens=8192,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        if response.stop_reason == "refusal":
-            return '{"claims": []}'
-        return "".join(block.text for block in response.content if block.type == "text")
+    async def generate(self, request: LLMRequest) -> LLMResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +216,12 @@ async def extract_document(
 
     prompt_hash = hashlib.sha256((_SYSTEM + "|window-v1").encode("utf-8")).hexdigest()
     run_id = uuid.uuid4()
+    # `model` is NOT NULL and the run row must exist before the call, so the claim rows
+    # have a parent even if the process dies mid-flight. Which model answers is not known
+    # until it has — the chain may fall through to the second or third vendor — so the row
+    # opens as UNRESOLVED and the completion UPDATE writes what actually answered.
+    # A run left at this value is one that never reached a provider, which is exactly what
+    # a reader of the provenance should see.
     await session.execute(
         text(
             "INSERT INTO extraction_runs (id, org_id, extractor_version, prompt_hash, model) "
@@ -212,25 +232,36 @@ async def extract_document(
             "org": str(org_id),
             "version": EXTRACTOR_VERSION,
             "hash": prompt_hash,
-            "model": extraction_model(),
+            "model": UNRESOLVED,
         },
     )
 
     stored = 0
     gated = 0
     parse_failed = False
+    model = UNRESOLVED
+    provider = UNRESOLVED
 
     if window:
         prompt = _compose(window)
-        raw = await transport.complete(system=_SYSTEM, prompt=prompt)
-        claims = _parse_claims(raw)
+        response = await transport.generate(
+            LLMRequest(system=_SYSTEM, prompt=prompt, max_tokens=EXTRACTION_MAX_TOKENS)
+        )
+        model, provider = response.model, response.provider
+        claims = _parse_claims(response.content)
         if claims is None:
             retry = (
                 f"{prompt}\n\nYour previous output was not valid JSON of the required "
                 "shape. Emit ONLY the JSON object, nothing else."
             )
-            raw = await transport.complete(system=_SYSTEM, prompt=retry)
-            claims = _parse_claims(raw)
+            response = await transport.generate(
+                LLMRequest(system=_SYSTEM, prompt=retry, max_tokens=EXTRACTION_MAX_TOKENS)
+            )
+            # The retry may well be answered by a different provider than the first call,
+            # and it is the retry's claims that get stored — so provenance follows the
+            # response the claims came from, not the first one attempted.
+            model, provider = response.model, response.provider
+            claims = _parse_claims(response.content)
         if claims is None:
             parse_failed = True
             claims = []
@@ -269,7 +300,12 @@ async def extract_document(
                 "document_id": str(document_id),
                 "extractor_version": EXTRACTOR_VERSION,
                 "prompt_hash": prompt_hash,
-                "model": extraction_model(),
+                "model": model,
+                #: Not required by non-negotiable 1, which names the model. Recorded
+                #: anyway because with a chain the same model id can be served by two
+                #: vendors, and "which vendor produced this claim" is the first question
+                #: asked when one of them starts answering badly.
+                "provider": provider,
             }
             await session.execute(
                 text(
@@ -296,22 +332,25 @@ async def extract_document(
         "chunks_covered": len(window),
         "chunks_total": len(chunks),
         "parse_failed": parse_failed,
+        "provider": provider,
     }
     await session.execute(
         text(
-            "UPDATE extraction_runs SET finished_at = now(), "
+            "UPDATE extraction_runs SET finished_at = now(), model = :model, "
             "stats_json = cast(:stats AS jsonb) WHERE id = :id"
         ),
-        {"stats": json.dumps(stats), "id": run_id},
+        {"stats": json.dumps(stats), "id": run_id, "model": model},
     )
     logger.info(
-        "extraction_run org=%s document=%s stored=%d gated=%d covered=%d/%d",
+        "extraction_run org=%s document=%s stored=%d gated=%d covered=%d/%d provider=%s model=%s",
         org_id,
         document_id,
         stored,
         gated,
         len(window),
         len(chunks),
+        provider,
+        model,
     )
     return ExtractionResult(
         run_id=run_id,

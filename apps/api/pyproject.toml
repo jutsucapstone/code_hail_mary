@@ -11,13 +11,16 @@ dependencies = [
     # and `NEO4J_URI` decide whether anything connects, and every path through
     # `jutsu_api.graphrag` falls back to pgvector when they do not.
     "jutsu-graph",
+    # The provider chain (ADR 0024). A workspace package rather than a module here,
+    # because the worker's extraction needs the identical chain and an app may not
+    # import another app.
+    "jutsu-llm",
     "jutsu-retrieval",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic[email]>=2.9",
     "httpx>=0.28.1",
     "cryptography>=50.0.1",
-    "anthropic>=1.2.0",
     # `zoneinfo` reads the operating system's tz database, and there isn't one on
     # Windows or in a slim container — `ZoneInfo("Asia/Kolkata")` raises
     # ZoneInfoNotFoundError. The sync schedule stores IANA names and renders the next

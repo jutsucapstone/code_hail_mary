@@ -27,6 +27,7 @@ from alembic.config import Config
 from jutsu_db.engine import dispose_engine, org_session
 from jutsu_graph.driver import close_driver, get_graph_settings, read_session, write_session
 from jutsu_graph.knowledge import CLAIM_LABELS
+from jutsu_llm import LLMRequest, LLMResponse
 from jutsu_worker.extraction import CLAIM_TYPES, EXTRACTOR_VERSION
 from jutsu_worker.graph_sync import graph_configured, graph_sync_job_key, sync_document_graph
 from jutsu_worker.jobs import JobKind, JobState, enqueue_job
@@ -339,8 +340,15 @@ class TestOptionality:
             )
 
         class Silent:
-            async def complete(self, *, system: str, prompt: str) -> str:
-                return '{"claims": []}'
+            """A model that finds nothing. The projection link is what is under test."""
+
+            async def generate(self, request: LLMRequest) -> LLMResponse:
+                return LLMResponse(
+                    content='{"claims": []}',
+                    provider="cerebras",
+                    model="gpt-oss-120b",
+                    latency_ms=1,
+                )
 
         await process_extraction(clean_graph, transport=Silent())
 

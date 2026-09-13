@@ -34,14 +34,11 @@ import uuid
 from typing import Final, final
 
 from jutsu_db.engine import org_session
+from jutsu_llm import FailoverTransport
 from jutsu_retrieval.embeddings import Embedder
 
 from jutsu_worker.credentials import ReauthRequired, mark_reauth_required
-from jutsu_worker.extraction import (
-    AnthropicExtractionTransport,
-    ExtractionTransport,
-    extract_document,
-)
+from jutsu_worker.extraction import ExtractionTransport, extract_document
 from jutsu_worker.graph_sync import graph_configured, graph_sync_job_key, sync_document_graph
 from jutsu_worker.ingest import (
     record_failure,
@@ -249,7 +246,10 @@ async def process_extraction(
                 session,
                 org_id=org_id,
                 document_id=document_id,
-                transport=transport or AnthropicExtractionTransport(),
+                # The same chain the answer path uses, built per job: a rotated key
+                # or a changed order takes effect on the next document rather than on
+                # the next deploy (ADR 0024).
+                transport=transport or FailoverTransport(),
             )
             from jutsu_worker.jobs import complete_job
 

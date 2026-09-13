@@ -1,69 +1,91 @@
-"""classify() maps provider SDK errors to actionable kinds (no DB needed)."""
+"""classify() maps provider failures to actionable kinds (no DB needed)."""
 
 from __future__ import annotations
 
+import pytest
+from jutsu_llm import AllProvidersFailed
+
 
 class TestProviderFailureClassification:
-    """Anthropic SDK errors map to provider kinds, not to a retryable INTERNAL blur."""
+    """The LLM chain's exhaustion maps to a provider kind, not a retryable INTERNAL blur.
 
-    def _status_error(self, status_code: int) -> object:
-        import anthropic
-        import httpx2 as httpx
+    What reaches `classify` changed shape with ADR 0024 and did not change meaning. It
+    used to be one vendor SDK's exception hierarchy, raised by the extraction transport
+    on the first refusal; it is now `AllProvidersFailed`, raised only after every
+    configured vendor has been asked and none answered — a single provider failing now
+    falls over to the next and the job succeeds, so it never arrives here at all.
 
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        response = httpx.Response(status_code, request=request)
-        cls_by_status = {
-            401: anthropic.AuthenticationError,
-            404: anthropic.NotFoundError,
-            429: anthropic.RateLimitError,
-            500: anthropic.InternalServerError,
-        }
-        return cls_by_status[status_code](f"status {status_code}", response=response, body=None)
+    The decision the kind drives is unchanged: `provider_transient` is retried with
+    backoff, `provider_permanent` is not retried, and the operator reading the Jobs page
+    needs to know which of those is happening.
+    """
 
-    def test_rate_limit_is_transient_and_retryable(self) -> None:
+    @pytest.mark.parametrize("error_class", ["rate_limited", "timeout", "unavailable"])
+    def test_capacity_and_reachability_are_transient_and_retryable(self, error_class: str) -> None:
+        """Every vendor over capacity or unreachable recovers on its own."""
         from jutsu_worker.ingest import classify
         from jutsu_worker.jobs import FailureKind
 
-        kind, retryable = classify(self._status_error(429))  # type: ignore[arg-type]
-        assert kind is FailureKind.PROVIDER_TRANSIENT
-        assert retryable is True
-
-    def test_a_server_error_is_transient_and_retryable(self) -> None:
-        from jutsu_worker.ingest import classify
-        from jutsu_worker.jobs import FailureKind
-
-        kind, retryable = classify(self._status_error(500))  # type: ignore[arg-type]
-        assert kind is FailureKind.PROVIDER_TRANSIENT
-        assert retryable is True
-
-    def test_bad_credentials_are_permanent_not_five_retries(self) -> None:
-        from jutsu_worker.ingest import classify
-        from jutsu_worker.jobs import FailureKind
-
-        kind, retryable = classify(self._status_error(401))  # type: ignore[arg-type]
-        assert kind is FailureKind.PROVIDER_PERMANENT
-        assert retryable is False
-
-    def test_a_missing_model_is_permanent(self) -> None:
-        from jutsu_worker.ingest import classify
-        from jutsu_worker.jobs import FailureKind
-
-        kind, retryable = classify(self._status_error(404))  # type: ignore[arg-type]
-        assert kind is FailureKind.PROVIDER_PERMANENT
-        assert retryable is False
-
-    def test_an_unreachable_provider_is_transient(self) -> None:
-        import anthropic
-        import httpx2 as httpx
-        from jutsu_worker.ingest import classify
-        from jutsu_worker.jobs import FailureKind
-
-        error = anthropic.APIConnectionError(
-            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        kind, retryable = classify(
+            AllProvidersFailed("The answer service is unreachable.", error_class=error_class)
         )
-        kind, retryable = classify(error)
         assert kind is FailureKind.PROVIDER_TRANSIENT
         assert retryable is True
+
+    def test_a_request_every_vendor_refused_is_permanent_not_five_retries(self) -> None:
+        """A bad key or a model no account can use is refused identically every time."""
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(
+            AllProvidersFailed("The answer service did not respond.", error_class="refused")
+        )
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_no_provider_configured_at_all_is_permanent(self) -> None:
+        """Retrying an empty chain five times asks nobody, five times."""
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(
+            AllProvidersFailed("Answers are not configured.", error_class="not_configured")
+        )
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_an_unrecognised_error_class_is_permanent_rather_than_a_retry_loop(self) -> None:
+        """A label this function does not know still came from an exhausted chain.
+
+        Permanent is the safe direction *here*, unlike the unrecognised-exception case at
+        the end of `classify`, which retries. The difference is what is already known: an
+        `AllProvidersFailed` means every vendor was asked and none answered, so a retry
+        asks the same three vendors the same question, and the attempt budget is spent
+        before anything has had a chance to change.
+        """
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, retryable = classify(
+            AllProvidersFailed("The answer service did not respond.", error_class="something_new")
+        )
+        assert kind is FailureKind.PROVIDER_PERMANENT
+        assert retryable is False
+
+    def test_the_chains_failure_is_not_classified_as_a_generic_internal_error(self) -> None:
+        """`AllProvidersFailed` subclasses `ServiceUnavailable`, which is a `JutsuError`.
+
+        Nothing in `classify` names `JutsuError`, so before the branch existed this fell
+        all the way through to `INTERNAL, retryable` — an LLM outage reported to the
+        operator as a bug in JUTSU.
+        """
+        from jutsu_worker.ingest import classify
+        from jutsu_worker.jobs import FailureKind
+
+        kind, _ = classify(
+            AllProvidersFailed("The answer service is unreachable.", error_class="unavailable")
+        )
+        assert kind is not FailureKind.INTERNAL
 
 
 class TestTheConnectorsOwnFailures:

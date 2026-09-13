@@ -1,9 +1,15 @@
 # ADR 0023 — Multi-provider answer failover
 
-**Status:** accepted
+**Status:** superseded by ADR 0024
 **Date:** 2026-09-12
+**Superseded:** 2026-09-13. The seam, the failure taxonomy, the sequential ordering and the
+budget all stand and are still the implementation. Two decisions did not survive contact
+with production: this ADR kept one vendor primary — the vendor that then returned 400 to
+every call for five days — and it deliberately left extraction outside the chain on the
+grounds that a retrying background job is not urgent. That is true of a transient outage
+and false of a permanent one. ADR 0024 has the evidence.
 **Related:** ADR 0011 (ACL-filtered retrieval), ADR 0016 (KT console), ADR 0022 (additive
-GraphRAG)
+GraphRAG), ADR 0024 (three-provider LLM stack)
 
 ## Context
 

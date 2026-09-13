@@ -16,11 +16,10 @@ all. A fluent uncited paragraph is a defect here, not a near-miss.
 what leaves the tenant boundary is what an authorized caller may already read, minus
 every span the PII pass covered.
 
-**Model choice lives on the server** (`JUTSU_ANSWER_MODEL`, default `claude-opus-5`).
-The frontend is deliberately model-agnostic — it renders answers and citations, and the
-day the model changes nothing in a browser knows. That held when Claude was the only
-provider and it still holds now that three fallbacks sit behind it (ADR 0023): which
-vendor answered is observability, never part of the response.
+**Model choice lives entirely in `jutsu_llm`** (ADR 0024). The frontend is deliberately
+model-agnostic — it renders answers and citations, and the day the model or the vendor
+changes nothing in a browser knows. Which provider answered is observability, never part
+of the response.
 
 Configuration is honest: a deployment with **no provider configured at all** answers 503
 `answers are not configured` before any budget is spent — retrieval keeps working, and
@@ -29,11 +28,12 @@ the UI says which half is missing rather than pretending.
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
+
+from jutsu_llm import INSUFFICIENT_EVIDENCE, any_provider_configured
 
 __all__ = [
     "INSUFFICIENT_EVIDENCE",
@@ -42,7 +42,6 @@ __all__ = [
     "Citation",
     "Groundable",
     "Turn",
-    "answer_model",
     "answers_configured",
     "synthesise_answer",
 ]
@@ -86,11 +85,11 @@ class Groundable(Protocol):
     def text(self) -> str: ...
 
 
-_DEFAULT_MODEL = "claude-opus-5"
-
 #: The token the model is told to emit when the evidence cannot answer. Checked with
 #: `in` rather than equality so a polite sentence around it still counts as a refusal.
-INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+#:
+#: Imported rather than defined here: the provider adapters normalise a vendor's safety
+#: refusal to the same string, so there is one spelling of it in the system (ADR 0024).
 
 _MARKER = re.compile(r"\[(\d{1,3})\]")
 
@@ -133,24 +132,10 @@ class AnswerOutcome:
 def answers_configured() -> bool:
     """Whether this deployment can synthesise answers at all — through **any** provider.
 
-    It used to read `ANTHROPIC_API_KEY` and nothing else, which was exactly right while
-    Claude was the only vendor. With a fallback chain (ADR 0023) it would be a bug: a
-    deployment holding a Groq key and no Anthropic key can answer every question, and
-    gating on the primary's key would refuse all of them while a working provider sat
-    configured and idle.
-
-    **The import is function-local to break a cycle, not out of taste.** `jutsu_api.llm`
-    imports this module for the refusal sentinel and the model name, so importing it back
-    at module scope would be circular. The same idiom `parse_xlsx` and the worker's runner
-    already use, for the same mechanical reason.
+    A chain-wide question rather than one vendor's key: three interchangeable providers
+    mean "can we answer" is true whenever any one of them is configured.
     """
-    from jutsu_api.llm import any_provider_configured
-
     return any_provider_configured()
-
-
-def answer_model() -> str:
-    return os.environ.get("JUTSU_ANSWER_MODEL", "").strip() or _DEFAULT_MODEL
 
 
 class AnswerTransport(Protocol):
@@ -161,17 +146,16 @@ class AnswerTransport(Protocol):
     grounding gate is tested against deliberately misbehaving fakes, which no live
     model can be asked to be on demand.
 
-    **The implementation lives in `jutsu_api.llm`** (ADR 0023). It used to be
-    `AnthropicTransport`, right here: one class, one vendor, one `anthropic` call. That
-    class is gone rather than kept beside the chain, because two Claude implementations
-    are two error mappings, two model lookups and two refusal conventions that drift the
-    first time one of them is touched. `llm.ClaudeProvider` is the same code with its
-    exceptions translated into the chain's taxonomy, and it is the only Claude path.
+    **The implementation lives in `jutsu_llm`** (ADR 0024): a chain of three vendors,
+    tried in order, behind exactly this method. There is no vendor-specific transport
+    class anywhere above it — a second one would be a second error mapping, a second
+    model lookup and a second refusal convention, drifting from the chain's the first
+    time either was touched.
 
     Nothing else about this module moved. The prompt, the passage numbering, the marker
     gate, the single retry and the refusal are here, above the transport, exactly where
-    they were — which is what makes a fallback provider indistinguishable to everything
-    downstream.
+    they were — which is what makes which vendor answered indistinguishable to
+    everything downstream.
     """
 
     async def complete(self, *, system: str, prompt: str) -> str: ...

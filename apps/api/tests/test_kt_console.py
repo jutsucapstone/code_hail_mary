@@ -23,6 +23,8 @@ from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from conftest import configure_answers, unconfigure_answers
+
 REGISTRATION = {
     "full_name": "Ada Lovelace",
     "work_email": "ada@example.com",
@@ -354,7 +356,7 @@ class TestTheSummaryHasACeiling:
     ) -> None:
         """One paid call per press, so one budget per press — spent after the free
         configuration gate and before anything else."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        configure_answers(monkeypatch)
         monkeypatch.setenv("KT_SUMMARY_RATE_LIMIT", "1")
         package = await owner_with_package(client, mailbox, scope=["decisions", "projects"])
         code = str(package["kt_code"])
@@ -373,7 +375,7 @@ class TestTheSummaryHasACeiling:
         self, client: AsyncClient, mailbox: RecordingEmailSender, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The 503 comes first and is free: a deployment fact should not eat quota."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        unconfigure_answers(monkeypatch)
         monkeypatch.setenv("KT_SUMMARY_RATE_LIMIT", "1")
         package = await owner_with_package(client, mailbox)
         code = str(package["kt_code"])

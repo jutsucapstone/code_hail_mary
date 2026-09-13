@@ -13,6 +13,7 @@ exclude = ["packages/ui"]
 jutsu-core = { workspace = true }
 jutsu-db = { workspace = true }
 jutsu-graph = { workspace = true }
+jutsu-llm = { workspace = true }
 jutsu-retrieval = { workspace = true }
 jutsu-agents = { workspace = true }
 jutsu-connectors = { workspace = true }

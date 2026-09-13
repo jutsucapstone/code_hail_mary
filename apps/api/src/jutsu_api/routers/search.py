@@ -44,6 +44,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
+from jutsu_llm import FailoverTransport
 from jutsu_retrieval import DEFAULT_K
 from pydantic import BaseModel, Field
 
@@ -55,7 +56,6 @@ from jutsu_api.answers import (
 )
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.graphrag import RetrievalMode, RetrievalReport, retrieve
-from jutsu_api.llm import FailoverTransport
 from jutsu_api.rate_limit import spend_search_budget
 from jutsu_api.retrieval import (
     MAX_QUERY_CHARS,
@@ -321,11 +321,12 @@ class AskResponse(BaseModel):
 
 
 def get_answer_transport() -> AnswerTransport:
-    """The model call, through the provider chain (ADR 0023).
+    """The model call, through the provider chain (ADR 0024).
 
-    Claude first, then whichever fallbacks this deployment has configured. A chain with
-    one provider in it is the behaviour that shipped before the chain existed, which is
-    what a deployment holding only `ANTHROPIC_API_KEY` still gets.
+    Cerebras, then OpenRouter, then Groq, minus whichever of them this deployment has no
+    key for. A deployment configured with one of the three is a chain of one: one attempt
+    and the same error sentences, so adding or removing a vendor stays a configuration
+    change rather than a code change.
 
     Built per request rather than cached: the providers hold no connection pool between
     calls, so there is no shared mutable state for concurrent requests to contend over,

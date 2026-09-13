@@ -1,21 +1,23 @@
 """One adapter per vendor. Authenticate, shape, parse, classify — and nothing else.
 
+**All three speak the same protocol**, which is why there is one implementation and three
+thin subclasses. Cerebras, OpenRouter and Groq each serve an OpenAI-compatible
+`POST /v1/chat/completions`, so they differ only in base URL, model and — for OpenRouter —
+an extra `models` array. Three vendor SDKs would have been three dependency trees and
+three sets of exception types to translate, for what is one authenticated POST each.
+
 **Model ids are configuration, never constants in this file's logic.** Every adapter reads
 its model from the environment, because a vendor's catalogue changes on their schedule and
 a model id compiled into a release is an outage waiting for someone else's deprecation
-notice. The defaults below were read from each vendor's own documentation when this landed
-and are recorded in ADR 0023 with the date; `docs/deploy.md` says to re-check them.
+notice. The defaults below were verified against each vendor's own source on 2026-09-12 and
+are recorded in ADR 0024; `docs/deploy.md` §13 says to re-check them.
 
 **A model id that no longer exists degrades to "skip this provider".** The vendor answers
 4xx, the adapter raises `ProviderRefused`, and the chain moves on — see that class for why
-continuing is the right reading rather than a way of hiding a mistake.
-
-**Three of the four speak the same protocol.** Cerebras, OpenRouter and Groq are all
-OpenAI-compatible `POST /v1/chat/completions`, so they share one implementation and differ
-only in base URL, model and — for OpenRouter — an extra `models` array. Claude keeps the
-official SDK it already used, because the existing error mapping in `answers.py` was
-written against that SDK's exception types and re-deriving it over raw HTTP would be a
-rewrite of the one path that is currently in production.
+continuing is the right reading rather than a way of hiding a mistake. JUTSU has already
+been on the other side of this: with one vendor and one model id, a model that stopped
+being served returned 400 to every call for five days, and because there was nowhere to
+fall over to, every answer in production was a 503 (ADR 0024).
 
 **Nothing here logs.** An adapter that logged would log per attempt, and the interesting
 line is the chain's decision rather than each vendor's disappointment. The chain logs; this
@@ -28,11 +30,10 @@ import os
 import time
 from typing import Any, Final
 
-import anthropic
 import httpx
 
-from jutsu_api.answers import INSUFFICIENT_EVIDENCE, answer_model
-from jutsu_api.llm.types import (
+from jutsu_llm.types import (
+    INSUFFICIENT_EVIDENCE,
     LLMRequest,
     LLMResponse,
     ProviderNotConfigured,
@@ -46,122 +47,58 @@ __all__ = [
     "CEREBRAS_BASE_URL",
     "DEFAULT_CEREBRAS_MODEL",
     "DEFAULT_GROQ_MODEL",
+    "DEFAULT_OPENROUTER_MODEL",
     "GROQ_BASE_URL",
     "OPENROUTER_BASE_URL",
     "CerebrasProvider",
-    "ClaudeProvider",
     "GroqProvider",
     "OpenAICompatibleProvider",
     "OpenRouterProvider",
     "build_provider",
 ]
 
-#: Read from each vendor's own API reference on 2026-09-12. See ADR 0023.
+#: Read from each vendor's own API reference on 2026-09-12. See ADR 0024.
 CEREBRAS_BASE_URL: Final = "https://api.cerebras.ai/v1/chat/completions"
 GROQ_BASE_URL: Final = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_BASE_URL: Final = "https://openrouter.ai/api/v1/chat/completions"
 
-#: Cerebras lists this in its model catalogue as a production model at 131k context on
-#: paid tiers. Chosen over the smaller catalogue entry for reasoning and instruction
-#: following, which is what the citation gate actually tests.
+#: **One model family across all three providers, and that is the deliberate choice.**
+#:
+#: The citation gate is what decides whether an answer is shown at all: the model must emit
+#: `[n]` markers against numbered passages, or emit `INSUFFICIENT_EVIDENCE` and nothing
+#: else. That is a formatting contract, and models from different families keep it
+#: differently — so a fallback from a different family does not "degrade gracefully", it
+#: gets its answers thrown away by the gate at exactly the moment the primary is down.
+#:
+#: One family served by three independent companies keeps the formatting constant while
+#: keeping the *infrastructure* independent, which is the thing an availability layer
+#: actually needs. The cost, stated rather than hidden: a flaw in the model family itself
+#: would affect all three at once. Each is separately overridable through its own
+#: environment variable for exactly that case.
+#:
+#: Cerebras lists `gpt-oss-120b` in its catalogue as production, 131k context on paid tiers.
 DEFAULT_CEREBRAS_MODEL: Final = "gpt-oss-120b"
 
-#: Groq's model page marks this **production** (as opposed to preview) at 131k context.
-#: Deliberately the same model family as the Cerebras default: two independent providers
-#: serving one family means a fallback answers the citation gate the way the gate was
-#: tuned for, instead of introducing a second set of formatting habits at the worst moment.
+#: Groq's model page marks `openai/gpt-oss-120b` **production**, as opposed to the preview
+#: models it explicitly says not to use in production. 131k context.
 DEFAULT_GROQ_MODEL: Final = "openai/gpt-oss-120b"
 
-#: **OpenRouter ships no default, on purpose.** Its catalogue is a marketplace of slugs
-#: that appear and retire continuously, and a stale default would look configured and fail
-#: every time. Unset means the provider is not configured and is skipped, which is the
-#: honest state for "nobody has chosen a model yet".
+#: Verified against OpenRouter's live catalogue (`GET /api/v1/models`, 2026-09-12): present,
+#: 131,072 context, 117,964 max completion tokens, `response_format` supported, and priced
+#: at $0.04/$0.17 per million tokens — the cheapest tier, so a fallback cannot turn into a
+#: cost incident the way a frontier default at $5/$30 would.
+DEFAULT_OPENROUTER_MODEL: Final = "openai/gpt-oss-120b"
+
 _OPENROUTER_MODEL_ENV: Final = "OPENROUTER_MODEL"
 
 #: Finish reasons that mean the vendor's safety layer declined rather than the model
-#: answering. Mapped to JUTSU's existing refusal sentinel so the gate downstream treats it
-#: exactly as it has always treated an Anthropic refusal.
+#: answering. Mapped to the refusal sentinel so the gate downstream treats it exactly as it
+#: treats a model that decided the evidence was insufficient.
 _REFUSAL_REASONS: Final = frozenset({"content_filter", "refusal", "safety"})
 
 
 def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
-
-
-class ClaudeProvider:
-    """Anthropic, through the official SDK — the path that is in production today.
-
-    The error mapping is the one `AnthropicTransport` already had, translated from
-    `ServiceUnavailable` (an HTTP concern) into the provider taxonomy (a chain concern).
-    Nothing about the request changes: same model, same `max_tokens`, same system and
-    prompt strings, thinking left at the model's default.
-    """
-
-    name = "claude"
-
-    def __init__(self, *, model: str | None = None) -> None:
-        if not _env("ANTHROPIC_API_KEY"):
-            raise ProviderNotConfigured(self.name, "ANTHROPIC_API_KEY is not set")
-        # `answer_model()` rather than a constant: `JUTSU_ANSWER_MODEL` is an existing
-        # production value and this layer must not quietly rename or re-default it.
-        self._model = model or answer_model()
-
-    @property
-    def model(self) -> str:
-        return self._model
-
-    async def generate(self, request: LLMRequest, *, timeout_s: float) -> LLMResponse:
-        client = anthropic.AsyncAnthropic(timeout=timeout_s)
-        started = time.monotonic()
-        try:
-            response = await client.messages.create(
-                model=self._model,
-                max_tokens=request.max_tokens,
-                system=request.system,
-                messages=[{"role": "user", "content": request.prompt}],
-            )
-        except anthropic.APITimeoutError as exc:
-            raise ProviderTimeout(self.name) from exc
-        except anthropic.RateLimitError as exc:
-            raise ProviderRateLimited(self.name) from exc
-        except anthropic.APIConnectionError as exc:
-            raise ProviderUnavailable(self.name, "connection") from exc
-        except anthropic.APIStatusError as exc:
-            # The provider's own message can carry request details; classify, never
-            # forward — the rule `answers.py` already followed.
-            if exc.status_code >= 500 or exc.status_code == 408:
-                raise ProviderUnavailable(self.name, f"status {exc.status_code}") from exc
-            raise ProviderRefused(self.name, f"status {exc.status_code}") from exc
-        finally:
-            await client.close()
-
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-
-        if response.stop_reason == "refusal":
-            # The safety layer declined. Not an evidence problem and not a provider fault:
-            # the honest rendering is the refusal JUTSU already renders.
-            return LLMResponse(
-                content=INSUFFICIENT_EVIDENCE,
-                provider=self.name,
-                model=self._model,
-                latency_ms=elapsed_ms,
-                finish_reason="refusal",
-            )
-
-        content = "".join(block.text for block in response.content if block.type == "text")
-        if not content.strip():
-            raise ProviderUnavailable(self.name, "empty completion")
-
-        usage = getattr(response, "usage", None)
-        return LLMResponse(
-            content=content,
-            provider=self.name,
-            model=self._model,
-            latency_ms=elapsed_ms,
-            finish_reason=response.stop_reason,
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-        )
 
 
 class OpenAICompatibleProvider:
@@ -209,9 +146,9 @@ class OpenAICompatibleProvider:
         body: dict[str, Any] = {
             "model": self._model,
             "max_tokens": request.max_tokens,
-            # The system prompt as a system message: the same text Claude receives in its
-            # `system` parameter, in the place this protocol puts it. No rewording, no
-            # extra instructions, nothing appended — §28.
+            # The system prompt as a system message: exactly the string `answers.py`
+            # composed, in the place this protocol puts it. No rewording, no extra
+            # instructions, nothing appended. An adapter converts shape, never content.
             "messages": [
                 {"role": "system", "content": request.system},
                 {"role": "user", "content": request.prompt},
@@ -321,8 +258,11 @@ class OpenRouterProvider(OpenAICompatibleProvider):
     still treats OpenRouter as one link, so a total OpenRouter outage costs one attempt
     rather than several.
 
-    `OPENROUTER_FALLBACK_MODELS` is a comma-separated list appended after the primary.
-    Empty is normal and sends a plain single-model request.
+    `OPENROUTER_FALLBACK_MODELS` is a list appended after the primary. Empty is the
+    default and sends a plain single-model request: an in-provider fallback is a second
+    model id to keep current, and a slug that has retired makes OpenRouter reject the
+    whole request rather than degrading. `docs/deploy.md` §13 lists verified candidates
+    with their prices for anyone who wants one.
     """
 
     def __init__(
@@ -332,12 +272,12 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         fallback_models: list[str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        primary = model or _env(_OPENROUTER_MODEL_ENV)
+        primary = model or _env(_OPENROUTER_MODEL_ENV) or DEFAULT_OPENROUTER_MODEL
         fallbacks = fallback_models
         if fallbacks is None:
             # Commas or semicolons — see `failover.split_list` for why the second spelling
             # exists (it is what makes this settable through `gcloud run deploy`).
-            from jutsu_api.llm.failover import split_list
+            from jutsu_llm.failover import split_list
 
             fallbacks = split_list(_env("OPENROUTER_FALLBACK_MODELS"))
 
@@ -359,7 +299,6 @@ class OpenRouterProvider(OpenAICompatibleProvider):
 #: `LLM_PROVIDER_ORDER` is validated against exactly this set and a typo is a startup-time
 #: complaint rather than a provider that silently never runs.
 _REGISTRY: Final[dict[str, type]] = {
-    "claude": ClaudeProvider,
     "cerebras": CerebrasProvider,
     "openrouter": OpenRouterProvider,
     "groq": GroqProvider,

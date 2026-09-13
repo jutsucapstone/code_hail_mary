@@ -24,11 +24,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, status
 from jutsu_core.rbac import Permission, Role, role_label
+from jutsu_llm import provider_status
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from jutsu_api.deps import CurrentPrincipal, Db
-from jutsu_api.llm import provider_status
 from jutsu_api.operations import (
     list_audit,
     list_jobs,

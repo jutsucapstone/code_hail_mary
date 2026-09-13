@@ -218,9 +218,9 @@ printf '%s' 'postgresql+asyncpg://jutsu:PASSWORD@/jutsu?host=/cloudsql/PROJECT:R
 python -c "import secrets; print(secrets.token_urlsafe(32))" \
   | gcloud secrets create jutsu-email-pepper --data-file=-
 
-# Answers and extraction run on the Claude API. Absent, /v1/ask refuses with 503 and
-# extraction jobs are never enqueued — honest unavailability, not a crash.
-printf '%s' 'sk-ant-xxxxxxxxxxxxxxxx' | gcloud secrets create jutsu-anthropic-api-key --data-file=-
+# Answers AND extraction run through the LLM chain (§13). At least one of the three
+# provider keys must exist or /v1/ask refuses with 503 and extraction jobs are never
+# enqueued — honest unavailability, not a crash, but also no answers. §13 creates them.
 
 # Fernet key encrypting provider OAuth tokens at rest. Piped straight from the
 # generator, so the value never touches the shell history or the screen.
@@ -813,11 +813,13 @@ not read, which is the ACL doing its job and a hint that the traversal is too br
 
 ---
 
-### 13. Answer provider failover (optional)
+### 13. The LLM providers (required — at least one)
 
-Claude answers every question until it cannot. These three fallbacks exist for the minutes
-when it cannot, and **all of them are optional** — with none configured, the answer path is
-Claude alone, exactly as it shipped (ADR 0023).
+Answers (`/v1/ask`, the KT copilot, the KT handover summary) and knowledge extraction both
+run through **one ordered chain of three interchangeable vendors** (ADR 0024). Each key is
+optional and the chain is whichever ones resolve — but **with none of them configured the
+deployment has no answers at all**: `/v1/ask` returns 503 and extraction jobs are never
+enqueued. The deploy still succeeds and emits a workflow warning saying so.
 
 ```
                         JUTSU REQUEST
@@ -830,14 +832,10 @@ Claude alone, exactly as it shipped (ADR 0023).
                               │
                     NORMALISED LLM REQUEST          ← the chain starts here
                               │
-                        ┌─────────┐
-                        │ CLAUDE  │ primary
-                        └────┬────┘
-                             │ timeout / 429 / 5xx / refused
-                        ┌────▼─────┐
-                        │ CEREBRAS │
+                        ┌──────────┐
+                        │ CEREBRAS │ primary
                         └────┬─────┘
-                             │
+                             │ timeout / 429 / 5xx / refused
                        ┌─────▼──────┐
                        │ OPENROUTER │ (its own model list inside one attempt)
                        └─────┬──────┘
@@ -851,8 +849,12 @@ Claude alone, exactly as it shipped (ADR 0023).
                     CITATION VALIDATION  →  USER
 ```
 
-**Create the secrets you want, and skip the ones you do not.** The pipeline checks each by
-name and mounts only what exists:
+The **worker** runs the identical chain for extraction, with the same keys and the same
+order. That is the change ADR 0024 records: extraction used to have a single vendor of its
+own, which answered 400 to every call for five days while every nightly run recorded
+`provider_permanent` and nothing could take over.
+
+**Create the secrets. The pipeline mounts each one that exists and skips the rest:**
 
 ```bash
 printf '%s' 'YOUR-CEREBRAS-KEY'   | gcloud secrets create jutsu-cerebras-api-key --data-file=-
@@ -872,23 +874,32 @@ for s in jutsu-cerebras-api-key jutsu-openrouter-api-key jutsu-groq-api-key; do
 done
 ```
 
-**Claude's key is unchanged.** It is still `jutsu-anthropic-api-key`, mounted as
-`ANTHROPIC_API_KEY`, and the model is still `JUTSU_ANSWER_MODEL`. Renaming a working
-production secret to match a naming scheme is an outage in exchange for tidiness.
+**Rotating a key** is a new secret *version* plus a redeploy — the services mount
+`:latest`, which is resolved when a revision starts, not per request:
+
+```bash
+printf '%s' 'NEW-KEY' | gcloud secrets versions add jutsu-cerebras-api-key --data-file=-
+```
 
 **Models and bounds are repository variables**, not secrets — a model id is on every
 invoice and in the vendor's public catalogue:
 
 | Variable | Default if unset | Notes |
 |---|---|---|
-| `JUTSU_LLM_PROVIDER_ORDER` | `claude;cerebras;openrouter;groq` | **Semicolons.** See below. |
-| `JUTSU_CEREBRAS_MODEL` | `gpt-oss-120b` | Verified against their catalogue 2026-09-12 |
+| `JUTSU_LLM_PROVIDER_ORDER` | `cerebras;openrouter;groq` | **Semicolons.** See below. |
+| `JUTSU_CEREBRAS_MODEL` | `gpt-oss-120b` | Their catalogue lists it production, 131k context |
+| `JUTSU_OPENROUTER_MODEL` | `openai/gpt-oss-120b` | Verified live 2026-09-12: 131k context, $0.04/$0.17 per Mtok |
 | `JUTSU_GROQ_MODEL` | `openai/gpt-oss-120b` | Marked *production*, not preview |
-| `JUTSU_OPENROUTER_MODEL` | *(none — provider skipped)* | Pick a current slug from openrouter.ai/models |
 | `JUTSU_OPENROUTER_FALLBACK_MODELS` | *(none)* | Semicolon-separated; becomes OpenRouter's own `models` array |
 | `JUTSU_LLM_PROVIDER_TIMEOUT_SECONDS` | `30` | Per provider |
 | `JUTSU_LLM_TOTAL_TIMEOUT_SECONDS` | `90` | The whole chain |
-| `JUTSU_LLM_MAX_PROVIDER_ATTEMPTS` | `4` | Hard cap on paid attempts per question |
+| `JUTSU_LLM_MAX_PROVIDER_ATTEMPTS` | `3` | Hard cap on paid attempts per question |
+
+**All three default to the same model family on purpose.** The citation gate is a
+formatting contract — `[n]` markers against numbered passages, or `INSUFFICIENT_EVIDENCE`
+and nothing else — and models from different families keep it differently. A fallback from
+another family would have its answers discarded by the gate at exactly the moment the
+primary is down. Same family, three independent companies (ADR 0024).
 
 **Why semicolons.** `gcloud run deploy --set-env-vars` splits its own argument on commas,
 so a comma-separated list cannot be passed without switching that entire flag to gcloud's
@@ -907,18 +918,27 @@ happened is in Cloud Logging under `jsonPayload.event`:
 
 | Event | Means |
 |---|---|
-| `llm_request_success` with `fallback_used: false` | Normal. Claude answered. |
+| `llm_request_success` with `fallback_used: false` | Normal. The primary answered. |
 | `llm_request_success` with `fallback_used: true` | A fallback saved a request. Worth an alert if it becomes common. |
 | `llm_provider_attempt` with `success: false` | One provider failed; `error_class` says how. |
 | `llm_provider_fallback` | The chain moved on, `from` → `to`. |
 | `llm_request_failed` | Every configured provider failed. The caller got a 503. |
+| `llm_no_providers_configured` | No key is mounted at all. Nothing was asked. |
 | `llm_budget_exhausted` | The total timeout ran out before the chain did. Providers left untried. |
 
 A steady trickle of `error_class: refused` from one provider means its key or its model id
 is wrong — that provider has been silently skipped since the day it was configured.
 
-**Rollback** is a repository variable: set `JUTSU_LLM_PROVIDER_ORDER` to `claude` and
-redeploy, and the chain is the primary alone. No code change, no image rebuild.
+**For extraction specifically**, the answer is also in the database: `extraction_runs.model`
+and `stats_json.provider` name the vendor and model that produced each run, and every claim
+carries the same pair in `payload_json`. A run whose model reads `unresolved` never reached
+a provider. A failed extraction job's `failure_kind` distinguishes the two cases —
+`provider_transient` (every vendor was over capacity or unreachable; it will be retried)
+from `provider_permanent` (every vendor refused, or none is configured; it will not).
+
+**Reordering or narrowing the chain** is a repository variable: set
+`JUTSU_LLM_PROVIDER_ORDER` to a single name and redeploy, and the chain is that provider
+alone. No code change, no image rebuild.
 
 ---
 

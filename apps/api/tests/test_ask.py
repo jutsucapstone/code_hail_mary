@@ -25,8 +25,17 @@ from jutsu_api.main import create_app
 from jutsu_api.retrieval import get_query_embedder
 from jutsu_api.routers.search import get_answer_transport
 from jutsu_api.security import CSRF_COOKIE, CSRF_HEADER
+from jutsu_llm import (
+    FailoverTransport,
+    LLMRequest,
+    LLMResponse,
+    ProviderTimeout,
+    ProviderUnavailable,
+)
 from jutsu_retrieval.search import Evidence
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from conftest import configure_answers, unconfigure_answers
 
 REGISTRATION = {
     "full_name": "Ada Lovelace",
@@ -210,7 +219,7 @@ class TestAskEndpoint:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """503 with the honest sentence, and the search budget untouched."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        unconfigure_answers(monkeypatch)
         await register_owner(client, mailbox)
 
         response = await client.post(
@@ -231,7 +240,7 @@ class TestAskEndpoint:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """An empty corpus yields insufficient_evidence, never a fluent guess."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        configure_answers(monkeypatch)
         await register_owner(client, mailbox)
 
         response = await client.post(
@@ -257,7 +266,7 @@ class TestAskEndpoint:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No model override from a browser: the server chooses the model (§28)."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
+        configure_answers(monkeypatch)
         await register_owner(client, mailbox)
 
         response = await client.post(
@@ -333,3 +342,83 @@ class TestHistoryIsContextNotEvidence:
 
         assert "Conversation so far" in _SYSTEM
         assert "not evidence" in _SYSTEM
+
+
+class TestTheChainIsADropInForTheTransportItReplaced:
+    """The citation gate runs over whichever vendor answered (ADR 0024).
+
+    These live here rather than in `packages/llm/tests` deliberately: `jutsu_llm` is a
+    package that may not import an application, and what is being asserted is the
+    *application's* gate holding over a fallback answer. The chain's own behaviour —
+    order, budget, adapters, secrets — is tested there, against no application at all.
+    """
+
+    class _Evidence:
+        chunk_id = "c1"
+        document_id = "d1"
+        document_title = "Handbook"
+        source_system = "local"
+        text = "Leave is approved by the line manager."
+
+    @staticmethod
+    def _chain(*providers: object) -> FailoverTransport:
+        return FailoverTransport(
+            list(providers),  # type: ignore[arg-type]
+            provider_timeout_s=5.0,
+            total_timeout_s=30.0,
+        )
+
+    class _Provider:
+        """The `LLMProvider` shape: answers, or raises into the chain's taxonomy."""
+
+        def __init__(self, name: str, *, answer: str | None = None, error: Exception | None = None):
+            self.name = name
+            self.model = f"{name}-model"
+            self._answer = answer
+            self._error = error
+
+        async def generate(self, request: LLMRequest, *, timeout_s: float) -> LLMResponse:
+            if self._error is not None:
+                raise self._error
+            return LLMResponse(
+                content=self._answer or "", provider=self.name, model=self.model, latency_ms=1
+            )
+
+    async def test_a_fallback_answer_still_passes_the_citation_gate(self) -> None:
+        # The gate is downstream of the chain, so it applies to whichever provider
+        # answered. Nothing about failover exempts a fallback from citing its evidence.
+        transport = self._chain(
+            self._Provider("cerebras", error=ProviderTimeout("cerebras")),
+            self._Provider("groq", answer="The line manager approves leave [1]."),
+        )
+
+        outcome = await synthesise_answer(
+            transport, question="who approves leave?", evidence=[self._Evidence()]
+        )
+
+        assert outcome.insufficient_evidence is False
+        assert [citation.chunk_id for citation in outcome.citations] == ["c1"]
+
+    async def test_an_ungrounded_fallback_answer_is_refused_exactly_as_before(self) -> None:
+        # The gate is not relaxed for a fallback: an uncited paragraph is refused after
+        # the existing single retry, whichever vendor produced it.
+        transport = self._chain(
+            self._Provider("cerebras", error=ProviderUnavailable("cerebras")),
+            self._Provider("groq", answer="Leave is approved by whoever you ask."),
+        )
+
+        outcome = await synthesise_answer(
+            transport, question="who approves leave?", evidence=[self._Evidence()]
+        )
+
+        assert outcome.insufficient_evidence is True
+        assert outcome.answer is None
+        assert outcome.attempts == 2
+
+    async def test_the_chain_satisfies_the_transport_protocol_and_nothing_more(self) -> None:
+        # `synthesise_answer` calls `complete(system=…, prompt=…)` and nothing else.
+        # Satisfying that signature is the whole contract, and it is what lets every
+        # other test in this suite keep injecting its own fake.
+        transport = self._chain(self._Provider("cerebras", answer="grounded [1]"))
+
+        assert await transport.complete(system="s", prompt="p") == "grounded [1]"

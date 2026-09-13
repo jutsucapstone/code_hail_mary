@@ -128,8 +128,8 @@ parameter precisely because the app — not this codebase — is the source of t
 ## Production notes (Cloud Run)
 
 Every secret lives in Secret Manager, and there are two ways one gets mounted.
-`deploy.yml` carries the deployment-wide set (`jutsu-anthropic-api-key`,
-`jutsu-connection-key`, database URL, pepper, SMTP) and re-asserts it on every push.
+`deploy.yml` carries the deployment-wide set (`jutsu-connection-key`, the LLM provider
+keys, database URL, pepper, SMTP) and re-asserts it on every push.
 The per-provider pairs are pipeline-owned too — `deploy.yml` mounts every
 `JUTSU_OAUTH_*` pair from these Secret Manager names (one Google client serves the
 four Google provider ids; one Atlassian client serves jira and confluence):

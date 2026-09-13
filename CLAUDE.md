@@ -297,37 +297,24 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   "rerank" undoes the fusion, and a fuzzy key function is an irreversible merge nobody can
   see.
 
-### Answer provider traps (`jutsu_api.llm`)
+### LLM chain traps (`packages/llm`, ADR 0024)
 
-- **The chain is a transport, not a pipeline.** It implements the `AnswerTransport`
-  protocol and sits strictly below prompt composition and above nothing: retrieval, ACL
-  filtering, evidence numbering, the citation gate, the retry and the refusal are all
-  outside it (ADR 0023). Anything added here that needed a session, a tenant or a
-  document would mean the layer had grown into the application.
+- **The chain is a transport, not a pipeline.** It sits strictly below prompt composition
+  and above nothing: retrieval, ACL filtering, evidence numbering, the citation gate, the
+  retry and the refusal are all outside it. Anything added here that needed a session, a
+  tenant or a document would mean the layer had grown into the application.
 - **Every provider gets the identical frozen `LLMRequest`.** A chain that trimmed the
   prompt, appended an error or re-retrieved between attempts would pass every ordering
   test and quietly answer a different question on the second try.
-- **`refused` (4xx that is not 429) continues the chain and never retries the provider.**
-  Stopping instead would let one stale key take down a request three vendors would have
-  answered; retrying would spend attempts being told the same thing. A genuinely malformed
-  request therefore costs four fast refusals — bounded, and loud in the logs.
 - **An ungrounded answer is NOT a provider failure.** The citation gate is downstream and
   unchanged; treating "did not cite" as a fault would let the chain shop for a vendor
   willing to answer without evidence. An *empty* completion IS a fault, because "" reaching
   the gate renders a malfunction as "the evidence does not support this".
-- **`answers_configured()` is a chain-wide question now.** It reads "any provider
-  configured", not `ANTHROPIC_API_KEY`. Its import of `jutsu_api.llm` is function-local to
-  break a real cycle — `llm` imports `answers` for the refusal sentinel and the model name.
-- **OpenRouter ships no default model on purpose.** Unset means "skip this provider". A
-  default slug from a marketplace catalogue would look configured and fail every call.
-- **Lists accept semicolons as well as commas**, because `--set-env-vars` splits on commas
-  and production has to be able to set `LLM_PROVIDER_ORDER` without rewriting that flag
-  into gcloud's `^@^` form.
+- **`answers_configured()` is a chain-wide question.** It reads "any provider configured",
+  never one vendor's key — with three interchangeable providers, "can we answer" cannot be
+  a statement about one of them.
 - **A fresh `httpx.AsyncClient` per call, not a module-level one.** Same event-loop-bound
   pool trap as the database engine and the Neo4j driver.
-- **Extraction is deliberately NOT in the chain.** `apps/worker` still calls Anthropic
-  directly: it is a durable job with bounded retries, so an outage delays it instead of
-  failing a request, and a second vendor would change what the corpus was extracted with.
 
 ### Identity and ACL traps
 
@@ -405,9 +392,53 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   best-effort by contract; one doorbell drains that org's whole backlog, so a lost
   message costs latency, never work. An org nobody ever rings for still keeps its
   orphaned jobs — that residue of ADR 0012 stands.
-- **The anthropic SDK type-hints against `httpx2`** (its vendored fork). Constructing
-  its exceptions in tests with plain `httpx` objects fails mypy only — import
-  `httpx2 as httpx` in that test module.
+
+### LLM removal and extraction traps (ADR 0024)
+
+- **One vendor is gone from this repository and a test enforces it.**
+  `packages/llm/tests/test_no_legacy_provider.py` walks production sources, every
+  `pyproject.toml`, `uv.lock`, `.env.example` and `deploy.yml` for its name. `docs/adr/`
+  is exempt — an ADR that may not name what it superseded records nothing — and so is
+  the filename `CLAUDE.md`, which is this file. Re-adding the SDK "just to compare" fails
+  the gate, which is the point: it returned 400 to 100% of 200 sampled production calls
+  over thirty days, and because there was only one provider, every answer was a 503 and
+  every nightly extraction was `provider_permanent`.
+- **All three providers deliberately run ONE model family.** The citation gate is a
+  formatting contract (`[n]` markers or `INSUFFICIENT_EVIDENCE`), and a fallback from
+  another family keeps it differently — so its answers get discarded by the gate at
+  exactly the moment the primary is down. Diversity belongs in the *infrastructure*, not
+  the output format. Each model is separately overridable for the case where the family
+  itself is the problem.
+- **`ProviderRefused` continues the chain, and that is deliberate.** The provider is never
+  retried — the same request is refused identically every time — but refusing to try the
+  *next* vendor would let one unrotated key take down a request two others would have
+  answered. The cost is stated rather than hidden: a genuinely malformed request is
+  refused three times instead of once, fast, with `error_class=refused` logged per
+  attempt.
+- **`AllProvidersFailed` carries `error_class` as an attribute, never in `details`.**
+  `details` is rendered into the caller's error envelope, and §11 says a caller must not
+  learn that a chain exists or which vendor was unwell. The attribute exists for the
+  worker, which is not an HTTP caller: `ingest.classify` maps it to `provider_transient`
+  (retried) or `provider_permanent` (not). Reaching that classification at all means
+  *every* vendor failed one request — a single vendor failing falls over and succeeds.
+- **Extraction records the model from the RESPONSE, never from configuration.** With a
+  chain those are different things whenever a fallback fires, and non-negotiable 1 wants
+  the real one. The `extraction_runs` row is inserted as `unresolved` before the call and
+  updated with what answered; a claim written from a *retry* takes the retry's provider,
+  because the retry may well be a different vendor and its claims are the ones stored.
+- **`split_list` accepts semicolons as well as commas, and removing that breaks
+  production.** `gcloud run deploy --set-env-vars` splits its own argument on commas, so a
+  comma-separated `LLM_PROVIDER_ORDER` cannot be set without rewriting that entire flag
+  into gcloud's `^@^` form. It looks like defensive parsing; it is the deployment.
+- **A deploy can now succeed with no model provider at all.** The vendor secret used to be
+  mounted unconditionally; the three replacements are resolved by `describe` and skipped
+  when absent, so a project without them ships a working frontend, a working search and
+  no answers. The workflow emits a warning naming the three secrets — grep a release log
+  for it before debugging a 503 from `/v1/ask`.
+- **`jutsu_llm` may not import an app, and a test asserts it.** Both `apps/api` and
+  `apps/worker` depend on it. An import back would make one app's deployment able to
+  break the other's, and would put prompt composition or job state inside a layer whose
+  whole claim is that it holds two strings and knows nothing about a tenant.
 
 
 ### Ingestion traps (`apps/worker`)

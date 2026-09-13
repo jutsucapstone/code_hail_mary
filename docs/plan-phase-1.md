@@ -796,7 +796,7 @@ at the start of each source run. The cost is recorded rather than hidden.
 
 ### Out of scope
 
-No KT, no GraphRAG, no LLM layer, no Claude integration, no graph writes, no provider
+No KT, no GraphRAG, no LLM layer of any kind, no graph writes, no provider
 connectors, no OAuth or credential storage, no real Enron ingestion. **No multi-tenant
 scheduler** - that is the slice that must decide how tenants are enumerated, and it closes
 the orphaned-job gap as a side effect.
