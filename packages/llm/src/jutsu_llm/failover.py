@@ -1,8 +1,8 @@
 """The provider chain: one request, several vendors, in order, until one answers.
 
-    LLMRequest ──▶ cerebras ──fail──▶ openrouter ──fail──▶ groq
-                      │                   │                  │
-                      └───────────────────┴──────────────────┘
+    LLMRequest ──▶ openrouter ──fail──▶ groq ──fail──▶ gemini
+                      │                  │               │
+                      └──────────────────┴───────────────┘
                                      │
                               first answer wins
 
@@ -38,7 +38,7 @@ from typing import Final
 
 from jutsu_core.errors import ServiceUnavailable
 
-from jutsu_llm.providers import build_provider
+from jutsu_llm.providers import PROVIDER_NAMES, build_provider
 from jutsu_llm.types import (
     LLMProvider,
     LLMRequest,
@@ -70,12 +70,14 @@ __all__ = [
 #: nothing an operator has configured depends on the old spelling.
 logger = logging.getLogger("jutsu.llm")
 
-#: Cerebras, then OpenRouter, then Groq (ADR 0024).
+#: OpenRouter, then Groq, then Gemini (ADR 0026, amending ADR 0024).
 #:
-#: Three independent companies serving one model family. The order is capability-neutral
-#: — they run the same model — so it is really a cost-and-latency order, and it is
-#: configuration rather than a constant anybody has to redeploy to change.
-DEFAULT_ORDER: Final = ("cerebras", "openrouter", "groq")
+#: The first two are independent companies serving one model family, so between them the
+#: order is a cost-and-latency choice. Gemini is a different family and comes last on
+#: purpose: the citation gate is a formatting contract, so a different family is asked only
+#: once both gpt-oss vendors have failed. Cerebras left the default when its account lost
+#: billing; its adapter remains, selectable through `LLM_PROVIDER_ORDER`.
+DEFAULT_ORDER: Final = ("openrouter", "groq", "gemini")
 
 DEFAULT_PROVIDER_TIMEOUT_S: Final = 30.0
 DEFAULT_TOTAL_TIMEOUT_S: Final = 90.0
@@ -158,15 +160,17 @@ def split_list(raw: str) -> list[str]:
 def configured_order() -> tuple[str, ...]:
     """The provider order for this deployment, from `LLM_PROVIDER_ORDER`.
 
-    Unknown names are dropped rather than raising: an operator adding a vendor JUTSU does
-    not implement should not take the answer service down, and `provider_status` shows
-    exactly which names were understood.
+    Any provider this package implements may be named, including one the default leaves
+    out — which is how Cerebras comes back if its account does. Unknown names are dropped
+    rather than raising: an operator naming a vendor JUTSU does not implement should not
+    take the answer service down, and `provider_status` shows exactly which names were
+    understood.
     """
     raw = os.environ.get("LLM_PROVIDER_ORDER", "").strip()
     if not raw:
         return DEFAULT_ORDER
     names = tuple(entry.lower() for entry in split_list(raw))
-    known = tuple(name for name in names if name in DEFAULT_ORDER)
+    known = tuple(name for name in names if name in PROVIDER_NAMES)
     return known or DEFAULT_ORDER
 
 

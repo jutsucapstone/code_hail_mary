@@ -29,7 +29,7 @@ import os
 import pytest
 from jutsu_llm import (
     DEFAULT_MAX_TOKENS,
-    DEFAULT_ORDER,
+    PROVIDER_NAMES,
     FailoverTransport,
     LLMRequest,
     ProviderNotConfigured,
@@ -63,7 +63,7 @@ _PROMPT = "Reply with the single word: ready"
 _MAX_TOKENS = DEFAULT_MAX_TOKENS
 
 
-@pytest.mark.parametrize("name", DEFAULT_ORDER)
+@pytest.mark.parametrize("name", PROVIDER_NAMES)
 async def test_each_configured_provider_answers(name: str) -> None:
     """Credential, endpoint, model id and response shape — all four at once.
 

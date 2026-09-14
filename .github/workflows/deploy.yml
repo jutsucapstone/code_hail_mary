@@ -385,7 +385,7 @@ jobs:
       - name: Resolve the LLM providers
         env:
           ORDER: ${{ vars.JUTSU_LLM_PROVIDER_ORDER }}
-          CEREBRAS_MODEL: ${{ vars.JUTSU_CEREBRAS_MODEL }}
+          GEMINI_MODEL: ${{ vars.JUTSU_GEMINI_MODEL }}
           OPENROUTER_MODEL: ${{ vars.JUTSU_OPENROUTER_MODEL }}
           OPENROUTER_FALLBACK_MODELS: ${{ vars.JUTSU_OPENROUTER_FALLBACK_MODELS }}
           GROQ_MODEL: ${{ vars.JUTSU_GROQ_MODEL }}
@@ -395,9 +395,9 @@ jobs:
         run: |
           SECRETS=""
           for pair in \
-            "CEREBRAS_API_KEY=jutsu-cerebras-api-key" \
             "OPENROUTER_API_KEY=jutsu-openrouter-api-key" \
-            "GROQ_API_KEY=jutsu-groq-api-key"; do
+            "GROQ_API_KEY=jutsu-groq-api-key" \
+            "GEMINI_API_KEY=jutsu-gemini-api-key"; do
             var="${pair%%=*}"
             secret="${pair##*=}"
             if gcloud secrets describe "${secret}" --quiet >/dev/null 2>&1; then
@@ -409,7 +409,7 @@ jobs:
           done
           echo "LLM_SECRETS=${SECRETS}" >> "$GITHUB_ENV"
           if [ -z "${SECRETS}" ]; then
-            echo "::warning title=No LLM provider configured::/v1/ask will answer 503 and extraction jobs will not be enqueued. Create at least one of jutsu-cerebras-api-key, jutsu-openrouter-api-key or jutsu-groq-api-key in Secret Manager (docs/deploy.md 13)."
+            echo "::warning title=No LLM provider configured::/v1/ask will answer 503 and extraction jobs will not be enqueued. Create at least one of jutsu-openrouter-api-key, jutsu-groq-api-key or jutsu-gemini-api-key in Secret Manager (docs/deploy.md 13)."
           fi
 
           ADDITIONS=""
@@ -418,7 +418,7 @@ jobs:
             "LLM_PROVIDER_TIMEOUT_SECONDS=${PROVIDER_TIMEOUT}" \
             "LLM_TOTAL_TIMEOUT_SECONDS=${TOTAL_TIMEOUT}" \
             "LLM_MAX_PROVIDER_ATTEMPTS=${MAX_ATTEMPTS}" \
-            "CEREBRAS_MODEL=${CEREBRAS_MODEL}" \
+            "GEMINI_MODEL=${GEMINI_MODEL}" \
             "OPENROUTER_MODEL=${OPENROUTER_MODEL}" \
             "OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS}" \
             "GROQ_MODEL=${GROQ_MODEL}"; do

@@ -1,6 +1,7 @@
 # ADR 0024 — One three-provider LLM stack for answers and extraction
 
-**Status:** accepted
+**Status:** accepted — amended by ADR 0026 (Cerebras out of the default order; Gemini as a
+different-family last fallback)
 **Date:** 2026-09-13
 **Supersedes:** ADR 0023 (multi-provider answer failover) — its seam, its taxonomy and its
 budget stand; its choice of primary vendor and its exclusion of extraction do not.

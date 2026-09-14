@@ -1,4 +1,4 @@
-"""JUTSU's model access: three providers, one chain, one normalised response (ADR 0024).
+"""JUTSU's model access: several providers, one chain, one normalised response (ADR 0024, 0026).
 
     types      the request, the response, the refusal sentinel, the failure taxonomy
     providers  one adapter per vendor: authenticate, shape, parse, classify
@@ -34,9 +34,12 @@ from jutsu_llm.failover import (
 )
 from jutsu_llm.providers import (
     DEFAULT_CEREBRAS_MODEL,
+    DEFAULT_GEMINI_MODEL,
     DEFAULT_GROQ_MODEL,
     DEFAULT_OPENROUTER_MODEL,
+    PROVIDER_NAMES,
     CerebrasProvider,
+    GeminiProvider,
     GroqProvider,
     OpenAICompatibleProvider,
     OpenRouterProvider,
@@ -58,6 +61,7 @@ from jutsu_llm.types import (
 
 __all__ = [
     "DEFAULT_CEREBRAS_MODEL",
+    "DEFAULT_GEMINI_MODEL",
     "DEFAULT_GROQ_MODEL",
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_MAX_TOKENS",
@@ -66,9 +70,11 @@ __all__ = [
     "DEFAULT_PROVIDER_TIMEOUT_S",
     "DEFAULT_TOTAL_TIMEOUT_S",
     "INSUFFICIENT_EVIDENCE",
+    "PROVIDER_NAMES",
     "AllProvidersFailed",
     "CerebrasProvider",
     "FailoverTransport",
+    "GeminiProvider",
     "GroqProvider",
     "LLMProvider",
     "LLMRequest",

@@ -142,14 +142,14 @@ def mailbox() -> RecordingEmailSender:
 
 #: Every environment variable that can put a provider into the answer chain.
 #:
-#: All three, in both directions, and that is not thoroughness for its own sake: the root
+#: All of them, in both directions, and that is not thoroughness for its own sake: the root
 #: conftest loads `.env`, so a developer with a real key in it would otherwise leave the
 #: chain configured through a test that means to remove it — and the test would pass or
 #: fail depending on whose machine ran it.
-_PROVIDER_KEY_ENV = ("CEREBRAS_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY")
+_PROVIDER_KEY_ENV = ("CEREBRAS_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY")
 
 
-def configure_answers(monkeypatch: pytest.MonkeyPatch, provider: str = "CEREBRAS") -> None:
+def configure_answers(monkeypatch: pytest.MonkeyPatch, provider: str = "OPENROUTER") -> None:
     """Make `answers_configured()` true, with exactly one provider in the chain.
 
     Exactly one, so a test that reaches a transport reaches a predictable one. The value

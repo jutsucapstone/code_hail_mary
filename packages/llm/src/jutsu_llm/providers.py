@@ -1,10 +1,10 @@
 """One adapter per vendor. Authenticate, shape, parse, classify — and nothing else.
 
-**All three speak the same protocol**, which is why there is one implementation and three
-thin subclasses. Cerebras, OpenRouter and Groq each serve an OpenAI-compatible
-`POST /v1/chat/completions`, so they differ only in base URL, model and — for OpenRouter —
-an extra `models` array. Three vendor SDKs would have been three dependency trees and
-three sets of exception types to translate, for what is one authenticated POST each.
+**Every vendor here speaks the same protocol**, which is why there is one implementation
+and thin subclasses. Cerebras, OpenRouter, Groq and Gemini each serve an OpenAI-compatible
+chat-completions endpoint, so they differ only in base URL, model and — for OpenRouter — an
+extra `models` array. Four vendor SDKs would have been four dependency trees and four sets
+of exception types to translate, for what is one authenticated POST each.
 
 **Model ids are configuration, never constants in this file's logic.** Every adapter reads
 its model from the environment, because a vendor's catalogue changes on their schedule and
@@ -46,11 +46,15 @@ from jutsu_llm.types import (
 __all__ = [
     "CEREBRAS_BASE_URL",
     "DEFAULT_CEREBRAS_MODEL",
+    "DEFAULT_GEMINI_MODEL",
     "DEFAULT_GROQ_MODEL",
     "DEFAULT_OPENROUTER_MODEL",
+    "GEMINI_BASE_URL",
     "GROQ_BASE_URL",
     "OPENROUTER_BASE_URL",
+    "PROVIDER_NAMES",
     "CerebrasProvider",
+    "GeminiProvider",
     "GroqProvider",
     "OpenAICompatibleProvider",
     "OpenRouterProvider",
@@ -61,6 +65,9 @@ __all__ = [
 CEREBRAS_BASE_URL: Final = "https://api.cerebras.ai/v1/chat/completions"
 GROQ_BASE_URL: Final = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_BASE_URL: Final = "https://openrouter.ai/api/v1/chat/completions"
+#: Google's OpenAI compatibility layer for the Gemini API, read from its guide on 2026-09-14
+#: (ADR 0026). Google labels the layer beta.
+GEMINI_BASE_URL: Final = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 #: **One model family across all three providers, and that is the deliberate choice.**
 #:
@@ -88,6 +95,19 @@ DEFAULT_GROQ_MODEL: Final = "openai/gpt-oss-120b"
 #: at $0.04/$0.17 per million tokens — the cheapest tier, so a fallback cannot turn into a
 #: cost incident the way a frontier default at $5/$30 would.
 DEFAULT_OPENROUTER_MODEL: Final = "openai/gpt-oss-120b"
+
+#: **The one different family in the chain, placed last on purpose (ADR 0026).** Everything
+#: above about the citation gate still holds, which is why Gemini is asked only once both
+#: gpt-oss vendors have failed, and why it had to pass the application's own citation gate
+#: and extraction parser live before joining.
+#:
+#: **Chosen by measurement, not recency.** On 2026-09-14 the live contract passed on
+#: `gemini-3.6-flash` and `gemini-3.5-flash`, while the newer `gemini-3.8-flash` and
+#: `gemini-3.7-flash` timed out or answered 503 "high demand" on every call. All four are
+#: stable on Google's model page; `gemini-2.5-flash`, also listed, answers 404 "no longer
+#: available to new users" and names 3.6 as its replacement. Gemini 3 models cannot turn
+#: thinking off, and the compatibility layer leaves those tokens out of `completion_tokens`.
+DEFAULT_GEMINI_MODEL: Final = "gemini-3.6-flash"
 
 _OPENROUTER_MODEL_ENV: Final = "OPENROUTER_MODEL"
 
@@ -249,6 +269,33 @@ class GroqProvider(OpenAICompatibleProvider):
         )
 
 
+class GeminiProvider(OpenAICompatibleProvider):
+    """Gemini, through Google's OpenAI compatibility layer, as the last link (ADR 0026).
+
+    **A Gemini API key, not Vertex.** Embeddings reach Vertex AI as the runtime service
+    account; this key belongs to Google's Gemini API, whose terms treat unpaid use
+    differently — prompts may be used to improve Google's products and read by reviewers.
+    The key's Cloud project must carry active billing before tenant evidence flows here.
+
+    **"High demand" is a 503, and that is an ordinary fallover.** Measured 2026-09-14: the
+    newest Flash models answered 503 UNAVAILABLE for minutes at a time, Google's own message
+    calling the spike temporary. The shared adapter already maps 5xx to
+    `ProviderUnavailable`; as the last provider, that means the caller gets JUTSU's usual
+    sentence rather than an answer.
+    """
+
+    def __init__(
+        self, *, model: str | None = None, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        super().__init__(
+            name="gemini",
+            base_url=GEMINI_BASE_URL,
+            api_key_env="GEMINI_API_KEY",
+            model=model or _env("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
+            transport=transport,
+        )
+
+
 class OpenRouterProvider(OpenAICompatibleProvider):
     """OpenRouter, with its own ordered model fallback inside our single attempt.
 
@@ -295,14 +342,19 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         )
 
 
-#: Name to constructor. The only place a provider name becomes a class, so
-#: `LLM_PROVIDER_ORDER` is validated against exactly this set and a typo is a startup-time
-#: complaint rather than a provider that silently never runs.
+#: Name to constructor. The only place a provider name becomes a class, and therefore the
+#: set `LLM_PROVIDER_ORDER` is validated against. Cerebras stays although the default order
+#: no longer names it (ADR 0026): an adapter that works is one variable away from use, and
+#: no deployment mounts its key.
 _REGISTRY: Final[dict[str, type]] = {
     "cerebras": CerebrasProvider,
     "openrouter": OpenRouterProvider,
     "groq": GroqProvider,
+    "gemini": GeminiProvider,
 }
+
+#: Every provider this package implements, in registry order.
+PROVIDER_NAMES: Final = tuple(_REGISTRY)
 
 
 def build_provider(name: str) -> Any:

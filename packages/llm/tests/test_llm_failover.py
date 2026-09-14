@@ -39,6 +39,7 @@ import pytest
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_llm import (
     DEFAULT_CEREBRAS_MODEL,
+    DEFAULT_GEMINI_MODEL,
     DEFAULT_GROQ_MODEL,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_ORDER,
@@ -46,6 +47,7 @@ from jutsu_llm import (
     AllProvidersFailed,
     CerebrasProvider,
     FailoverTransport,
+    GeminiProvider,
     GroqProvider,
     LLMRequest,
     LLMResponse,
@@ -66,7 +68,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: Every environment variable that can hold a provider credential. Used by the leak tests,
 #: and listed once so a fourth provider cannot be added without this list noticing.
-KEY_ENVS = ("CEREBRAS_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY")
+KEY_ENVS = ("CEREBRAS_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY")
+
+#: The keys of the providers the default order names. A key outside it — Cerebras's, since
+#: ADR 0026 — configures nothing until `LLM_PROVIDER_ORDER` names that provider.
+ORDERED_KEY_ENVS = ("OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY")
 
 SECRET = "sk-test-DO-NOT-LOG-9f3a2b"
 
@@ -81,7 +87,7 @@ def _no_ambient_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for name in (*KEY_ENVS, "LLM_PROVIDER_ORDER", "OPENROUTER_FALLBACK_MODELS"):
         monkeypatch.delenv(name, raising=False)
-    for name in ("CEREBRAS_MODEL", "GROQ_MODEL", "OPENROUTER_MODEL"):
+    for name in ("CEREBRAS_MODEL", "GROQ_MODEL", "OPENROUTER_MODEL", "GEMINI_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -418,8 +424,17 @@ class TestTheBudget:
 
 
 class TestConfiguration:
-    def test_the_default_order_is_cerebras_openrouter_groq(self) -> None:
-        assert configured_order() == ("cerebras", "openrouter", "groq")
+    def test_the_default_order_is_openrouter_groq_gemini(self) -> None:
+        # ADR 0026: the gpt-oss pair first, the different family last, Cerebras out.
+        assert configured_order() == ("openrouter", "groq", "gemini")
+
+    def test_cerebras_is_off_by_default_and_one_variable_from_use(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert "cerebras" not in DEFAULT_ORDER
+        monkeypatch.setenv("LLM_PROVIDER_ORDER", "cerebras;groq")
+
+        assert configured_order() == ("cerebras", "groq")
 
     def test_the_order_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Ordering is deployment policy, not a constant somebody has to redeploy to change.
@@ -442,27 +457,36 @@ class TestConfiguration:
     def test_an_unknown_name_is_dropped_rather_than_crashing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras")
+        monkeypatch.setenv("LLM_PROVIDER_ORDER", "groq,llama,gemini")
 
-        assert configured_order() == ("groq", "cerebras")
+        assert configured_order() == ("groq", "gemini")
 
     def test_an_entirely_unknown_order_falls_back_to_the_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A typo in one variable must not leave a deployment with no providers at all.
-        monkeypatch.setenv("LLM_PROVIDER_ORDER", "gemini,llama")
+        monkeypatch.setenv("LLM_PROVIDER_ORDER", "llama,mistral")
 
         assert configured_order() == DEFAULT_ORDER
 
     def test_an_unconfigured_provider_is_left_out_of_the_chain(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Cerebras and Groq configured, OpenRouter absent: the chain is the two that
-        # exist, in order, and nothing crashes over the one that does not.
+        # Groq and Gemini configured, OpenRouter absent: the chain is the two that exist,
+        # in order, and nothing crashes over the one that does not.
+        monkeypatch.setenv("GROQ_API_KEY", SECRET)
+        monkeypatch.setenv("GEMINI_API_KEY", SECRET)
+
+        assert [provider.name for provider in build_chain()] == ["groq", "gemini"]
+
+    def test_a_key_for_a_provider_outside_the_order_is_never_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A leftover Cerebras key must not quietly put Cerebras back in front of anyone.
         monkeypatch.setenv("CEREBRAS_API_KEY", SECRET)
         monkeypatch.setenv("GROQ_API_KEY", SECRET)
 
-        assert [provider.name for provider in build_chain()] == ["cerebras", "groq"]
+        assert [provider.name for provider in build_chain()] == ["groq"]
 
     def test_one_provider_configured_is_a_chain_of_one(
         self, monkeypatch: pytest.MonkeyPatch
@@ -477,7 +501,7 @@ class TestConfiguration:
         assert build_chain() == []
         assert any_provider_configured() is False
 
-    @pytest.mark.parametrize("key", KEY_ENVS)
+    @pytest.mark.parametrize("key", ORDERED_KEY_ENVS)
     def test_any_one_vendor_is_enough_to_answer(
         self, key: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -487,10 +511,23 @@ class TestConfiguration:
 
         assert any_provider_configured() is True
 
+    def test_a_cerebras_key_alone_answers_nothing_until_the_order_names_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ADR 0026 took Cerebras out of the default. A deployment that still mounts only
+        # its key must say "not configured" honestly rather than answer through it.
+        monkeypatch.setenv("CEREBRAS_API_KEY", SECRET)
+
+        assert any_provider_configured() is False
+
+        monkeypatch.setenv("LLM_PROVIDER_ORDER", "cerebras")
+
+        assert any_provider_configured() is True
+
     def test_a_provider_without_a_key_is_not_configured(self) -> None:
         # Constructed rather than requested: an unconfigured provider is absent from the
         # chain instead of consuming one of its attempts on the request path.
-        for provider in (CerebrasProvider, OpenRouterProvider, GroqProvider):
+        for provider in (CerebrasProvider, OpenRouterProvider, GroqProvider, GeminiProvider):
             with pytest.raises(ProviderNotConfigured):
                 provider()
 
@@ -504,8 +541,8 @@ class TestConfiguration:
 
         assert rows["groq"]["state"] == "configured"
         assert rows["groq"]["model"] == "openai/gpt-oss-120b"
-        assert rows["cerebras"]["state"] == "not_configured"
-        assert rows["cerebras"]["model"] == ""
+        assert rows["gemini"]["state"] == "not_configured"
+        assert rows["gemini"]["model"] == ""
         assert SECRET not in json.dumps(rows)
 
 
@@ -671,7 +708,7 @@ class TestTheOpenAICompatibleAdapter:
 
 
 class TestEachVendorIsWiredToItsOwnEndpoint:
-    """One shared adapter, three vendors — so the per-vendor wiring is what can drift.
+    """One shared adapter, four vendors — so the per-vendor wiring is what can drift.
 
     Asserted per provider rather than once, because the shared code being right says
     nothing about whether Cerebras reads `CEREBRAS_API_KEY` or posts to Cerebras.
@@ -683,6 +720,7 @@ class TestEachVendorIsWiredToItsOwnEndpoint:
             (CerebrasProvider, "CEREBRAS_API_KEY", "cerebras", "api.cerebras.ai"),
             (OpenRouterProvider, "OPENROUTER_API_KEY", "openrouter", "openrouter.ai"),
             (GroqProvider, "GROQ_API_KEY", "groq", "api.groq.com"),
+            (GeminiProvider, "GEMINI_API_KEY", "gemini", "generativelanguage.googleapis.com"),
         ],
     )
     async def test_each_provider_authenticates_and_posts_to_its_own_vendor(
@@ -714,6 +752,7 @@ class TestEachVendorIsWiredToItsOwnEndpoint:
             (CerebrasProvider, "CEREBRAS_API_KEY", "GROQ_API_KEY"),
             (OpenRouterProvider, "OPENROUTER_API_KEY", "CEREBRAS_API_KEY"),
             (GroqProvider, "GROQ_API_KEY", "OPENROUTER_API_KEY"),
+            (GeminiProvider, "GEMINI_API_KEY", "GROQ_API_KEY"),
         ],
     )
     def test_a_provider_never_borrows_another_vendors_key(
@@ -731,9 +770,10 @@ class TestEachVendorIsWiredToItsOwnEndpoint:
 class TestTheVerifiedDefaults:
     """The model ids this layer ships with, pinned so a change is a visible diff.
 
-    All three were read from the vendors' own catalogues on 2026-09-12 (ADR 0024). They
-    are defaults rather than constants in the request path — `CEREBRAS_MODEL`,
-    `OPENROUTER_MODEL` and `GROQ_MODEL` override them — but a silent edit here would
+    Read from the vendors' own sources: the gpt-oss three on 2026-09-12 (ADR 0024), Gemini
+    on 2026-09-14 (ADR 0026). They are defaults rather than constants in the request path —
+    `CEREBRAS_MODEL`, `OPENROUTER_MODEL`, `GROQ_MODEL` and `GEMINI_MODEL` override them — but
+    a silent edit here would
     change what production asks for, so the values are asserted rather than trusted to
     review.
     """
@@ -759,14 +799,23 @@ class TestTheVerifiedDefaults:
 
         assert OpenRouterProvider().model == DEFAULT_OPENROUTER_MODEL == "openai/gpt-oss-120b"
 
-    def test_all_three_default_to_one_model_family(self) -> None:
-        # Deliberate, and the reason is the citation gate: `[n]` markers against numbered
-        # passages are a formatting contract, and a fallback from another model family
-        # keeps it differently — so its answers get thrown away by the gate at exactly
-        # the moment the primary is down. Same family, independent infrastructure.
-        assert DEFAULT_CEREBRAS_MODEL.endswith("gpt-oss-120b")
+    def test_gemini_defaults_to_its_verified_stable_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GEMINI_API_KEY", SECRET)
+
+        assert GeminiProvider().model == DEFAULT_GEMINI_MODEL == "gemini-3.6-flash"
+
+    def test_one_family_goes_first_and_the_different_family_goes_last(self) -> None:
+        # The citation gate is a formatting contract, and a different model family keeps it
+        # differently. So the gpt-oss vendors are asked first, and Gemini only once both
+        # have failed (ADR 0026).
+        first, second, last = DEFAULT_ORDER
+        assert (first, second) == ("openrouter", "groq")
         assert DEFAULT_OPENROUTER_MODEL.endswith("gpt-oss-120b")
         assert DEFAULT_GROQ_MODEL.endswith("gpt-oss-120b")
+        assert last == "gemini"
+        assert DEFAULT_CEREBRAS_MODEL.endswith("gpt-oss-120b"), "the opt-in stays in the family"
 
     def test_the_model_is_overridable_without_a_deploy(
         self, monkeypatch: pytest.MonkeyPatch

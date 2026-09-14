@@ -816,10 +816,11 @@ not read, which is the ACL doing its job and a hint that the traversal is too br
 ### 13. The LLM providers (required — at least one)
 
 Answers (`/v1/ask`, the KT copilot, the KT handover summary) and knowledge extraction both
-run through **one ordered chain of three interchangeable vendors** (ADR 0024). Each key is
-optional and the chain is whichever ones resolve — but **with none of them configured the
-deployment has no answers at all**: `/v1/ask` returns 503 and extraction jobs are never
-enqueued. The deploy still succeeds and emits a workflow warning saying so.
+run through **one ordered chain of vendors** (ADR 0024, amended by ADR 0026): OpenRouter and
+Groq serving one model family, then Gemini as the last fallback. Each key is optional and
+the chain is whichever ones resolve — but **with none of them configured the deployment has
+no answers at all**: `/v1/ask` returns 503 and extraction jobs are never enqueued. The
+deploy still succeeds and emits a workflow warning saying so.
 
 ```
                         JUTSU REQUEST
@@ -832,16 +833,16 @@ enqueued. The deploy still succeeds and emits a workflow warning saying so.
                               │
                     NORMALISED LLM REQUEST          ← the chain starts here
                               │
-                        ┌──────────┐
-                        │ CEREBRAS │ primary
-                        └────┬─────┘
-                             │ timeout / 429 / 5xx / refused
-                       ┌─────▼──────┐
-                       │ OPENROUTER │ (its own model list inside one attempt)
+                       ┌────────────┐
+                       │ OPENROUTER │ primary (its own model list inside one attempt)
                        └─────┬──────┘
+                             │ timeout / 429 / 5xx / refused
+                        ┌────▼────┐
+                        │  GROQ   │ same model family
+                        └────┬────┘
                              │
                         ┌────▼────┐
-                        │  GROQ   │
+                        │ GEMINI  │ different family, last on purpose (ADR 0026)
                         └────┬────┘
                              │
                     RESPONSE NORMALISER             ← the chain ends here
@@ -857,17 +858,22 @@ own, which answered 400 to every call for five days while every nightly run reco
 **Create the secrets. The pipeline mounts each one that exists and skips the rest:**
 
 ```bash
-printf '%s' 'YOUR-CEREBRAS-KEY'   | gcloud secrets create jutsu-cerebras-api-key --data-file=-
 printf '%s' 'YOUR-OPENROUTER-KEY' | gcloud secrets create jutsu-openrouter-api-key --data-file=-
 printf '%s' 'YOUR-GROQ-KEY'       | gcloud secrets create jutsu-groq-api-key --data-file=-
+printf '%s' 'YOUR-GEMINI-KEY'     | gcloud secrets create jutsu-gemini-api-key --data-file=-
 ```
+
+**The Gemini key's Cloud project must have active billing.** Google's Gemini API terms let
+unpaid use improve Google's products and be read by human reviewers, and say not to send
+confidential information to it. Tenant evidence reaches Gemini whenever OpenRouter and Groq
+both fail, so an unbilled key is a data-handling decision, not a saving.
 
 `printf`, never `echo` — a trailing newline in a bearer token fails authentication in a way
 that looks exactly like a wrong key. Then grant the runtime account access, as §6 does for
 every other secret:
 
 ```bash
-for s in jutsu-cerebras-api-key jutsu-openrouter-api-key jutsu-groq-api-key; do
+for s in jutsu-openrouter-api-key jutsu-groq-api-key jutsu-gemini-api-key; do
   gcloud secrets add-iam-policy-binding "$s" \
     --member "serviceAccount:jutsu-runtime@PROJECT.iam.gserviceaccount.com" \
     --role roles/secretmanager.secretAccessor
@@ -875,10 +881,20 @@ done
 ```
 
 **Rotating a key** is a new secret *version* plus a redeploy — the services mount
-`:latest`, which is resolved when a revision starts, not per request:
+`:latest`, which is resolved when an instance starts, not per request:
 
 ```bash
-printf '%s' 'NEW-KEY' | gcloud secrets versions add jutsu-cerebras-api-key --data-file=-
+printf '%s' 'NEW-KEY' | gcloud secrets versions add jutsu-groq-api-key --data-file=-
+```
+
+**Retiring a provider: remove the mount first, disable the secret second.** A service that
+mounts a secret whose latest version is disabled cannot start an instance ("Could not fetch
+secret … Instance startup will now abort"). Warm instances keep serving, so the outage waits
+for the next scale from zero — on 2026-09-14 it was the first request after an idle spell:
+
+```bash
+gcloud run services update jutsu-api    --region asia-south1 --remove-secrets CEREBRAS_API_KEY
+gcloud run services update jutsu-worker --region asia-south1 --remove-secrets CEREBRAS_API_KEY
 ```
 
 **Models and bounds are repository variables**, not secrets — a model id is on every
@@ -886,10 +902,10 @@ invoice and in the vendor's public catalogue:
 
 | Variable | Default if unset | Notes |
 |---|---|---|
-| `JUTSU_LLM_PROVIDER_ORDER` | `cerebras;openrouter;groq` | **Semicolons.** See below. |
-| `JUTSU_CEREBRAS_MODEL` | `gpt-oss-120b` | Their catalogue lists it production, 131k context |
+| `JUTSU_LLM_PROVIDER_ORDER` | `openrouter;groq;gemini` | **Semicolons.** See below. `cerebras` is still accepted, off by default |
 | `JUTSU_OPENROUTER_MODEL` | `openai/gpt-oss-120b` | Verified live 2026-09-12: 131k context, $0.04/$0.17 per Mtok |
 | `JUTSU_GROQ_MODEL` | `openai/gpt-oss-120b` | Marked *production*, not preview |
+| `JUTSU_GEMINI_MODEL` | `gemini-3.6-flash` | Stable; passed the live contract 2026-09-14 while 3.8 and 3.7 answered 503. `gemini-2.5-flash` answers 404 to new users |
 | `JUTSU_OPENROUTER_FALLBACK_MODELS` | *(none)* | Semicolon-separated; becomes OpenRouter's own `models` array |
 | `JUTSU_LLM_PROVIDER_TIMEOUT_SECONDS` | `30` | Per provider |
 | `JUTSU_LLM_TOTAL_TIMEOUT_SECONDS` | `90` | The whole chain |
@@ -899,13 +915,26 @@ invoice and in the vendor's public catalogue:
 and `max_tokens` bounds the two together — so an over-tight budget returns no content at
 all rather than a short answer, and JUTSU reads that as a provider fault and falls over to
 the next vendor. The defaults (4096 for answers, 8192 for extraction) leave ample room;
-this matters only if somebody lowers them.
+this matters only if somebody lowers them. Gemini 3 models think too and cannot turn it
+off; the same budgets leave room.
 
-**All three default to the same model family on purpose.** The citation gate is a
-formatting contract — `[n]` markers against numbered passages, or `INSUFFICIENT_EVIDENCE`
-and nothing else — and models from different families keep it differently. A fallback from
-another family would have its answers discarded by the gate at exactly the moment the
-primary is down. Same family, three independent companies (ADR 0024).
+**OpenRouter and Groq run the same model family on purpose; Gemini is the one exception.**
+The citation gate is a formatting contract — `[n]` markers against numbered passages, or
+`INSUFFICIENT_EVIDENCE` and nothing else — and models from different families keep it
+differently. So the gpt-oss pair answers first, and Gemini is asked only once both have
+failed (ADR 0026). A provider joins the chain after passing the live contract tests, which
+run the application's own citation gate and extraction parser against it:
+
+```bash
+JUTSU_LIVE_LLM_SMOKE=1 uv run --env-file .env pytest -q \
+  packages/llm/tests/test_llm_live_smoke.py \
+  apps/api/tests/test_answers_live_contract.py \
+  apps/worker/tests/test_extraction_live_contract.py
+```
+
+A failure there with `error_class: unavailable` or `timeout` is the vendor's load, not a
+format failure — Gemini Flash models answered 503 "high demand" for long stretches on
+2026-09-14. Read the class before reading the result.
 
 **Why semicolons.** `gcloud run deploy --set-env-vars` splits its own argument on commas,
 so a comma-separated list cannot be passed without switching that entire flag to gcloud's

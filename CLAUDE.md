@@ -403,12 +403,34 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   the gate, which is the point: it returned 400 to 100% of 200 sampled production calls
   over thirty days, and because there was only one provider, every answer was a 503 and
   every nightly extraction was `provider_permanent`.
-- **All three providers deliberately run ONE model family.** The citation gate is a
-  formatting contract (`[n]` markers or `INSUFFICIENT_EVIDENCE`), and a fallback from
-  another family keeps it differently — so its answers get discarded by the gate at
-  exactly the moment the primary is down. Diversity belongs in the *infrastructure*, not
-  the output format. Each model is separately overridable for the case where the family
-  itself is the problem.
+- **The gpt-oss pair runs ONE model family, and Gemini is the named exception, last.** The
+  citation gate is a formatting contract (`[n]` markers or `INSUFFICIENT_EVIDENCE`), and
+  another family keeps it differently — so its answers can be discarded by the gate at
+  exactly the moment the primary is down. OpenRouter and Groq go first; Gemini is asked
+  only once both have failed, and a provider joins the chain only after the live contract
+  tests (`test_answers_live_contract.py`, `test_extraction_live_contract.py`) pass against
+  it (ADR 0026). Each model is separately overridable.
+- **A key outside the default order configures nothing.** `configured_order()` accepts any
+  implemented provider, but a Cerebras key alone leaves `any_provider_configured()` False
+  until `LLM_PROVIDER_ORDER` names it. `apps/api/tests/conftest.configure_answers`
+  therefore defaults to OpenRouter; pointed at a provider outside the order, every answer
+  test becomes a 503.
+- **Disabling a secret version a service still mounts is an outage, not a revocation.**
+  Cloud Run resolves secret env vars when an instance starts, and aborts the start if the
+  latest version is disabled. Warm instances hide it until the next scale from zero: on
+  2026-09-14 Cerebras's key was disabled while both services mounted it, and the first
+  cold request got Google's HTML 500. Remove the mount (`--remove-secrets`), then disable.
+- **A Gemini API key is not Vertex, and unpaid use is not private.** Embeddings reach Vertex
+  as the runtime service account; `GEMINI_API_KEY` is Google's Gemini API, whose terms let
+  unpaid use improve Google's products. The key's project needs active billing before
+  tenant evidence flows through it, and the deploying account here cannot see that
+  project, so it is the owner's fact to confirm.
+- **Google's model page is not proof a model is callable, and newest is not most
+  available.** `gemini-2.5-flash` is listed stable and answers 404 "no longer available to
+  new users"; on 2026-09-14 `gemini-3.8-flash` and `3.7` timed out or answered 503 "high
+  demand" on every live call while `3.6` and `3.5` passed the whole contract in under 20 s.
+  The default is `gemini-3.6-flash` for that reason. Probe with the real key before pinning
+  one, and read `error_class` before reading a live contract failure as a format problem.
 - **`ProviderRefused` continues the chain, and that is deliberate.** The provider is never
   retried — the same request is refused identically every time — but refusing to try the
   *next* vendor would let one unrotated key take down a request two others would have
