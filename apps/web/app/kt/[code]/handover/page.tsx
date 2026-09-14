@@ -1,23 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Download, ExternalLink, FileText, Loader2 } from "lucide-react";
 
 import { KtFailure } from "@/components/kt/kt-failure";
 import { useKtPackage } from "@/components/kt/kt-shell";
 import { When } from "@/components/admin/page-scaffold";
-import { api } from "@/lib/api";
+import { api, type KtHandoverReport } from "@/lib/api";
 import { classifyApiError } from "@/lib/api-error";
 
 /**
- * Handover — what this package can hand over today, stated plainly.
+ * Handover — what this package hands over, stated plainly.
  *
- * The executive summary is composed on demand from the claims THIS recipient may
- * read, grounded and citation-gated server-side exactly like Ask (§29 without a fake
- * downloadable: what renders is real, cited, and never persisted). When it cannot be
- * grounded, the refusal renders — never a fluent guess.
+ * Everything on this page is the package SUBJECT's knowledge (ADR 0025): their documents,
+ * their extracted claims, and a first-day summary composed from those claims on demand.
+ * The summary is grounded and citation-gated server-side exactly like Ask, and it arrives
+ * together with the same report rendered as a real PDF — one response, so the text on
+ * screen and the file downloaded are one composition, never two model calls that could
+ * disagree. Nothing is persisted: the PDF lives in this tab until the recipient saves it.
  */
 const TYPE_LABELS: Record<string, string> = {
   decision: "decisions",
@@ -50,6 +53,7 @@ export default function Page() {
     [pkg.subject.role_title ?? pkg.subject.designation, pkg.subject.role_level]
       .filter(Boolean)
       .join(" · ") || null;
+  const subjectName = pkg.subject.display_name ?? "your colleague";
 
   return (
     <div className="flex flex-col gap-6">
@@ -74,7 +78,8 @@ export default function Page() {
             <Link className="text-brand underline-offset-4 hover:underline" href={`${base}/documents`}>
               documents
             </Link>{" "}
-            in its window that your account is authorised to see.
+            from {subjectName}&apos;s connected accounts and Knowledge Basket inside this
+            package&apos;s window.
           </li>
           <li>
             · Use{" "}
@@ -86,97 +91,179 @@ export default function Page() {
         </ul>
         <p className="max-w-prose text-pretty text-xs leading-relaxed text-muted-foreground">
           Decisions, people, projects, meetings and responsibilities in the tabs above
-          are extracted from real documents, each carrying its verbatim source quote.
+          are extracted from those documents, each carrying its verbatim source quote.
         </p>
       </div>
 
-      <ExecutiveSummary code={code} />
+      <ExecutiveSummary code={code} subjectName={subjectName} />
     </div>
   );
 }
 
-function ExecutiveSummary({ code }: { code: string }) {
-  const [requested, setRequested] = useState(false);
-  const composed = useQuery({
-    queryKey: ["kt", code, "handover-summary"],
-    queryFn: () => api.ktHandoverSummary(code),
-    enabled: requested,
-    staleTime: Infinity,
-    retry: false,
+/** The PDF bytes the API sent as base64, as a Blob a browser can open or save. */
+function pdfBlob(base64: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: "application/pdf" });
+}
+
+const PRIMARY =
+  "inline-flex w-fit items-center gap-2 rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const SECONDARY =
+  "inline-flex w-fit items-center gap-2 rounded-lg border border-hairline-strong px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
+/**
+ * Compose summary: one press, one POST, one model call — the narrative and its PDF.
+ *
+ * A mutation, not a query: composing spends a `KT_SUMMARY` allowance and writes an audit
+ * row, so it must run exactly when pressed and never again because a panel re-mounted or
+ * the window regained focus. The button is disabled while a composition is in flight, so
+ * a double click is one composition, not two charged ones.
+ *
+ * The PDF is held as an object URL for this tab only, released when a new composition
+ * starts and when the page unmounts — a blob URL that is never revoked keeps the whole
+ * report in memory for the life of the tab.
+ */
+function ExecutiveSummary({ code, subjectName }: { code: string; subjectName: string }) {
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const urlRef = useRef<string | null>(null);
+
+  const release = () => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = null;
+    setPdfUrl(null);
+  };
+
+  useEffect(
+    () => () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    },
+    [],
+  );
+
+  const compose = useMutation<KtHandoverReport>({
+    mutationFn: () => api.ktHandoverReport(code),
+    onMutate: release,
+    onSuccess: (report) => {
+      const url = URL.createObjectURL(pdfBlob(report.pdf_base64));
+      urlRef.current = url;
+      setPdfUrl(url);
+    },
   });
+
+  const start = () => {
+    if (compose.isPending) return;
+    compose.mutate();
+  };
+
+  const button = (
+    <button type="button" onClick={start} disabled={compose.isPending} className={PRIMARY}>
+      {compose.isPending ? (
+        <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+      ) : (
+        <FileText aria-hidden="true" className="h-4 w-4" />
+      )}
+      {compose.isPending ? "Composing…" : compose.isSuccess ? "Compose again" : "Compose summary"}
+    </button>
+  );
 
   return (
     <section
       aria-labelledby="kt-exec-heading"
+      aria-busy={compose.isPending}
       className="flex flex-col gap-4 rounded-2xl border border-hairline bg-surface/40 p-8"
     >
       <h3 id="kt-exec-heading" className="display text-lg font-semibold">
         Executive summary
       </h3>
-      {!requested ? (
-        <>
-          <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            Compose a first-day briefing from the extracted knowledge you are authorised
-            to read — responsibilities, projects, key contacts, decisions and open work,
-            every claim grounded in a cited source document. Composed fresh each time,
-            never stored.
-          </p>
-          <button
-            type="button"
-            onClick={() => setRequested(true)}
-            className="w-fit rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-          >
-            Compose summary
-          </button>
-        </>
-      ) : composed.error ? (
-        (() => {
-          const failure = classifyApiError(composed.error);
-          // A 503 here is the deployment saying it has no answer model configured, and
-          // the API's own sentence says exactly that. Rendering it through the generic
-          // error notice titled "That did not load" with a Try again button describes a
-          // transient fault and offers a control that cannot ever succeed — the two
-          // things §34 says a failure state must not do.
-          if (failure.kind === "unavailable") {
-            return (
-              <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-                {failure.message}
-              </p>
-            );
-          }
-          return (
-            <KtFailure failure={failure} onRetry={() => void composed.refetch()} />
-          );
-        })()
-      ) : composed.isPending ? (
-        <p aria-live="polite" className="text-sm text-muted-foreground">
-          Composing from the evidence you can read — this takes a moment.
-        </p>
-      ) : composed.data.insufficient_evidence || !composed.data.summary ? (
+
+      {compose.isIdle ? (
         <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-          The extracted knowledge you can read is not enough to ground a summary yet.
-          Nothing is generated without evidence — as extraction covers more of this
-          package&apos;s documents, try again.
+          Compose a first-day briefing from {subjectName}&apos;s knowledge in this package —
+          responsibilities, projects, key contacts, decisions and open work, every statement
+          grounded in a cited source. You get it here and as a PDF to keep. Composed fresh
+          each time; JUTSU stores neither.
         </p>
-      ) : (
+      ) : null}
+
+      {compose.isPending ? (
+        <p aria-live="polite" className="text-sm text-muted-foreground">
+          Composing from {subjectName}&apos;s knowledge and preparing the PDF — this takes a
+          moment.
+        </p>
+      ) : null}
+
+      {compose.isError
+        ? (() => {
+            const failure = classifyApiError(compose.error);
+            // A 503 is the deployment saying no answer model is configured, or that none
+            // could answer just now — the API's own sentence says which. A generic "That
+            // did not load" with a Try again control would describe a fault in the page;
+            // the button below stays so the recipient can press again when they choose.
+            if (failure.kind === "unavailable") {
+              return (
+                <p
+                  role="alert"
+                  className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground"
+                >
+                  {failure.message}
+                </p>
+              );
+            }
+            return <KtFailure failure={failure} onRetry={start} />;
+          })()
+        : null}
+
+      {compose.isSuccess ? <Composed report={compose.data} pdfUrl={pdfUrl} /> : null}
+
+      {compose.isError && classifyApiError(compose.error).kind !== "unavailable" ? null : button}
+    </section>
+  );
+}
+
+function Composed({ report, pdfUrl }: { report: KtHandoverReport; pdfUrl: string | null }) {
+  const grounded = !report.insufficient_evidence && Boolean(report.summary);
+  return (
+    <div className="flex flex-col gap-4">
+      {grounded ? (
         <>
           <div className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground">
-            {composed.data.summary}
+            {report.summary}
           </div>
           <div className="flex flex-col gap-1.5 border-t border-hairline pt-4">
             <p className="font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground">
               Sources
             </p>
             <ol className="flex flex-col gap-1 text-xs text-muted-foreground">
-              {composed.data.citations.map((citation) => (
-                <li key={citation.marker}>
-                  [{citation.marker}] {citation.document_title} ({citation.source_system})
+              {report.references.map((reference) => (
+                <li key={reference.number}>
+                  [{reference.number}] {reference.document_title} ({reference.source_system})
                 </li>
               ))}
             </ol>
           </div>
         </>
+      ) : (
+        <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
+          The extracted knowledge in this package is not enough to ground a summary yet.
+          Nothing is generated without evidence — the PDF still lists what the package holds,
+          section by section.
+        </p>
       )}
-    </section>
+
+      {pdfUrl ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <a href={pdfUrl} download={report.filename} className={SECONDARY}>
+            <Download aria-hidden="true" className="h-4 w-4" />
+            Download PDF
+          </a>
+          <a href={pdfUrl} target="_blank" rel="noopener noreferrer" className={SECONDARY}>
+            <ExternalLink aria-hidden="true" className="h-4 w-4" />
+            Open PDF
+          </a>
+        </div>
+      ) : null}
+    </div>
   );
 }

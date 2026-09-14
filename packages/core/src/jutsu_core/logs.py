@@ -28,12 +28,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Iterable, Sequence
 
+from jutsu_core.ids import KT_CODE_PREFIX
+
 __all__ = [
+    "KT_CODE_REDACTED",
     "UNBOUND",
     "JsonFormatter",
+    "RedactKtCode",
     "RedactQueryString",
     "configure",
     "level_from_env",
@@ -45,6 +50,15 @@ UNBOUND = "-"
 
 #: uvicorn's loggers do not propagate by default, so they must be taken over by name.
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+#: What stands in for a knowledge-transfer package's code on a log line.
+KT_CODE_REDACTED = f"{KT_CODE_PREFIX}<redacted>"
+
+#: A KT code in any case, through to the end of its path segment. The rest of the segment
+#: rather than exactly eight characters, because `normalise_jutsu_id` repairs what a person
+#: typed — a space, a lower-case letter — before the lookup, so a code that still opens the
+#: package can reach a URL in a longer shape than its canonical one.
+_KT_CODE = re.compile(re.escape(KT_CODE_PREFIX) + r"[^/?#]*", re.IGNORECASE)
 
 
 class JsonFormatter(logging.Formatter):
@@ -147,6 +161,42 @@ class RedactQueryString(logging.Filter):
         return True
 
 
+class RedactKtCode(logging.Filter):
+    """A knowledge-transfer package's code never reaches a line (ADR 0025).
+
+    The code is a capability — it is what opens the package — and the recipient routes
+    carry it in their path, `/v1/kt/{kt_code}/ask`. Two things log a path: uvicorn's
+    access line on every request, and the API's error handlers on every refusal. Anyone
+    able to read the logs and sign in to that tenant could otherwise claim an unaddressed
+    package before the colleague it was created for.
+
+    Every string a record renders is scrubbed — the message, its positional arguments and
+    the top-level values of a structured dict — whichever logger emitted it, so the next
+    route or handler that logs a path does not need to know this exists. The path around
+    the code stays: `/v1/kt/KT-JUTSU-<redacted>/ask` still says which route answered.
+
+    **Not covered.** Values nested inside a structured field, and a traceback's text:
+    nothing in this codebase puts a code in either today. And, for the reason
+    `RedactQueryString` gives, Cloud Run's own request log — Google writes it outside the
+    container with the full URL, so it does hold the code, and only the log sink's
+    configuration can exclude it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _KT_CODE.sub(KT_CODE_REDACTED, record.msg)
+        args = record.args
+        if isinstance(args, dict):
+            record.args = {key: _scrub(value) for key, value in args.items()}
+        elif isinstance(args, tuple):
+            record.args = tuple(_scrub(value) for value in args)
+        return True
+
+
+def _scrub(value: object) -> object:
+    return _KT_CODE.sub(KT_CODE_REDACTED, value) if isinstance(value, str) else value
+
+
 def level_from_env(default: int = logging.INFO) -> int:
     """`LOG_LEVEL`, matched case-insensitively against logging's own level names.
 
@@ -167,6 +217,7 @@ def configure(
     """Point the root logger — and uvicorn's — at one JSON handler on stdout."""
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(RedactQueryString())
+    handler.addFilter(RedactKtCode())
     for log_filter in filters:
         handler.addFilter(log_filter)
     handler.setFormatter(JsonFormatter(context_fields=context_fields))

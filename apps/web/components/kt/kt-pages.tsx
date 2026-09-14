@@ -161,8 +161,9 @@ export function KtOverview() {
           Start with <strong className="text-foreground">Documents</strong> for the
           material inside this package&apos;s window, or{" "}
           <strong className="text-foreground">Ask KT</strong> to search it in plain
-          language. Everything you see here is bounded by what your own account is
-          authorised to read — this package widens nothing.
+          language. Everything here comes from your colleague&apos;s own connected accounts
+          and Knowledge Basket, inside this package&apos;s categories and window — and it
+          closes the moment the package does.
         </p>
       </section>
     </div>
@@ -184,7 +185,8 @@ type KtDocumentDetail =
  * One document, opened.
  *
  * The server decided everything that matters before a word of this arrived: the package
- * is open, the document is inside its period, and the recipient's own grants cover it.
+ * is open, the document is inside its period, and it is the package subject's own
+ * (ADR 0025).
  * A document failing any of those is the same 404 as one that never existed, which is
  * why "no longer available to you" is the honest heading for that case rather than an
  * error — nothing here is broken.
@@ -275,9 +277,9 @@ function KtDocumentReader({ documentId, onBack }: { documentId: string; onBack: 
           {passages.length === 0 ? (
             <EmptyState title="Nothing to read in this document yet">
               <p>
-                You are authorised to read this document and it sits inside the
-                package&apos;s period, but no passages have been stored for it. Text
-                becomes readable here once ingestion has chunked the document.
+                This document is part of the package and sits inside its period, but
+                no passages have been stored for it. Text becomes readable here once
+                ingestion has chunked the document.
               </p>
             </EmptyState>
           ) : (
@@ -373,12 +375,12 @@ export function KtDocuments() {
           </div>
         </LoadingRegion>
       ) : rows.length === 0 ? (
-        <EmptyState title="Nothing you are authorised to read in this window">
+        <EmptyState title="No documents in this package's window yet">
           <p>
-            Documents appear here when your account holds read access to material inside
-            the package&apos;s period. Access comes from your linked source identities —
-            if you expected more, ask your administrator which accounts are linked for
-            you. The package itself cannot widen what you may read.
+            Documents appear here once your colleague&apos;s connected accounts or
+            Knowledge Basket have been synced for the package&apos;s period. If you
+            expected more, ask your administrator whether their accounts were connected
+            before the handover began.
           </p>
         </EmptyState>
       ) : (

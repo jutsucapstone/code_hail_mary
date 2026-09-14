@@ -9,15 +9,16 @@
 
 Every route is gated on `kt:open` — the permission every role holds — and then on the
 package's own binding through `_open_for`, which each service function runs first. Roles
-gate the feature; the package gates the person; the ACL predicate gates the data. No route
-here takes an org id, a user id, principals, or a model name from the body.
+gate the feature; the package gates the person; the package's `KtScope` gates the data
+(ADR 0025). No route here takes an org id, a user id, principals, or a model name from
+the body — and none resolves the requester's principals, because no KT read uses them.
 
-**Why a KT ask route at all**, given `routers/kt.py` records the decision to have one
-search path: that decision was about one *ACL predicate*, not one URL. This route calls
-the same `search_chunks` — the window it passes is ANDed inside the predicate and cannot
-widen it — and the same `synthesise_answer`, and spends the same search budget. What it
-adds is what `/v1/ask` cannot carry without becoming KT-shaped: the package window, the
-conversation, and the trail. ADR 0016 records the reasoning.
+**Why a KT ask route at all.** The copilot answers from the package SUBJECT's own
+documents (`search_subject_chunks`, the same scan, window and ladder as `search_chunks`
+with the subject predicate in the authorization slot), through the same
+`synthesise_answer` and the same search budget. `/v1/ask` answers from the requester's
+own corpus and must keep doing so; the two are different questions, which is why they are
+two routes. ADR 0016 and ADR 0025 record the reasoning.
 
 Question text travels in POST bodies only. Conversation search is a POST for that reason
 (§4.9: user-authored text never reaches a URL, and a URL reaches every log there is).
@@ -37,7 +38,6 @@ from jutsu_retrieval import DEFAULT_K
 from pydantic import BaseModel, Field
 
 from jutsu_api.answers import answers_configured
-from jutsu_api.auth_service import scoped_acl_principals
 from jutsu_api.deps import CurrentPrincipal, Db
 from jutsu_api.kt_workspace import (
     add_bookmark,
@@ -384,17 +384,14 @@ async def read_one_conversation(
     principal: CurrentPrincipal,
     session: Db,
 ) -> ConversationDetailOut:
-    """A conversation with its turns. Citations are re-checked against the caller's
-    ACL as of now; a cited document they can no longer read renders unavailable."""
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    """A conversation with its turns. Citations are re-checked against the package as it
+    is now; a cited document no longer inside it renders unavailable."""
     view = await read_conversation(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
         conversation_id=conversation_id,
-        principals=principals,
-        groups=groups,
     )
     return ConversationDetailOut(
         id=view.id,
@@ -442,14 +439,11 @@ async def archive_one_conversation(
 @router.get("/kt/{kt_code}/bookmarks")
 @requires(Permission.KT_OPEN)
 async def read_bookmarks(kt_code: str, principal: CurrentPrincipal, session: Db) -> BookmarksOut:
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     items = await list_bookmarks(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
     )
     return BookmarksOut(items=[BookmarkOut(**asdict(b)) for b in items])
 
@@ -463,10 +457,9 @@ async def create_bookmark(
     session: Db,
     request: Request,
 ) -> BookmarkOut:
-    """Save a claim, document, message or question. A claim or document must be visible
-    to the caller under the package's gates before it is saved — the refusal is the same
-    404 as for an id that never existed."""
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    """Save a claim, document, message or question. A claim or document must be inside
+    the package's gates before it is saved — the refusal is the same 404 as for an id that
+    never existed."""
     view = await add_bookmark(
         session,
         org_id=principal.org_id,
@@ -475,8 +468,6 @@ async def create_bookmark(
         kind=payload.kind,
         ref_id=payload.ref_id,
         note=payload.note,
-        principals=principals,
-        groups=groups,
         correlation_id=request.state.request_id,
     )
     return BookmarkOut(**asdict(view))
@@ -551,16 +542,13 @@ async def delete_progress(
 @requires(Permission.KT_OPEN)
 async def read_kt_workspace(kt_code: str, principal: CurrentPrincipal, session: Db) -> WorkspaceOut:
     """Coverage, the learning path, recommendations, gaps and the resume card in one
-    round trip — all computed now, from the caller's visible evidence, none of it
-    stored except their own progress markers."""
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
+    round trip — all computed now, from the package's evidence, none of it stored except
+    the recipient's own progress markers."""
     workspace = await read_workspace(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
     )
     return WorkspaceOut(
         coverage=CoverageOut(

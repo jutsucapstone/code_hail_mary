@@ -8,7 +8,7 @@ inside it. This module is everything a recipient does with that knowledge across
 * **conversations, bookmarks, progress** — the three things migration 0019 lets a
   recipient own;
 * **the workspace** — coverage, a learning path, recommendations, "still unclear" and a
-  resume card, all *computed on demand from the recipient's own visible evidence*.
+  resume card, all *computed on demand from the package's own evidence*.
 
 Four rules hold everywhere here, and each one is the reason a shortcut was not taken.
 
@@ -17,11 +17,14 @@ Four rules hold everywhere here, and each one is the reason a shortcut was not t
 history, the bookmarks and the copilot on the next request, not after a cache window.
 Nothing in this module reads `kt_packages` any other way.
 
-**Retrieval narrows, it never widens.** The copilot calls the same `search_chunks` as
-`/v1/ask`, with the package's period passed as a `RetrievalWindow` that is ANDed inside
-the ACL predicate. There is one retrieval function and now two callers; there is still
-one place an ACL bug could live. Claims and documents shown here run under the same
-`ACL_PREDICATE` the knowledge tabs use, so a count can never exceed what a tab would list.
+**One boundary: the package's.** Every function here opens the package and then reads
+through the `KtScope` built from that open (ADR 0025). The copilot searches with
+`search_subject_chunks` over the subject's own documents inside the package window, and
+claims, documents, citations, bookmarks and counts all run under the same
+`KtScope.conditions` the knowledge tabs use — so Ask KT, the tabs and the workspace cannot
+disagree about what the package holds, and a count can never exceed what a tab would list.
+The recipient's own principals are not an input anywhere in this module, which is what
+makes "the recipient's own corpus leaked into the handover" unrepresentable here.
 
 **History is context, never evidence.** Prior turns reach the model as a labelled
 preamble (`answers.Turn`); the citation gate resolves markers against retrieved passages
@@ -38,30 +41,40 @@ most recent mentions and says that is the order.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 from uuid import UUID, uuid4
 
-from jutsu_core.errors import NotFound, ValidationFailed
-from jutsu_retrieval.search import ACL_PREDICATE, Evidence, RetrievalWindow, search_chunks
+from jutsu_core.errors import NotFound, PermissionDenied, ValidationFailed
+from jutsu_retrieval.search import Evidence, search_subject_chunks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import AnswerTransport, Turn, synthesise_answer
 from jutsu_api.kt import (
     _CLAIM_SCOPE,
+    _DOCUMENTS_OUT_OF_SCOPE,
     _LATEST_RUN_JOIN,
     KtInsight,
+    KtScope,
     _audit,
     _open_for,
+    _scope_for,
     _touch_activity,
-    kt_documents,
-    kt_insight_summary,
-    kt_insights,
+    documents_in_scope,
+    insight_counts_in_scope,
+    insights_in_scope,
 )
 from jutsu_api.retrieval import QueryEmbedder
+
+#: Counts, timings and an opaque package id. Never the code, the question, a passage or a
+#: principal (§4.9) — the same logger `jutsu_api.kt` writes to, so one query follows a
+#: package from open to answer.
+logger = logging.getLogger("jutsu.api.kt")
 
 __all__ = [
     "BOOKMARK_KINDS",
@@ -320,28 +333,6 @@ class Workspace:
 # ----------------------------------------------------------------------- helpers
 
 
-def _window(row: object) -> RetrievalWindow | None:
-    start = getattr(row, "period_start", None)
-    end = getattr(row, "period_end", None)
-    if start is None and end is None:
-        return None
-    return RetrievalWindow(created_from=start, created_to=end)
-
-
-def _period_filters(row: object, params: dict[str, object]) -> list[str]:
-    """The package window as SQL on `d`, binding what it uses — the kt.py shape."""
-    filters: list[str] = []
-    start = getattr(row, "period_start", None)
-    end = getattr(row, "period_end", None)
-    if start is not None:
-        params["period_start"] = start
-        filters.append("d.created_at >= :period_start")
-    if end is not None:
-        params["period_end"] = end
-        filters.append("d.created_at <= :period_end")
-    return filters
-
-
 def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     try:
         ts, last_id = cursor.split("|", 1)
@@ -364,25 +355,23 @@ def _why_for_claim(insight: KtInsight) -> str:
 async def _visible_documents(
     session: AsyncSession,
     *,
+    scope: KtScope,
     document_ids: list[UUID],
-    principals: frozenset[str],
-    groups: frozenset[str],
 ) -> set[UUID]:
-    """Which of these documents the caller may read right now — the ACL predicate over a
-    stored reference, which is how a kept citation or bookmark stays honest."""
+    """Which of these documents are inside the package right now — the package's own
+    conditions over a stored reference, which is how a kept citation or bookmark stays
+    honest after a supersession, a revoked identity or a document leaving the window."""
     if not document_ids:
         return set()
+    params: dict[str, object] = {"ids": [str(d) for d in document_ids]}
+    conditions = scope.conditions(params)
     rows = (
         await session.execute(
             text(
                 "SELECT d.id FROM documents d "  # noqa: S608
-                f"WHERE d.id = ANY(:ids) AND d.superseded_by IS NULL AND {ACL_PREDICATE}"
+                f"WHERE d.id = ANY(:ids) AND {' AND '.join(conditions)}"
             ),
-            {
-                "ids": [str(d) for d in document_ids],
-                "principals": list(principals),
-                "groups": list(groups),
-            },
+            params,
         )
     ).all()
     return {UUID(str(r.id)) for r in rows}
@@ -510,19 +499,18 @@ async def read_conversation(
     user_id: UUID,
     kt_code: str,
     conversation_id: UUID,
-    principals: frozenset[str],
-    groups: frozenset[str],
     limit: int = 200,
 ) -> ConversationView:
-    """One conversation with its turns, citations re-checked against today's ACL."""
+    """One conversation with its turns, citations re-checked against the package now."""
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    scope = await _scope_for(session, row)
     conversation = await _owned_conversation(
         session,
-        package_id=row.id,  # type: ignore[attr-defined]
+        package_id=scope.package_id,
         user_id=user_id,
         conversation_id=conversation_id,
     )
-    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+    await _touch_activity(session, package_id=scope.package_id)
 
     messages = (
         await session.execute(
@@ -552,9 +540,7 @@ async def read_conversation(
                     cited.append(UUID(str(item["document_id"])))
                 except ValueError:
                     continue
-    visible = await _visible_documents(
-        session, document_ids=cited, principals=principals, groups=groups
-    )
+    visible = await _visible_documents(session, scope=scope, document_ids=cited)
 
     return ConversationView(
         id=conversation.id,  # type: ignore[attr-defined]
@@ -643,17 +629,26 @@ async def ask_copilot(
 ) -> CopilotTurn:
     """One turn of the KT copilot.
 
-    Order: open the package; find or start the conversation; retrieve inside the window
-    under the recipient's own ACL; synthesise with history as context; keep both turns.
-    The budget is spent by the router before this runs, and the configuration gate
-    (`answers_configured`) sits before that — a deployment without an answer model
-    refuses for free, exactly as `/v1/ask` does.
+    Order: open the package; build its scope; refuse a package without `documents` (the
+    copilot reads raw passages, which that category is); find or start the conversation;
+    retrieve the subject's own passages inside the window; synthesise with history as
+    context; keep both turns. The budget is spent by the router before this runs, and the
+    configuration gate (`answers_configured`) sits before that — a deployment without an
+    answer model refuses for free, exactly as `/v1/ask` does.
+
+    **Requester and subject are separate on purpose (ADR 0025).** `user_id` is who is
+    asking and owns the conversation; `scope.subject_user_id` is whose knowledge answers.
+    Retrieval never sees `user_id`, so the recipient's own corpus cannot answer a question
+    asked inside somebody else's handover.
 
     What is stored: the question, the answer (or the refusal sentence the UI shows), and
-    the citations as references. What is not: the passages. Replay re-checks the ACL.
+    the citations as references. What is not: the passages. Replay re-checks the package.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    package_id: UUID = row.id  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    if "documents" not in scope.categories:
+        raise PermissionDenied(_DOCUMENTS_OUT_OF_SCOPE)
+    package_id = scope.package_id
     await _touch_activity(session, package_id=package_id)
 
     history: list[Turn] = []
@@ -680,8 +675,23 @@ async def ask_copilot(
         )
 
     vector, query_tokens = await embedder.embed(question)
-    page = await search_chunks(
-        session, user_id=user_id, query_vector=vector, k=k, within=_window(row)
+    started = time.monotonic()
+    logger.info("%s", {"event": "kt_search_started", "package_id": str(package_id), "k": k})
+    page = await search_subject_chunks(
+        session,
+        subject_user_id=scope.subject_user_id,
+        query_vector=vector,
+        k=k,
+        within=scope.window,
+    )
+    logger.info(
+        "%s",
+        {
+            "event": "kt_search_completed",
+            "package_id": str(package_id),
+            "results": len(page.items),
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        },
     )
     outcome = await synthesise_answer(
         transport, question=question, evidence=list(page.items), history=history
@@ -750,7 +760,7 @@ async def ask_copilot(
         },
     )
 
-    # Freshly retrieved, so every cited document is visible by construction.
+    # Freshly retrieved, so every cited document is inside the package by construction.
     citations = [
         StoredCitation(
             marker=c.marker,
@@ -778,22 +788,14 @@ async def ask_copilot(
 # ----------------------------------------------------------------------- bookmarks
 
 
-async def _claim_visible(
-    session: AsyncSession,
-    *,
-    row: object,
-    claim_id: UUID,
-    principals: frozenset[str],
-    groups: frozenset[str],
-) -> bool:
-    """Whether one claim is inside the window, current, and readable — the same three
-    gates `kt_insights` runs, on one row."""
-    params: dict[str, object] = {
-        "id": claim_id,
-        "principals": list(principals),
-        "groups": list(groups),
-    }
-    filters = ["cl.id = :id", "d.superseded_by IS NULL", *_period_filters(row, params)]
+async def _claim_visible(session: AsyncSession, *, scope: KtScope, claim_id: UUID) -> bool:
+    """Whether one claim is inside the package, current, and of a category it covers — the
+    same gates `insights_in_scope` runs, on one row."""
+    allowed = scope.claim_types()
+    if not allowed:
+        return False
+    params: dict[str, object] = {"id": claim_id, "allowed_types": allowed}
+    filters = ["cl.id = :id", "cl.claim_type = ANY(:allowed_types)", *scope.conditions(params)]
     found = (
         await session.execute(
             text(
@@ -801,7 +803,7 @@ async def _claim_visible(
                 "JOIN chunks ch ON ch.id = cl.chunk_id "
                 "JOIN documents d ON d.id = ch.document_id "
                 + _LATEST_RUN_JOIN
-                + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)}"
+                + f"WHERE {' AND '.join(filters)}"
             ),
             params,
         )
@@ -809,25 +811,18 @@ async def _claim_visible(
     return found is not None
 
 
-async def _document_visible(
-    session: AsyncSession,
-    *,
-    row: object,
-    document_id: UUID,
-    principals: frozenset[str],
-    groups: frozenset[str],
-) -> bool:
-    params: dict[str, object] = {
-        "id": document_id,
-        "principals": list(principals),
-        "groups": list(groups),
-    }
-    filters = ["d.id = :id", "d.superseded_by IS NULL", *_period_filters(row, params)]
+async def _document_visible(session: AsyncSession, *, scope: KtScope, document_id: UUID) -> bool:
+    """Whether one document is inside the package — and whether the package carries
+    documents at all, since a bookmark must not reach past the category the listing does."""
+    if "documents" not in scope.categories:
+        return False
+    params: dict[str, object] = {"id": document_id}
+    filters = ["d.id = :id", *scope.conditions(params)]
     found = (
         await session.execute(
             text(
                 "SELECT 1 FROM documents d "  # noqa: S608
-                f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)}"
+                f"WHERE {' AND '.join(filters)}"
             ),
             params,
         )
@@ -844,16 +839,14 @@ async def add_bookmark(
     kind: str,
     ref_id: UUID | None,
     note: str | None,
-    principals: frozenset[str],
-    groups: frozenset[str],
     correlation_id: str | None = None,
 ) -> BookmarkView:
     """Save a claim, document, message or question.
 
-    A claim or document is checked for visibility BEFORE it is saved, with the same
+    A claim or document is checked against the package BEFORE it is saved, with the same
     gates the tabs run. Saving is otherwise a way to learn whether an id exists: a
-    bookmark that succeeds on an invisible claim confirms the claim. The refusal is the
-    same 404 for "no such claim" and "not yours to read".
+    bookmark that succeeds on a claim outside the package confirms the claim. The refusal
+    is the same 404 for "no such claim" and "not in this package".
     """
     if kind not in BOOKMARK_KINDS:
         raise ValidationFailed(f"Unknown bookmark kind. One of: {', '.join(BOOKMARK_KINDS)}.")
@@ -865,18 +858,15 @@ async def add_bookmark(
         raise ValidationFailed("A saved item needs the id of what it points at.")
 
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    package_id: UUID = row.id  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    package_id = scope.package_id
     await _touch_activity(session, package_id=package_id)
 
     if kind == "claim" and ref_id is not None:
-        if not await _claim_visible(
-            session, row=row, claim_id=ref_id, principals=principals, groups=groups
-        ):
+        if not await _claim_visible(session, scope=scope, claim_id=ref_id):
             raise NotFound(_REF_NOT_FOUND)
     elif kind == "document" and ref_id is not None:
-        if not await _document_visible(
-            session, row=row, document_id=ref_id, principals=principals, groups=groups
-        ):
+        if not await _document_visible(session, scope=scope, document_id=ref_id):
             raise NotFound(_REF_NOT_FOUND)
     elif kind == "message" and ref_id is not None:
         owned = (
@@ -942,14 +932,7 @@ async def add_bookmark(
         correlation_id=correlation_id,
         meta={"kind": kind},
     )
-    items = await list_bookmarks(
-        session,
-        org_id=org_id,
-        user_id=user_id,
-        kt_code=kt_code,
-        principals=principals,
-        groups=groups,
-    )
+    items = await list_bookmarks(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
     for item in items:
         if item.id == bookmark_id:
             return item
@@ -962,16 +945,15 @@ async def list_bookmarks(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
 ) -> list[BookmarkView]:
-    """The recipient's bookmarks, each re-resolved under today's ACL.
+    """The recipient's bookmarks, each re-resolved against the package as it is now.
 
-    A claim or document the caller can no longer read renders `available=False` with a
+    A claim or document no longer inside the package renders `available=False` with a
     neutral label — the bookmark is theirs, the thing it pointed at is not.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    package_id: UUID = row.id  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    package_id = scope.package_id
 
     rows = (
         await session.execute(
@@ -991,13 +973,14 @@ async def list_bookmarks(
     message_ids = [r.ref_id for r in rows if r.kind == "message" and r.ref_id is not None]
 
     claims: dict[UUID, tuple[str, str, str]] = {}
-    if claim_ids:
-        params: dict[str, object] = {
-            "ids": [str(c) for c in claim_ids],
-            "principals": list(principals),
-            "groups": list(groups),
-        }
-        filters = ["cl.id = ANY(:ids)", "d.superseded_by IS NULL", *_period_filters(row, params)]
+    allowed = scope.claim_types()
+    if claim_ids and allowed:
+        params: dict[str, object] = {"ids": [str(c) for c in claim_ids], "allowed_types": allowed}
+        filters = [
+            "cl.id = ANY(:ids)",
+            "cl.claim_type = ANY(:allowed_types)",
+            *scope.conditions(params),
+        ]
         for c in (
             await session.execute(
                 text(
@@ -1006,7 +989,7 @@ async def list_bookmarks(
                     "JOIN chunks ch ON ch.id = cl.chunk_id "
                     "JOIN documents d ON d.id = ch.document_id "
                     + _LATEST_RUN_JOIN
-                    + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)}"
+                    + f"WHERE {' AND '.join(filters)}"
                 ),
                 params,
             )
@@ -1016,18 +999,14 @@ async def list_bookmarks(
             claims[UUID(str(c.id))] = (str(label)[:160], str(c.title), str(c.claim_type))
 
     documents: dict[UUID, str] = {}
-    if document_ids:
-        params = {
-            "ids": [str(d) for d in document_ids],
-            "principals": list(principals),
-            "groups": list(groups),
-        }
-        filters = ["d.id = ANY(:ids)", "d.superseded_by IS NULL", *_period_filters(row, params)]
+    if document_ids and "documents" in scope.categories:
+        params = {"ids": [str(d) for d in document_ids]}
+        filters = ["d.id = ANY(:ids)", *scope.conditions(params)]
         for d in (
             await session.execute(
                 text(
                     "SELECT d.id, d.title FROM documents d "  # noqa: S608
-                    f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)}"
+                    f"WHERE {' AND '.join(filters)}"
                 ),
                 params,
             )
@@ -1187,14 +1166,11 @@ _RECENT_DOCUMENTS: Final = 5
 async def _coverage(
     session: AsyncSession,
     *,
-    row: object,
-    scope: list[str],
-    principals: frozenset[str],
-    groups: frozenset[str],
+    scope: KtScope,
     by_type: dict[str, int],
 ) -> Coverage:
-    params: dict[str, object] = {"principals": list(principals), "groups": list(groups)}
-    filters = ["d.superseded_by IS NULL", *_period_filters(row, params)]
+    params: dict[str, object] = {}
+    filters = scope.conditions(params)
     totals = (
         await session.execute(
             text(
@@ -1209,7 +1185,7 @@ async def _coverage(
                 "  AND r2.finished_at IS NOT NULL "
                 "  ORDER BY r2.started_at DESC LIMIT 1"
                 ") r ON true "
-                f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)}"
+                f"WHERE {' AND '.join(filters)}"
             ),
             params,
         )
@@ -1224,18 +1200,18 @@ async def _coverage(
     if reliable:
         ratio = round(min(1.0, chunks_covered / chunks_total), 3)
         reason = (
-            "Computed from the documents your account may read inside this package's "
-            "window and the latest extraction run over each of them."
+            "Computed from this package's documents inside its window and the latest "
+            "extraction run over each of them."
         )
     elif documents_visible == 0:
         reason = (
-            "Coverage cannot be calculated reliably yet: no documents in this package's "
-            "window are readable by your account."
+            "Coverage cannot be calculated reliably yet: this package's window holds no "
+            "documents yet."
         )
     else:
         reason = (
-            "Coverage cannot be calculated reliably yet: extraction has not run over the "
-            "documents you can read."
+            "Coverage cannot be calculated reliably yet: extraction has not run over this "
+            "package's documents."
         )
 
     categories = [
@@ -1243,7 +1219,7 @@ async def _coverage(
             category=category, claim_type=claim_type, claims_visible=by_type.get(claim_type, 0)
         )
         for claim_type, category in _CLAIM_SCOPE.items()
-        if category in scope
+        if category in scope.categories
     ]
     return Coverage(
         categories=categories,
@@ -1263,32 +1239,22 @@ async def read_workspace(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
 ) -> Workspace:
     """Coverage, the learning path, what to do next, what is still unclear, and where
     the recipient left off — one call, so the overview is one round trip.
 
-    Everything is derived from the recipient's visible evidence at this moment. Nothing
-    is stored except the recipient's own progress markers, so a revoked grant changes
-    the whole workspace on the next load.
+    Everything is derived from the package's evidence at this moment, through the one
+    `KtScope` this call opened — so the workspace and the tabs it links to cannot count
+    different things. Nothing is stored except the recipient's own progress markers, so a
+    revoked package changes the whole workspace on the next load.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    package_id: UUID = row.id  # type: ignore[attr-defined]
-    scope = list(row.scope)  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    package_id = scope.package_id
     await _touch_activity(session, package_id=package_id)
 
-    summary = await kt_insight_summary(
-        session,
-        org_id=org_id,
-        user_id=user_id,
-        kt_code=kt_code,
-        principals=principals,
-        groups=groups,
-    )
-    coverage = await _coverage(
-        session, row=row, scope=scope, principals=principals, groups=groups, by_type=summary.by_type
-    )
+    summary = await insight_counts_in_scope(session, scope)
+    coverage = await _coverage(session, scope=scope, by_type=summary.by_type)
 
     progress = {
         item.item_key: item.state
@@ -1297,7 +1263,7 @@ async def read_workspace(
 
     # ---- learning path
     stages: list[LearningStage] = []
-    if "profile" in scope:
+    if "profile" in scope.categories:
         stages.append(
             LearningStage(
                 day=1,
@@ -1318,15 +1284,11 @@ async def read_workspace(
     recent_decisions: list[KtInsight] = []
     for day, title, claim_type, tab in _STAGES:
         category = _CLAIM_SCOPE[claim_type]
-        if category not in scope or summary.by_type.get(claim_type, 0) == 0:
+        if category not in scope.categories or summary.by_type.get(claim_type, 0) == 0:
             continue
-        insights = await kt_insights(
+        insights = await insights_in_scope(
             session,
-            org_id=org_id,
-            user_id=user_id,
-            kt_code=kt_code,
-            principals=principals,
-            groups=groups,
+            scope,
             claim_type=claim_type,
             limit=_STAGE_ITEMS if claim_type != "decision" else 10,
         )
@@ -1357,17 +1319,8 @@ async def read_workspace(
             stages.append(LearningStage(day=day, title=title, items=items))
 
     recent_documents = []
-    if "documents" in scope:
-        page = await kt_documents(
-            session,
-            org_id=org_id,
-            user_id=user_id,
-            kt_code=kt_code,
-            principals=principals,
-            groups=groups,
-            limit=_RECENT_DOCUMENTS,
-            cursor=None,
-        )
+    if "documents" in scope.categories:
+        page = await documents_in_scope(session, scope, limit=_RECENT_DOCUMENTS, cursor=None)
         recent_documents = page.items
         if recent_documents:
             stages.append(
@@ -1455,7 +1408,7 @@ async def read_workspace(
             break
 
     # ---- gaps: what the recipient flagged, and what the evidence itself lacks
-    # (`_MARKED_UNCLEAR_LABEL` covers a flag whose subject is no longer readable.)
+    # (`_MARKED_UNCLEAR_LABEL` covers a flag whose subject is no longer in the package.)
     gaps: list[Gap] = []
     for key in unclear_keys:
         item = labels_by_key.get(key)
@@ -1463,10 +1416,10 @@ async def read_workspace(
             Gap(
                 key=key,
                 # A key is `claim:<uuid>`, and it reached the screen whenever the
-                # thing it names is no longer visible — superseded by a newer
-                # extraction, or ACL-invisible now. The recipient marked something
-                # unclear and got a database identifier back, which they can neither
-                # read nor act on. Say what is true instead.
+                # thing it names is no longer shown — superseded by a newer
+                # extraction, or no longer inside the package. The recipient marked
+                # something unclear and got a database identifier back, which they can
+                # neither read nor act on. Say what is true instead.
                 label=item.label if item else _MARKED_UNCLEAR_LABEL,
                 why="You marked this unclear.",
                 source="you",
@@ -1479,24 +1432,25 @@ async def read_workspace(
             gaps.append(
                 Gap(
                     key=f"category:{bucket.category}",
-                    label=f"No {bucket.category} evidence is visible to you yet",
+                    label=f"No {bucket.category} evidence in this package yet",
                     why=(
-                        "Extraction has not run over the documents you can read."
+                        "Extraction has not run over this package's documents yet."
                         if coverage.documents_extracted == 0
-                        else "Nothing extracted in this window is readable by your account."
+                        else "Nothing extracted in this package's window falls in this category."
                     ),
                     source="evidence",
                     tab=_TAB_FOR_TYPE.get(bucket.claim_type),
                     ref_id=None,
                 )
             )
-    if "documents" in scope and coverage.documents_visible == 0:
+    if "documents" in scope.categories and coverage.documents_visible == 0:
         gaps.append(
             Gap(
                 key="category:documents",
-                label="No documents in this window are readable by your account",
+                label="This package's window holds no documents yet",
                 why=(
-                    "Access comes from your linked source identities; the package cannot widen it."
+                    "Documents appear once the colleague's connected accounts or Knowledge "
+                    "Basket have been synced for this period."
                 ),
                 source="evidence",
                 tab="documents",

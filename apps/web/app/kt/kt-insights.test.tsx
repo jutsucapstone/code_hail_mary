@@ -161,8 +161,9 @@ describe("the KT claim cards", () => {
       await screen.findByRole("button", { name: `View source for: ${HEADLINE}` }),
     );
 
-    const get = callIndexFor(fetchMock, "/v1/evidence/");
-    expect(calledUrl(fetchMock, get)).toBe(`/api/jutsu/v1/evidence/${CHUNK_ID}`);
+    const get = callIndexFor(fetchMock, "/evidence/");
+    // The package's evidence door, not `/v1/evidence` (ADR 0025).
+    expect(calledUrl(fetchMock, get)).toBe(`/api/jutsu/v1/kt/${CODE}/evidence/${CHUNK_ID}`);
     expect(calledMethod(fetchMock, get)).toBe("GET");
     // The whole masked string, pseudonym included — never a char_start/char_end slice.
     expect(await screen.findByText(masked)).toBeInTheDocument();

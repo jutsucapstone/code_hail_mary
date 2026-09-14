@@ -1,7 +1,12 @@
 # ADR 0021 — Package-scoped Knowledge Basket sharing
 
-**Status:** accepted
+**Status:** accepted; superseded in part by ADR 0025
 **Date:** 2026-09-08
+**Superseded in part:** ADR 0025 makes an opened package a read capability over its
+subject's own documents. A basket file the subject owns carries a `basket:{subject}` grant,
+so it is part of that corpus and searchable through the package — the "deliberately NOT
+searchable" non-goal below no longer holds for such files. The reference-not-grant design
+of `kt_package_files`, and every rule about who may attach, are unchanged.
 **Related:** ADR 0010 (ACL principals are provider subjects), ADR 0011 (ACL-filtered
 retrieval), ADR 0016 (KT console), ADR 0020 (Knowledge Basket object storage)
 

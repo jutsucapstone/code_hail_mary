@@ -52,6 +52,7 @@ from enum import StrEnum
 __all__ = [
     "ALPHABET",
     "ID_PATTERN",
+    "KT_CODE_PREFIX",
     "SUFFIX_LENGTH",
     "JutsuIdKind",
     "generate_jutsu_id",
@@ -63,6 +64,11 @@ __all__ = [
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 SUFFIX_LENGTH = 8
+
+#: How a knowledge-transfer package's code begins. A code is not a JUTSU ID: it is a
+#: capability, which is why `jutsu_core.logs` redacts it from every log line. It shares
+#: this alphabet, and `normalise_jutsu_id` repairs a hand-typed one on the way in.
+KT_CODE_PREFIX = "KT-JUTSU-"
 
 #: Bits consumed per character. 32 symbols = 5 bits, and 8 x 5 = 40 = 5 whole bytes.
 _BITS_PER_CHAR = 5

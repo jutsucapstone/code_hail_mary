@@ -32,13 +32,21 @@ from typing import Final
 from uuid import UUID
 
 from jutsu_core.errors import NotFound
-from jutsu_db.acl import resolve_acl_principals
+from jutsu_db.acl import resolve_acl_principals, resolve_subject_principals
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jutsu_retrieval.search import ACL_PREDICATE, ORG_SCOPE_SQL, Evidence, vector_literal
+from jutsu_retrieval.search import (
+    _WINDOW,
+    ACL_PREDICATE,
+    ORG_SCOPE_SQL,
+    SUBJECT_PREDICATE,
+    Evidence,
+    RetrievalWindow,
+    vector_literal,
+)
 
-__all__ = ["MAX_EVIDENCE_IDS", "fetch_evidence", "fetch_evidence_many"]
+__all__ = ["MAX_EVIDENCE_IDS", "fetch_evidence", "fetch_evidence_many", "fetch_subject_evidence"]
 
 #: The most chunk ids one batch fetch will accept.
 #:
@@ -210,3 +218,67 @@ async def fetch_evidence_many(
     }
 
     return tuple(found[UUID(identifier)] for identifier in unique if UUID(identifier) in found)
+
+
+#: `_FETCH` with the subject's predicate and the package window (ADR 0025). The citation
+#: door for the KT console: a recipient clicking `[2]` on a KT answer is reading one of the
+#: subject's chunks, which `_FETCH` — the recipient's own ACL — would call absent.
+#:
+#: The window is the same two conjuncts `search_subject_chunks` applies, so a chunk the
+#: copilot could not have retrieved cannot be fetched here by guessing its id either.
+_FETCH_SUBJECT: Final = (
+    "SELECT c.id, c.document_id, c.text, c.char_start, c.char_end, "  # noqa: S608
+    "d.title AS document_title, d.created_at AS occurred_at, "
+    "CAST(s.system AS text) AS source_system "
+    "FROM chunks c "
+    "JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id "
+    "JOIN sources s ON s.id = d.source_id "
+    f"WHERE c.id = CAST(:chunk_id AS uuid) AND d.org_id = {ORG_SCOPE_SQL} "
+    "AND d.superseded_by IS NULL "
+    f"AND {SUBJECT_PREDICATE}" + _WINDOW
+)
+
+
+async def fetch_subject_evidence(
+    session: AsyncSession,
+    *,
+    subject_user_id: UUID,
+    chunk_id: UUID,
+    within: RetrievalWindow | None = None,
+) -> Evidence:
+    """One chunk of a knowledge-transfer subject's own documents, or `NotFound`.
+
+    Called only with a subject taken from an opened package — see `search_subject_chunks`
+    for where that guarantee lives. The refusal is `fetch_evidence`'s, word for word:
+    absent is the one answer for never-existed, another tenant's, not the subject's, and
+    outside the package window, because a fetch that told those apart would be an oracle
+    for the subject's document population and the package's period.
+    """
+    principals = await resolve_subject_principals(session, subject_user_id=subject_user_id)
+
+    row = (
+        await session.execute(
+            text(_FETCH_SUBJECT),
+            {
+                "chunk_id": str(chunk_id),
+                "subject_principals": sorted(principals),
+                "window_start": within.created_from if within is not None else None,
+                "window_end": within.created_to if within is not None else None,
+            },
+        )
+    ).first()
+
+    if row is None:
+        raise NotFound("That evidence was not found.")
+
+    return Evidence(
+        chunk_id=UUID(str(row.id)),
+        document_id=UUID(str(row.document_id)),
+        document_title=row.document_title,
+        source_system=row.source_system,
+        text=row.text,
+        char_start=row.char_start,
+        char_end=row.char_end,
+        score=1.0,
+        occurred_at=row.occurred_at,
+    )

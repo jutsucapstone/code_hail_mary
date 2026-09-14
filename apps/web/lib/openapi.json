@@ -2013,6 +2013,96 @@
         "title": "HandoverCitationOut",
         "type": "object"
       },
+      "HandoverReferenceOut": {
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number",
+          "document_title",
+          "source_system",
+          "date"
+        ],
+        "title": "HandoverReferenceOut",
+        "type": "object"
+      },
+      "HandoverReportOut": {
+        "description": "One composed handover, as the page shows it and as the PDF prints it.\n\nBoth in one response so they cannot disagree: two requests would be two model calls,\nand two model calls are two different summaries. Nothing here is stored \u2014 the PDF\nexists in this response and in the recipient's browser, and nowhere else.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "insufficient_evidence": {
+            "title": "Insufficient Evidence",
+            "type": "boolean"
+          },
+          "pdf_base64": {
+            "title": "Pdf Base64",
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/HandoverReferenceOut"
+            },
+            "title": "References",
+            "type": "array"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "summary",
+          "insufficient_evidence",
+          "references",
+          "attempts",
+          "filename",
+          "pdf_base64",
+          "generated_at"
+        ],
+        "title": "HandoverReportOut",
+        "type": "object"
+      },
       "HandoverSummaryOut": {
         "properties": {
           "attempts": {
@@ -7358,7 +7448,7 @@
         ]
       },
       "post": {
-        "description": "Save a claim, document, message or question. A claim or document must be visible\nto the caller under the package's gates before it is saved \u2014 the refusal is the same\n404 as for an id that never existed.",
+        "description": "Save a claim, document, message or question. A claim or document must be inside\nthe package's gates before it is saved \u2014 the refusal is the same 404 as for an id that\nnever existed.",
         "operationId": "create_bookmark_v1_kt__kt_code__bookmarks_post",
         "parameters": [
           {
@@ -7580,7 +7670,7 @@
     },
     "/v1/kt/{kt_code}/conversations/{conversation_id}": {
       "get": {
-        "description": "A conversation with its turns. Citations are re-checked against the caller's\nACL as of now; a cited document they can no longer read renders unavailable.",
+        "description": "A conversation with its turns. Citations are re-checked against the package as it\nis now; a cited document no longer inside it renders unavailable.",
         "operationId": "read_one_conversation_v1_kt__kt_code__conversations__conversation_id__get",
         "parameters": [
           {
@@ -7678,7 +7768,7 @@
     },
     "/v1/kt/{kt_code}/documents": {
       "get": {
-        "description": "Documents inside the package window the RECIPIENT may already read.\n\nThe ACL filter is retrieval's own predicate, inside the SQL, against the caller's\nprincipals resolved fresh for this request. The package contributes the period; it\ngrants nothing.",
+        "description": "The package subject's own documents inside the package window (ADR 0025).\n\n`SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's\n`_open_for`. The requester's principals are not resolved at all.",
         "operationId": "read_kt_documents_v1_kt__kt_code__documents_get",
         "parameters": [
           {
@@ -7750,7 +7840,7 @@
     },
     "/v1/kt/{kt_code}/documents/{document_id}": {
       "get": {
-        "description": "One document from the listing, opened: its masked passages in document order.\n\nThe same permission and the same gates as the listing \u2014 `_open_for`, the package's\nscope, then retrieval's own predicate and the package's period ANDed together inside\nthe SQL. A document that does not exist, one this recipient may not read and one\noutside the window are the identical 404; a closed package is the package's 403.\n\nRead a page at a time (`from_ordinal`, `next_ordinal`) because a document has no\nbounded size and a whole handbook in one response helps nobody.",
+        "description": "One document from the listing, opened: its masked passages in document order.\n\nThe same permission and the same gates as the listing \u2014 `_open_for`, the package's\nscope, then the subject predicate and the package's period ANDed together inside the\nSQL. A document that does not exist, one that is not the subject's and one outside the\nwindow are the identical 404; a closed package is the package's 403.\n\nRead a page at a time (`from_ordinal`, `next_ordinal`) because a document has no\nbounded size and a whole handbook in one response helps nobody.",
         "operationId": "read_kt_document_v1_kt__kt_code__documents__document_id__get",
         "parameters": [
           {
@@ -7819,6 +7909,59 @@
           }
         },
         "summary": "Read Kt Document",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{kt_code}/evidence/{chunk_id}": {
+      "get": {
+        "description": "The source span behind one KT citation or claim, if it is inside the package.\n\nThe KT counterpart of `/v1/evidence/{chunk_id}`. A KT answer cites the SUBJECT's\nchunks, which the recipient's own ACL would call absent, so this door runs the\npackage's gates instead: `_open_for`, the `documents` scope, then the subject predicate\nand the package window in SQL. Everything outside is 404 \u2014 the same answer for \"never\nexisted\", \"not the subject's\" and \"outside the window\", so the route is no oracle.",
+        "operationId": "read_kt_evidence_v1_kt__kt_code__evidence__chunk_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chunk Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kt Evidence",
         "tags": [
           "kt"
         ]
@@ -7920,9 +8063,52 @@
         ]
       }
     },
+    "/v1/kt/{kt_code}/handover-report": {
+      "post": {
+        "description": "Compose the first-day handover and render it as a PDF, in one request (ADR 0025).\n\nThe summary's gates in the summary's order \u2014 the free configuration check, then the\n`KT_SUMMARY` budget (one model call per press), then ONE open of the package \u2014 and a\nbody that carries nothing: the report is composed here from the package, because a PDF\nthat printed text the browser sent would be a forgery kit with JUTSU's name on it. A\nPOST, so it is CSRF-checked: it spends a budget and writes an audit row.",
+        "operationId": "create_kt_handover_report_v1_kt__kt_code__handover_report_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kt_code",
+            "required": true,
+            "schema": {
+              "title": "Kt Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoverReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Kt Handover Report",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
     "/v1/kt/{kt_code}/handover-summary": {
       "get": {
-        "description": "\u00a729's executive summary: composed on demand from the recipient's own claim\nvisibility, grounded and citation-gated exactly like /v1/ask, never persisted.\n\nRefuses before any spend when no answer model is configured \u2014 the same honest 503\nthe ask surface gives, so the button in the KT console can say why.",
+        "description": "\u00a729's executive summary: composed on demand from the package subject's claims,\ngrounded and citation-gated exactly like /v1/ask, never persisted.\n\nRefuses before any spend when no answer model is configured \u2014 the same honest 503\nthe ask surface gives, so the button in the KT console can say why.",
         "operationId": "read_kt_handover_summary_v1_kt__kt_code__handover_summary_get",
         "parameters": [
           {
@@ -7965,7 +8151,7 @@
     },
     "/v1/kt/{kt_code}/insights": {
       "get": {
-        "description": "Extracted, quote-gated claims the RECIPIENT may read, in the package window.\n\n`type` filters to one claim type; omitted, it returns every type the package's\nscope covers, date-ordered \u2014 the timeline. Every row carries its verbatim quote and\nthe chunk it anchors to, so a citation is one evidence fetch away.",
+        "description": "Extracted, quote-gated claims on the package subject's own documents, in the window.\n\n`type` filters to one claim type; omitted, it returns every type the package's\nscope covers, date-ordered \u2014 the timeline. Every row carries its verbatim quote and\nthe chunk it anchors to, so a citation is one KT evidence fetch away.",
         "operationId": "read_kt_insights_v1_kt__kt_code__insights_get",
         "parameters": [
           {
@@ -8224,7 +8410,7 @@
     },
     "/v1/kt/{kt_code}/workspace": {
       "get": {
-        "description": "Coverage, the learning path, recommendations, gaps and the resume card in one\nround trip \u2014 all computed now, from the caller's visible evidence, none of it\nstored except their own progress markers.",
+        "description": "Coverage, the learning path, recommendations, gaps and the resume card in one\nround trip \u2014 all computed now, from the package's evidence, none of it stored except\nthe recipient's own progress markers.",
         "operationId": "read_kt_workspace_v1_kt__kt_code__workspace_get",
         "parameters": [
           {

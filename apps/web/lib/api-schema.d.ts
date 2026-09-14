@@ -947,9 +947,9 @@ export interface paths {
         put?: never;
         /**
          * Create Bookmark
-         * @description Save a claim, document, message or question. A claim or document must be visible
-         *     to the caller under the package's gates before it is saved — the refusal is the same
-         *     404 as for an id that never existed.
+         * @description Save a claim, document, message or question. A claim or document must be inside
+         *     the package's gates before it is saved — the refusal is the same 404 as for an id that
+         *     never existed.
          */
         post: operations["create_bookmark_v1_kt__kt_code__bookmarks_post"];
         delete?: never;
@@ -1022,8 +1022,8 @@ export interface paths {
         };
         /**
          * Read One Conversation
-         * @description A conversation with its turns. Citations are re-checked against the caller's
-         *     ACL as of now; a cited document they can no longer read renders unavailable.
+         * @description A conversation with its turns. Citations are re-checked against the package as it
+         *     is now; a cited document no longer inside it renders unavailable.
          */
         get: operations["read_one_conversation_v1_kt__kt_code__conversations__conversation_id__get"];
         put?: never;
@@ -1060,11 +1060,10 @@ export interface paths {
         };
         /**
          * Read Kt Documents
-         * @description Documents inside the package window the RECIPIENT may already read.
+         * @description The package subject's own documents inside the package window (ADR 0025).
          *
-         *     The ACL filter is retrieval's own predicate, inside the SQL, against the caller's
-         *     principals resolved fresh for this request. The package contributes the period; it
-         *     grants nothing.
+         *     `SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's
+         *     `_open_for`. The requester's principals are not resolved at all.
          */
         get: operations["read_kt_documents_v1_kt__kt_code__documents_get"];
         put?: never;
@@ -1087,14 +1086,40 @@ export interface paths {
          * @description One document from the listing, opened: its masked passages in document order.
          *
          *     The same permission and the same gates as the listing — `_open_for`, the package's
-         *     scope, then retrieval's own predicate and the package's period ANDed together inside
-         *     the SQL. A document that does not exist, one this recipient may not read and one
-         *     outside the window are the identical 404; a closed package is the package's 403.
+         *     scope, then the subject predicate and the package's period ANDed together inside the
+         *     SQL. A document that does not exist, one that is not the subject's and one outside the
+         *     window are the identical 404; a closed package is the package's 403.
          *
          *     Read a page at a time (`from_ordinal`, `next_ordinal`) because a document has no
          *     bounded size and a whole handbook in one response helps nobody.
          */
         get: operations["read_kt_document_v1_kt__kt_code__documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{kt_code}/evidence/{chunk_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Kt Evidence
+         * @description The source span behind one KT citation or claim, if it is inside the package.
+         *
+         *     The KT counterpart of `/v1/evidence/{chunk_id}`. A KT answer cites the SUBJECT's
+         *     chunks, which the recipient's own ACL would call absent, so this door runs the
+         *     package's gates instead: `_open_for`, the `documents` scope, then the subject predicate
+         *     and the package window in SQL. Everything outside is 404 — the same answer for "never
+         *     existed", "not the subject's" and "outside the window", so the route is no oracle.
+         */
+        get: operations["read_kt_evidence_v1_kt__kt_code__evidence__chunk_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1150,6 +1175,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/kt/{kt_code}/handover-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Kt Handover Report
+         * @description Compose the first-day handover and render it as a PDF, in one request (ADR 0025).
+         *
+         *     The summary's gates in the summary's order — the free configuration check, then the
+         *     `KT_SUMMARY` budget (one model call per press), then ONE open of the package — and a
+         *     body that carries nothing: the report is composed here from the package, because a PDF
+         *     that printed text the browser sent would be a forgery kit with JUTSU's name on it. A
+         *     POST, so it is CSRF-checked: it spends a budget and writes an audit row.
+         */
+        post: operations["create_kt_handover_report_v1_kt__kt_code__handover_report_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/kt/{kt_code}/handover-summary": {
         parameters: {
             query?: never;
@@ -1159,8 +1210,8 @@ export interface paths {
         };
         /**
          * Read Kt Handover Summary
-         * @description §29's executive summary: composed on demand from the recipient's own claim
-         *     visibility, grounded and citation-gated exactly like /v1/ask, never persisted.
+         * @description §29's executive summary: composed on demand from the package subject's claims,
+         *     grounded and citation-gated exactly like /v1/ask, never persisted.
          *
          *     Refuses before any spend when no answer model is configured — the same honest 503
          *     the ask surface gives, so the button in the KT console can say why.
@@ -1183,11 +1234,11 @@ export interface paths {
         };
         /**
          * Read Kt Insights
-         * @description Extracted, quote-gated claims the RECIPIENT may read, in the package window.
+         * @description Extracted, quote-gated claims on the package subject's own documents, in the window.
          *
          *     `type` filters to one claim type; omitted, it returns every type the package's
          *     scope covers, date-ordered — the timeline. Every row carries its verbatim quote and
-         *     the chunk it anchors to, so a citation is one evidence fetch away.
+         *     the chunk it anchors to, so a citation is one KT evidence fetch away.
          */
         get: operations["read_kt_insights_v1_kt__kt_code__insights_get"];
         put?: never;
@@ -1260,8 +1311,8 @@ export interface paths {
         /**
          * Read Kt Workspace
          * @description Coverage, the learning path, recommendations, gaps and the resume card in one
-         *     round trip — all computed now, from the caller's visible evidence, none of it
-         *     stored except their own progress markers.
+         *     round trip — all computed now, from the package's evidence, none of it stored except
+         *     the recipient's own progress markers.
          */
         get: operations["read_kt_workspace_v1_kt__kt_code__workspace_get"];
         put?: never;
@@ -2678,6 +2729,44 @@ export interface components {
             marker: number;
             /** Source System */
             source_system: string;
+        };
+        /** HandoverReferenceOut */
+        HandoverReferenceOut: {
+            /** Date */
+            date: string | null;
+            /** Document Title */
+            document_title: string;
+            /** Number */
+            number: number;
+            /** Source System */
+            source_system: string;
+        };
+        /**
+         * HandoverReportOut
+         * @description One composed handover, as the page shows it and as the PDF prints it.
+         *
+         *     Both in one response so they cannot disagree: two requests would be two model calls,
+         *     and two model calls are two different summaries. Nothing here is stored — the PDF
+         *     exists in this response and in the recipient's browser, and nowhere else.
+         */
+        HandoverReportOut: {
+            /** Attempts */
+            attempts: number;
+            /** Filename */
+            filename: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Insufficient Evidence */
+            insufficient_evidence: boolean;
+            /** Pdf Base64 */
+            pdf_base64: string;
+            /** References */
+            references: components["schemas"]["HandoverReferenceOut"][];
+            /** Summary */
+            summary: string | null;
         };
         /** HandoverSummaryOut */
         HandoverSummaryOut: {
@@ -5505,6 +5594,38 @@ export interface operations {
             };
         };
     };
+    read_kt_evidence_v1_kt__kt_code__evidence__chunk_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+                chunk_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_kt_files_v1_kt__kt_code__files_get: {
         parameters: {
             query?: never;
@@ -5555,6 +5676,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KtFileDownloadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_kt_handover_report_v1_kt__kt_code__handover_report_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kt_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoverReportOut"];
                 };
             };
             /** @description Validation Error */

@@ -38,7 +38,11 @@ from jutsu_retrieval.errors import (
     TransientEmbeddingError,
     TruncatedInput,
 )
-from jutsu_retrieval.evidence import fetch_evidence, fetch_evidence_many
+from jutsu_retrieval.evidence import (
+    fetch_evidence,
+    fetch_evidence_many,
+    fetch_subject_evidence,
+)
 from jutsu_retrieval.fusion import RRF_K, reciprocal_rank_fusion
 from jutsu_retrieval.persistence import (
     EmbeddingRun,
@@ -52,11 +56,13 @@ from jutsu_retrieval.search import (
     DEFAULT_EF_SEARCH_LADDER,
     DEFAULT_K,
     ORG_SCOPE_SQL,
+    SUBJECT_PREDICATE,
     Evidence,
     RetrievalWindow,
     SearchPage,
     SearchStats,
     search_chunks,
+    search_subject_chunks,
 )
 
 __all__ = [
@@ -67,6 +73,7 @@ __all__ = [
     "MEASURED_INPUT_TOKEN_LIMIT",
     "ORG_SCOPE_SQL",
     "RRF_K",
+    "SUBJECT_PREDICATE",
     "Embedder",
     "Embedding",
     "EmbeddingBudgetExceeded",
@@ -91,11 +98,13 @@ __all__ = [
     "embed_pending_chunks",
     "fetch_evidence",
     "fetch_evidence_many",
+    "fetch_subject_evidence",
     "get_embedding_settings",
     "l2_normalise",
     "pending_chunks",
     "plan_batches",
     "reciprocal_rank_fusion",
     "search_chunks",
+    "search_subject_chunks",
     "store_embeddings",
 ]

@@ -1,6 +1,7 @@
 # 0016 — The KT console: per-request authorization, a narrowing window, and what a recipient may keep
 
-Status: accepted
+Status: accepted. §3 superseded by ADR 0025: KT retrieval reads the package subject's own
+documents through `SUBJECT_PREDICATE`, not the recipient's own ACL.
 
 Scope: the knowledge-transfer console built on migration 0013's packages — the copilot,
 conversation history, bookmarks, progress, learning path, coverage and recommendations

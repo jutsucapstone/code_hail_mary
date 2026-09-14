@@ -3,7 +3,7 @@
 The security model, stated once and enforced in `_open_for` (§15 of the UI brief):
 
     KT code  x  recipient identity  x  organisation  x  scope  x  expiry
-             x  the recipient's own source permissions / ACL
+             x  the subject's own documents (SUBJECT_PREDICATE, ADR 0025)
 
 * **Organisation** — the code lookup runs under RLS, so a foreign tenant's code finds
   nothing and is indistinguishable from a typo. No cross-org probe exists.
@@ -14,10 +14,15 @@ The security model, stated once and enforced in `_open_for` (§15 of the UI brie
   else, and binding it to them would strand the colleague it was for.
 * **Expiry and revocation** — checked server-side on every open. The two sentences the
   UI shows for them come from here, so the frontend cannot soften either.
-* **ACL** — nothing in this module grants a document. The documents endpoint joins
-  `document_acl` against the RECIPIENT'S own principals inside the SQL, and Ask KT is
-  the ordinary `/v1/search` under the recipient's own authorization. A package narrows
-  presentation (period, scope); it never widens what its holder could already read.
+* **What a recipient reads** — the package SUBJECT's own documents, inside the package's
+  period and categories, and nothing else (ADR 0025, which supersedes the "never widens"
+  rule of migration 0013 and ADR 0016 §3). `SUBJECT_PREDICATE` runs inside the SQL over
+  the subject's direct `user` grants — no group arm, no org arm — so a recipient reads what
+  came from the subject's own accounts and Knowledge Basket: never their own corpus, and
+  never the subject's whole reach. Every KT reader takes a `KtScope`, and a `KtScope` is
+  built only from the row `_open_for` returned, so the capability is re-decided on every
+  request exactly as binding, revocation, completion and expiry always were. The
+  recipient's own `/v1/search`, `/v1/ask` and `/v1/evidence` are untouched.
 
 Denied opens are audited with `outcome = 'denied'` — a stream of refused codes is a
 probe, and the trail is where a probe becomes visible.
@@ -33,9 +38,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ValidationFailed
-from jutsu_core.ids import ALPHABET, normalise_jutsu_id
+from jutsu_core.ids import ALPHABET, KT_CODE_PREFIX, normalise_jutsu_id
+from jutsu_db.acl import resolve_subject_principals
 from jutsu_db.engine import org_session
-from jutsu_retrieval.search import ACL_PREDICATE
+from jutsu_retrieval import fetch_subject_evidence
+from jutsu_retrieval.search import SUBJECT_PREDICATE, Evidence, RetrievalWindow
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,22 +54,24 @@ __all__ = [
     "SUPPORTED_SCOPES",
     "KtAdminView",
     "KtRecipientView",
+    "KtScope",
     "claim_or_open",
     "complete_package",
     "create_package",
     "get_package",
     "kt_document",
     "kt_documents",
+    "kt_evidence",
     "list_packages",
     "open_package_for",
     "revoke_package",
     "update_package",
 ]
 
-#: The categories the backend can actually serve (§13). Documents come from the corpus
-#: under the recipient's ACL; profile from `employee_profiles`; the rest from
-#: extraction_claims — evidence-anchored, quote-gated, and filtered by the recipient's
-#: own ACL over each claim's evidence at read time.
+#: The categories the backend can actually serve (§13). Documents come from the
+#: subject's own accounts (ADR 0025); profile from `employee_profiles`; the rest from
+#: extraction_claims — evidence-anchored, quote-gated, and filtered by `SUBJECT_PREDICATE`
+#: over each claim's evidence document at read time.
 SUPPORTED_SCOPES: tuple[str, ...] = (
     "documents",
     "profile",
@@ -85,7 +94,7 @@ _COMPLETED_MESSAGE = (
 
 def _generate_code() -> str:
     suffix = "".join(secrets.choice(ALPHABET) for _ in range(8))
-    return f"KT-JUTSU-{suffix}"
+    return f"{KT_CODE_PREFIX}{suffix}"
 
 
 _NOT_FOUND = "No package matches that ID. Check it with your administrator."
@@ -806,6 +815,138 @@ async def open_package_for(
     return UUID(str(row.id))  # type: ignore[attr-defined]
 
 
+@dataclass(frozen=True, slots=True)
+class KtScope:
+    """The one authorization boundary every knowledge-transfer read runs inside (ADR 0025).
+
+    **Requester, subject and package are three different things, and this type is where
+    they stop being confused.** The requester is the authenticated caller, and `_open_for`
+    has already decided they may hold this package. The subject is whose knowledge the
+    package carries. The package decides how much of it: which categories, which period.
+    A reader given a `KtScope` has no recipient principal anywhere in reach, so there is
+    no argument through which the recipient's own corpus could leak into Ask KT, a tab,
+    a count, the workspace or the handover report.
+
+    **Built only by `_scope_for`, from the row `_open_for` returned.** Python cannot make
+    a constructor private, so `test_kt_subject_scope` asserts that `KtScope(` appears in
+    exactly one place. A scope assembled from a request parameter would be the regression
+    this whole type exists to make structural.
+
+    **Request-scoped by construction.** `subject_principals` is resolved in the request
+    that opened the package and dies with it — never cached — so an identity revoked
+    between two requests stops contributing documents on the second (ADR 0010).
+    """
+
+    package_id: UUID
+    subject_user_id: UUID
+    categories: frozenset[str]
+    window: RetrievalWindow | None
+    subject_principals: tuple[str, ...]
+
+    def conditions(self, params: dict[str, object]) -> list[str]:
+        """The package's document conditions as SQL on `d`, binding what they use.
+
+        `SUBJECT_PREDICATE`, the supersession filter and the period. Every KT statement
+        composes exactly this list, which is what keeps Ask KT, the knowledge tabs, the
+        counts, the workspace, the bookmarks, the conversation replay and the handover
+        report from disagreeing about what the package contains.
+        """
+        params["subject_principals"] = list(self.subject_principals)
+        filters = [SUBJECT_PREDICATE, "d.superseded_by IS NULL"]
+        if self.window is not None and self.window.created_from is not None:
+            params["period_start"] = self.window.created_from
+            filters.append("d.created_at >= :period_start")
+        if self.window is not None and self.window.created_to is not None:
+            params["period_end"] = self.window.created_to
+            filters.append("d.created_at <= :period_end")
+        return filters
+
+    def claim_types(self) -> list[str]:
+        """The extraction claim types this package's categories cover, in taxonomy order."""
+        return [claim_type for claim_type, cat in _CLAIM_SCOPE.items() if cat in self.categories]
+
+
+async def _scope_for(session: AsyncSession, row: object) -> KtScope:
+    """The package's scope — from the row `_open_for` returned, and from nowhere else.
+
+    The subject's principals are resolved here, in the request's own transaction and
+    tenant, through the one resolver that defines "the subject's own" (`jutsu_db.acl`).
+    """
+    subject = UUID(str(row.subject_user_id))  # type: ignore[attr-defined]
+    principals = await resolve_subject_principals(session, subject_user_id=subject)
+    start = row.period_start  # type: ignore[attr-defined]
+    end = row.period_end  # type: ignore[attr-defined]
+    scope = KtScope(
+        package_id=UUID(str(row.id)),  # type: ignore[attr-defined]
+        subject_user_id=subject,
+        categories=frozenset(row.scope),  # type: ignore[attr-defined]
+        window=None
+        if start is None and end is None
+        else RetrievalWindow(created_from=start, created_to=end),
+        subject_principals=tuple(sorted(principals)),
+    )
+    # Counts and an opaque id only: never the code (a capability), never a principal (a
+    # provider subject is personal data), never a name (§4.9).
+    logger.info(
+        "%s",
+        {
+            "event": "kt_retrieval_context_created",
+            "package_id": str(scope.package_id),
+            "subject_principals": len(scope.subject_principals),
+            "categories": len(scope.categories),
+            "windowed": scope.window is not None,
+        },
+    )
+    return scope
+
+
+async def _subject_profile(session: AsyncSession, row: object) -> SubjectProfile:
+    """The subject as a recipient may see them: the display name always, the role only
+    under the `profile` scope.
+
+    One function, so the console header and the handover report cannot apply two
+    different privacy rules to the same person.
+    """
+    if "profile" in list(row.scope):  # type: ignore[attr-defined]
+        profile_row = (
+            await session.execute(
+                text(
+                    "SELECT u.display_name, ep.designation, ep.department, "
+                    "  p.display_name AS practice, "
+                    "  COALESCE(t.display_name, ep.role_title_custom) AS role_title, "
+                    "  l.display_name AS role_level "
+                    "FROM users u "
+                    "LEFT JOIN employee_profiles ep ON ep.user_id = u.id "
+                    "LEFT JOIN role_practices p ON p.key = ep.practice_key "
+                    "LEFT JOIN role_titles t ON t.key = ep.role_title_key "
+                    "LEFT JOIN role_levels l ON l.key = ep.role_level_key "
+                    "WHERE u.id = :subject"
+                ),
+                {"subject": row.subject_user_id},  # type: ignore[attr-defined]
+            )
+        ).first()
+    else:
+        profile_row = (
+            await session.execute(
+                text(
+                    "SELECT display_name, NULL AS designation, NULL AS department, "
+                    "  NULL AS practice, NULL AS role_title, NULL AS role_level "
+                    "FROM users WHERE id = :subject"
+                ),
+                {"subject": row.subject_user_id},  # type: ignore[attr-defined]
+            )
+        ).first()
+
+    return SubjectProfile(
+        display_name=profile_row.display_name if profile_row else None,
+        designation=profile_row.designation if profile_row else None,
+        department=profile_row.department if profile_row else None,
+        practice=profile_row.practice if profile_row else None,
+        role_title=profile_row.role_title if profile_row else None,
+        role_level=profile_row.role_level if profile_row else None,
+    )
+
+
 async def claim_or_open(
     session: AsyncSession,
     *,
@@ -847,54 +988,15 @@ async def claim_or_open(
             correlation_id=correlation_id,
         )
 
-    scope = list(row.scope)  # type: ignore[attr-defined]
-    profile_row = None
-    if "profile" in scope:
-        profile_row = (
-            await session.execute(
-                text(
-                    "SELECT u.display_name, ep.designation, ep.department, "
-                    "  p.display_name AS practice, "
-                    "  COALESCE(t.display_name, ep.role_title_custom) AS role_title, "
-                    "  l.display_name AS role_level "
-                    "FROM users u "
-                    "LEFT JOIN employee_profiles ep ON ep.user_id = u.id "
-                    "LEFT JOIN role_practices p ON p.key = ep.practice_key "
-                    "LEFT JOIN role_titles t ON t.key = ep.role_title_key "
-                    "LEFT JOIN role_levels l ON l.key = ep.role_level_key "
-                    "WHERE u.id = :subject"
-                ),
-                {"subject": row.subject_user_id},  # type: ignore[attr-defined]
-            )
-        ).first()
-    else:
-        profile_row = (
-            await session.execute(
-                text(
-                    "SELECT display_name, NULL AS designation, NULL AS department, "
-                    "  NULL AS practice, NULL AS role_title, NULL AS role_level "
-                    "FROM users WHERE id = :subject"
-                ),
-                {"subject": row.subject_user_id},  # type: ignore[attr-defined]
-            )
-        ).first()
-
     return KtRecipientView(
         kt_code=row.kt_code,  # type: ignore[attr-defined]
         status="claimed",
-        scope=scope,
+        scope=list(row.scope),  # type: ignore[attr-defined]
         period_start=row.period_start,  # type: ignore[attr-defined]
         period_end=row.period_end,  # type: ignore[attr-defined]
         expires_at=row.expires_at,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
-        subject=SubjectProfile(
-            display_name=profile_row.display_name if profile_row else None,
-            designation=profile_row.designation if profile_row else None,
-            department=profile_row.department if profile_row else None,
-            practice=profile_row.practice if profile_row else None,
-            role_title=profile_row.role_title if profile_row else None,
-            role_level=profile_row.role_level if profile_row else None,
-        ),
+        subject=await _subject_profile(session, row),
     )
 
 
@@ -918,40 +1020,36 @@ async def kt_documents(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
     limit: int,
     cursor: str | None,
 ) -> KtDocumentPage:
-    """Documents in the package window THE RECIPIENT MAY ALREADY READ.
+    """The subject's own documents inside the package window (ADR 0025).
 
-    The ACL join is inside the SQL, against the caller's own principals — the same rule
-    as retrieval (§12, non-negotiable 5). The package contributes only the period
-    filter. A recipient with no linked source identity gets an empty page, which is the
-    §2 invariant holding, not a bug; the UI explains it in exactly those terms.
+    `_open_for` first, then the package's scope, then `documents_in_scope`, where the
+    subject predicate, the supersession filter and the period all run inside one SQL
+    statement. The recipient's principals are not an input to this function at all.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    if "documents" not in list(row.scope):  # type: ignore[attr-defined]
-        raise PermissionDenied("Documents are not part of this package's scope.")
-    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    await _touch_activity(session, package_id=scope.package_id)
+    return await documents_in_scope(session, scope, limit=limit, cursor=cursor)
 
-    # No early return on empty principals: the predicate's third arm serves documents
-    # granted to the whole organisation, which a caller with no personal principal may
-    # still read. Empty arrays simply make the first two arms false.
+
+async def documents_in_scope(
+    session: AsyncSession, scope: KtScope, *, limit: int, cursor: str | None
+) -> KtDocumentPage:
+    """`kt_documents` for a package already opened in this request.
+
+    Exists so the handover report and the workspace can open a package ONCE and read
+    several things from it: every public reader spends a `KT_OPEN` allowance, and a
+    report assembled from five of them would spend five allowances for one press.
+    """
+    if "documents" not in scope.categories:
+        raise PermissionDenied(_DOCUMENTS_OUT_OF_SCOPE)
+
     bounded = max(1, min(limit, 100))
-    filters = ["d.superseded_by IS NULL"]
-    params: dict[str, object] = {
-        "limit": bounded + 1,
-        "principals": list(principals),
-        "groups": list(groups),
-    }
-
-    if row.period_start is not None:  # type: ignore[attr-defined]
-        params["period_start"] = row.period_start  # type: ignore[attr-defined]
-        filters.append("d.created_at >= :period_start")
-    if row.period_end is not None:  # type: ignore[attr-defined]
-        params["period_end"] = row.period_end  # type: ignore[attr-defined]
-        filters.append("d.created_at <= :period_end")
+    params: dict[str, object] = {"limit": bounded + 1}
+    filters = scope.conditions(params)
     if cursor:
         try:
             ts, last_id = cursor.split("|", 1)
@@ -961,9 +1059,6 @@ async def kt_documents(
             raise NotFound("That page does not exist.") from exc
         filters.append("(d.created_at, d.id) < (:cursor_ts, :cursor_id)")
 
-    # THE predicate, imported from retrieval rather than re-derived: §12's rule is that
-    # the same authorization filter runs everywhere, and a hand-written near-copy here
-    # is exactly how a KT listing would quietly widen (or narrow) what search enforces.
     rows = (
         await session.execute(
             text(
@@ -971,8 +1066,7 @@ async def kt_documents(
                 "s.system AS source_system "
                 "FROM documents d "
                 "JOIN sources s ON s.id = d.source_id "
-                f"WHERE {ACL_PREDICATE} "
-                f"AND {' AND '.join(filters)} "
+                f"WHERE {' AND '.join(filters)} "
                 "ORDER BY d.created_at DESC, d.id DESC LIMIT :limit"
             ),
             params,
@@ -1032,6 +1126,11 @@ class KtDocumentDetail:
 #: that makes an unknown KT code and a package bound to somebody else the same 404.
 _DOCUMENT_NOT_FOUND = "That document is not available in this package."
 
+#: The scope refusal every raw-passage surface shares: the listing, the reader, Ask KT
+#: and the citation span. One sentence, so a package created without `documents` refuses
+#: in the same words wherever a recipient meets the boundary.
+_DOCUMENTS_OUT_OF_SCOPE = "Documents are not part of this package's scope."
+
 
 async def kt_document(
     session: AsyncSession,
@@ -1040,45 +1139,31 @@ async def kt_document(
     user_id: UUID,
     kt_code: str,
     document_id: UUID,
-    principals: frozenset[str],
-    groups: frozenset[str],
     from_ordinal: int,
     limit: int,
 ) -> KtDocumentDetail:
-    """One document from the package window, as ordered MASKED passages.
+    """One of the subject's documents from the package window, as ordered MASKED passages.
 
-    `kt_documents` is a bibliography: it proves a document exists and is authorised to the
-    recipient, and lets them read not a word of it. This is the same window, opened.
+    `kt_documents` is a bibliography: it proves a document is in the package and lets the
+    recipient read not a word of it. This is the same window, opened.
 
-    Every gate the listing runs, in the same order and from the same constant: `_open_for`
-    first, then the package's scope, then the recipient's own ACL and the package's period
-    — the last two ANDed together **inside** the SQL, so one statement decides both. The
-    passage read re-runs that whole condition rather than inheriting the header's verdict;
-    two statements that could disagree about authorization is one more than there should be.
+    Every gate the listing runs, in the same order and from the same `KtScope`: `_open_for`
+    first, then the package's scope, then `SUBJECT_PREDICATE` and the period — ANDed
+    together **inside** the SQL, so one statement decides both. The passage read re-runs
+    that whole condition rather than inheriting the header's verdict; two statements that
+    could disagree about authorization is one more than there should be.
 
     Paginated by ordinal because a document is not bounded: an ingested handbook is
     hundreds of chunks, and returning all of them makes one response megabytes wide.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    if "documents" not in list(row.scope):  # type: ignore[attr-defined]
-        raise PermissionDenied("Documents are not part of this package's scope.")
-    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    if "documents" not in scope.categories:
+        raise PermissionDenied(_DOCUMENTS_OUT_OF_SCOPE)
+    await _touch_activity(session, package_id=scope.package_id)
 
-    params: dict[str, object] = {
-        "id": document_id,
-        "principals": list(principals),
-        "groups": list(groups),
-    }
-    # The window, as conjuncts on `d`. It sits beside ACL_PREDICATE and is ANDed with it,
-    # never applied to a wider result afterwards: intersection can only remove a document
-    # the caller was already authorized to see, and can never add one.
-    window = ["d.superseded_by IS NULL"]
-    if row.period_start is not None:  # type: ignore[attr-defined]
-        params["period_start"] = row.period_start  # type: ignore[attr-defined]
-        window.append("d.created_at >= :period_start")
-    if row.period_end is not None:  # type: ignore[attr-defined]
-        params["period_end"] = row.period_end  # type: ignore[attr-defined]
-        window.append("d.created_at <= :period_end")
+    params: dict[str, object] = {"id": document_id}
+    conditions = " AND ".join(scope.conditions(params))
 
     header = (
         await session.execute(
@@ -1088,7 +1173,7 @@ async def kt_document(
                 "(SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS total_chunks "
                 "FROM documents d "
                 "JOIN sources s ON s.id = d.source_id "
-                f"WHERE {ACL_PREDICATE} AND d.id = :id AND {' AND '.join(window)}"
+                f"WHERE d.id = :id AND {conditions}"
             ),
             params,
         )
@@ -1105,7 +1190,7 @@ async def kt_document(
                 "SELECT c.ordinal, c.text FROM chunks c "  # noqa: S608
                 "WHERE c.document_id = :id AND c.ordinal >= :from_ordinal "
                 "AND EXISTS (SELECT 1 FROM documents d WHERE d.id = c.document_id "
-                f"AND {' AND '.join(window)} AND {ACL_PREDICATE}) "
+                f"AND {conditions}) "
                 "ORDER BY c.ordinal LIMIT :limit"
             ),
             params,
@@ -1124,6 +1209,35 @@ async def kt_document(
         chunks=[KtDocumentChunk(ordinal=r.ordinal, text=r.text) for r in page],
         total_chunks=header.total_chunks,
         next_ordinal=next_ordinal,
+    )
+
+
+async def kt_evidence(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    kt_code: str,
+    chunk_id: UUID,
+) -> Evidence:
+    """The source span behind a KT citation (ADR 0025).
+
+    A citation on a KT answer points at one of the SUBJECT's chunks, which the generic
+    `/v1/evidence` — the recipient's own ACL — would call absent. This is that door for
+    the package: `_open_for`, the `documents` scope (a span is a raw passage), and then
+    `fetch_subject_evidence` under the subject predicate and the package window. A chunk
+    outside any of those is the same `NotFound` as a chunk that never existed.
+    """
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    scope = await _scope_for(session, row)
+    if "documents" not in scope.categories:
+        raise PermissionDenied(_DOCUMENTS_OUT_OF_SCOPE)
+    await _touch_activity(session, package_id=scope.package_id)
+    return await fetch_subject_evidence(
+        session,
+        subject_user_id=scope.subject_user_id,
+        chunk_id=chunk_id,
+        within=scope.window,
     )
 
 
@@ -1178,56 +1292,49 @@ async def kt_insights(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
     claim_type: str | None,
     limit: int,
 ) -> list[KtInsight]:
-    """Extracted claims inside the package window THE RECIPIENT MAY ALREADY READ.
+    """Extracted claims on the subject's own documents, inside the package window.
 
-    Three gates, in the order they run: the package itself (`_open_for` — binding,
-    expiry, revocation), the package's scope (a claim type outside it is refused), and
-    the recipient's own ACL — retrieval's predicate, inside the SQL, over the DOCUMENT
-    each claim's evidence chunk belongs to. A claim whose evidence the caller cannot
-    read does not exist for them (non-negotiable 6).
+    Three gates, in the order they run: the package itself (`_open_for` — binding, expiry,
+    revocation), the package's scope (a claim type outside it is refused), and
+    `SUBJECT_PREDICATE` inside the SQL over the DOCUMENT each claim's evidence chunk
+    belongs to. A claim whose evidence is not the subject's does not exist here.
 
     Only claims from each document's LATEST finished run qualify: re-extraction
     supersedes by versioning, and the read model is where "current" is defined.
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    scope = list(row.scope)  # type: ignore[attr-defined]
-    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
+    scope = await _scope_for(session, row)
+    await _touch_activity(session, package_id=scope.package_id)
+    return await insights_in_scope(session, scope, claim_type=claim_type, limit=limit)
 
+
+async def insights_in_scope(
+    session: AsyncSession, scope: KtScope, *, claim_type: str | None, limit: int
+) -> list[KtInsight]:
+    """`kt_insights` for a package already opened in this request (see `documents_in_scope`)."""
     if claim_type is not None:
         category = _CLAIM_SCOPE.get(claim_type)
         if category is None:
             raise ValidationFailed(f"Unknown insight type. One of: {', '.join(_CLAIM_SCOPE)}.")
-        if category not in scope:
+        if category not in scope.categories:
             raise PermissionDenied(f"{category.capitalize()} are not part of this package's scope.")
 
     bounded = max(1, min(limit, 200))
-    filters = ["d.superseded_by IS NULL"]
-    params: dict[str, object] = {
-        "limit": bounded,
-        "principals": list(principals),
-        "groups": list(groups),
-    }
+    params: dict[str, object] = {"limit": bounded}
+    filters = scope.conditions(params)
     if claim_type is not None:
         params["claim_type"] = claim_type
         filters.append("cl.claim_type = :claim_type")
     else:
         # The timeline: every type the package's scope covers.
-        allowed = [t for t, cat in _CLAIM_SCOPE.items() if cat in scope]
+        allowed = scope.claim_types()
         if not allowed:
             return []
         params["allowed_types"] = allowed
         filters.append("cl.claim_type = ANY(:allowed_types)")
-    if row.period_start is not None:  # type: ignore[attr-defined]
-        params["period_start"] = row.period_start  # type: ignore[attr-defined]
-        filters.append("d.created_at >= :period_start")
-    if row.period_end is not None:  # type: ignore[attr-defined]
-        params["period_end"] = row.period_end  # type: ignore[attr-defined]
-        filters.append("d.created_at <= :period_end")
 
     rows = (
         await session.execute(
@@ -1241,7 +1348,7 @@ async def kt_insights(
                 "JOIN documents d ON d.id = ch.document_id "
                 "JOIN sources s ON s.id = d.source_id "
                 + _LATEST_RUN_JOIN
-                + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)} "
+                + f"WHERE {' AND '.join(filters)} "
                 "ORDER BY COALESCE(NULLIF(cl.payload_json->>'date', ''), "
                 "to_char(d.created_at, 'YYYY-MM-DD')) DESC, cl.id DESC "
                 "LIMIT :limit"
@@ -1275,35 +1382,27 @@ async def kt_insight_summary(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
 ) -> KtInsightSummary:
     """Counts per claim type, under exactly the gates the lists themselves run.
 
-    This is where the Overview's and the Handover's figures come from — the same ACL
-    predicate that will serve the rows, so a count can never exceed what its list would
+    This is where the Overview's and the Handover's figures come from — the same
+    `KtScope` that will serve the rows, so a count can never exceed what its list would
     show (§17.6 in miniature).
     """
     row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-    scope = list(row.scope)  # type: ignore[attr-defined]
-    await _touch_activity(session, package_id=row.id)  # type: ignore[attr-defined]
-    allowed = [t for t, cat in _CLAIM_SCOPE.items() if cat in scope]
+    scope = await _scope_for(session, row)
+    await _touch_activity(session, package_id=scope.package_id)
+    return await insight_counts_in_scope(session, scope)
+
+
+async def insight_counts_in_scope(session: AsyncSession, scope: KtScope) -> KtInsightSummary:
+    """`kt_insight_summary` for a package already opened in this request."""
+    allowed = scope.claim_types()
     if not allowed:
         return KtInsightSummary(by_type={})
 
-    filters = ["d.superseded_by IS NULL", "cl.claim_type = ANY(:allowed_types)"]
-    params: dict[str, object] = {
-        "principals": list(principals),
-        "groups": list(groups),
-        "allowed_types": allowed,
-    }
-    if row.period_start is not None:  # type: ignore[attr-defined]
-        params["period_start"] = row.period_start  # type: ignore[attr-defined]
-        filters.append("d.created_at >= :period_start")
-    if row.period_end is not None:  # type: ignore[attr-defined]
-        params["period_end"] = row.period_end  # type: ignore[attr-defined]
-        filters.append("d.created_at <= :period_end")
-
+    params: dict[str, object] = {"allowed_types": allowed}
+    filters = [*scope.conditions(params), "cl.claim_type = ANY(:allowed_types)"]
     rows = (
         await session.execute(
             text(
@@ -1312,7 +1411,7 @@ async def kt_insight_summary(
                 "JOIN chunks ch ON ch.id = cl.chunk_id "
                 "JOIN documents d ON d.id = ch.document_id "
                 + _LATEST_RUN_JOIN
-                + f"WHERE {ACL_PREDICATE} AND {' AND '.join(filters)} "
+                + f"WHERE {' AND '.join(filters)} "
                 "GROUP BY cl.claim_type"
             ),
             params,
@@ -1339,10 +1438,17 @@ class HandoverEvidence:
 
 
 _HANDOVER_QUESTION = (
-    "Compose a concise executive handover summary for the person taking over: main "
-    "responsibilities, active projects, key contacts, important decisions, and open "
-    "work. Group related points; write for a first day on the job."
+    "Compose a concise executive handover summary for the person taking over this "
+    "colleague's work: main responsibilities, active projects, key contacts, important "
+    "decisions, meetings and open work. Use only the numbered evidence; do not infer "
+    "personal or private details the evidence does not state. Where the evidence says "
+    "nothing about one of those areas, say plainly that it is not covered rather than "
+    "guessing. Group related points; write for a first day on the job."
 )
+
+#: How many claims ground one summary. A bound on prompt size and on what one paid call
+#: may read, unchanged from when the summary was first built.
+HANDOVER_CLAIMS = 40
 
 
 async def kt_handover_summary(
@@ -1352,28 +1458,41 @@ async def kt_handover_summary(
     org_id: UUID,
     user_id: UUID,
     kt_code: str,
-    principals: frozenset[str],
-    groups: frozenset[str],
 ) -> AnswerOutcome:
-    """§29's executive summary, composed from evidence-anchored claims and gated.
+    """§29's executive summary, composed from the subject's evidence-anchored claims.
 
-    The same grounding discipline as /v1/ask: the model sees only claims the recipient
-    may already read (kt_insights runs all three gates), every sentence must cite, the
-    citations are validated against exactly that claim list, and an unciteable summary
-    is an honest `insufficient_evidence` — never a fluent guess (non-negotiable 3).
-    Composed on demand and never persisted: a stored summary would outlive the ACL
-    state it was grounded in.
+    The same grounding discipline as /v1/ask: the model sees only claims inside the
+    package's scope, every sentence must cite, the citations are validated against exactly
+    that claim list, and an unciteable summary is an honest `insufficient_evidence` —
+    never a fluent guess (non-negotiable 3). Composed on demand and never persisted: a
+    stored summary would outlive the package state it was grounded in.
     """
-    insights = await kt_insights(
-        session,
-        org_id=org_id,
-        user_id=user_id,
-        kt_code=kt_code,
-        principals=principals,
-        groups=groups,
-        claim_type=None,
-        limit=40,
+    row = await _open_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    scope = await _scope_for(session, row)
+    await _touch_activity(session, package_id=scope.package_id)
+    outcome, _considered = await handover_summary_in_scope(
+        session, transport, scope, org_id=org_id, user_id=user_id
     )
+    return outcome
+
+
+async def handover_summary_in_scope(
+    session: AsyncSession,
+    transport: AnswerTransport,
+    scope: KtScope,
+    *,
+    org_id: UUID,
+    user_id: UUID,
+    action: str = "kt.handover_summary",
+    correlation_id: str | None = None,
+) -> tuple[AnswerOutcome, list[KtInsight]]:
+    """The summary for a package already opened in this request, and the claims it read.
+
+    Returns the claims too, because the handover report cites the same list: the report's
+    sections and the summary above them must stand on one set of evidence, not on two
+    reads that could disagree.
+    """
+    insights = await insights_in_scope(session, scope, claim_type=None, limit=HANDOVER_CLAIMS)
     evidence = [
         HandoverEvidence(
             chunk_id=i.chunk_id,
@@ -1394,25 +1513,17 @@ async def kt_handover_summary(
     # §25 names this act, and it is the one recipient-facing surface that spends a model
     # call and composes a narrative over somebody else's documents. The row says it
     # happened and how it went; the summary itself is never written down, here or
-    # anywhere — a stored one would outlive the ACL state that grounded it.
-    # The package id, not the code. Every other kt_package audit row keys on the UUID,
-    # and the admin console's activity panel filters on exactly that — so keying this
-    # one differently made the single act that spends a model call over somebody else's
-    # documents the one act a package's own trail never showed. `_open_for` has already
-    # authorised this caller, so the lookup is scoped and cannot widen anything.
-    package_id = (
-        await session.execute(
-            text("SELECT id FROM kt_packages WHERE kt_code = :code"),
-            {"code": normalise_jutsu_id(kt_code)},
-        )
-    ).scalar_one_or_none()
+    # anywhere — a stored one would outlive the package state that grounded it. Keyed on
+    # the package UUID like every other kt_package row, so the admin console's activity
+    # panel shows it.
     await _audit(
         session,
         org_id=org_id,
         actor_id=user_id,
-        action="kt.handover_summary",
-        resource_id=package_id if package_id is not None else normalise_jutsu_id(kt_code),
+        action=action,
+        resource_id=scope.package_id,
         outcome="success",
+        correlation_id=correlation_id,
         meta={
             "insufficient_evidence": outcome.insufficient_evidence,
             "citations": len(outcome.citations),
@@ -1420,4 +1531,4 @@ async def kt_handover_summary(
             "claims_considered": len(insights),
         },
     )
-    return outcome
+    return outcome, insights

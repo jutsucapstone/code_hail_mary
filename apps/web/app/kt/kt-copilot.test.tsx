@@ -374,8 +374,9 @@ describe("the KT copilot", () => {
       await screen.findByText("Send the plan to [EMAIL_A7] before the first review."),
     ).toBeInTheDocument();
     const evidence = callIndexFor(fetchMock, "/evidence/");
+    // The package's evidence door: a KT citation names the subject's chunk (ADR 0025).
     expect(calledUrl(fetchMock, evidence)).toBe(
-      "/api/jutsu/v1/evidence/cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      `/api/jutsu/v1/kt/${CODE}/evidence/cccccccc-cccc-4ccc-8ccc-cccccccccccc`,
     );
     expect(calledMethod(fetchMock, evidence)).toBe("GET");
   });

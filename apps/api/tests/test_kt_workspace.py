@@ -39,9 +39,11 @@ REGISTRATION = {
 
 OWNER_EMAIL = "ada@example.com"
 RECIPIENT_EMAIL = "newhire@example.com"
-#: What invitation acceptance links for the recipient (ADR 0014): the address, in the
-#: `local` namespace. Documents granted to it are the ones the recipient may read.
-RECIPIENT_PRINCIPAL = "local:newhire@example.com"
+#: What invitation acceptance links for the package's SUBJECT (ADR 0014): the address, in
+#: the `local` namespace. Documents granted to it are the package's documents - what the
+#: recipient reads through the package (ADR 0025). Before ADR 0025 the evidence here was
+#: seeded under the recipient's own principal, which pinned the reported defect.
+SUBJECT_PRINCIPAL = "local:leaver@example.com"
 
 #: A unit vector along one axis. The fake embedder returns the same, so every seeded
 #: chunk is at cosine distance 0 from every question — relevance is not under test here.
@@ -368,7 +370,7 @@ class TestCopilot:
         doc_id, _, _ = await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Storage decision",
             quote="we chose PostgreSQL",
         )
@@ -405,7 +407,7 @@ class TestCopilot:
         await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Storage decision",
             quote="we chose PostgreSQL because of the team's experience",
         )
@@ -443,7 +445,7 @@ class TestCopilot:
         await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Ancient decision",
             quote="we chose punch cards",
             created_at=datetime.now(tz=UTC) - timedelta(days=400),
@@ -552,7 +554,7 @@ class TestBookmarks:
         _, _, claim_id = await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Storage decision",
             quote="we chose PostgreSQL",
         )
@@ -640,7 +642,7 @@ class TestBookmarks:
         doc_id, _, _ = await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Runbook",
             quote="rotate the keys quarterly",
             claim_type=None,
@@ -742,7 +744,7 @@ class TestWorkspace:
         doc_id, _, claim_id = await seed_document(
             db_session,
             org_id,
-            principal=RECIPIENT_PRINCIPAL,
+            principal=SUBJECT_PRINCIPAL,
             title="Storage decision",
             quote="we chose PostgreSQL",
         )
@@ -773,7 +775,7 @@ class TestWorkspace:
         # People is in scope with nothing visible: an evidence gap, with the reason.
         people_gap = next(g for g in workspace["gaps"] if g["key"] == "category:people")
         assert people_gap["source"] == "evidence"
-        assert "readable" in people_gap["why"]
+        assert "falls in this category" in people_gap["why"]
         assert workspace["resume"] == {
             **workspace["resume"],
             "path_done": 0,

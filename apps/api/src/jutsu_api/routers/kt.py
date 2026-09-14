@@ -2,14 +2,21 @@
 
   kt:manage  POST /v1/kt · GET /v1/kt · GET /v1/kt/{id} · revoke · complete
   kt:open    POST /v1/kt/claim · GET /v1/kt/{code}/documents · …/documents/{document_id}
+             GET /v1/kt/{code}/evidence/{chunk_id} · insights · handover summary/report
 
-The recipient's Ask experience is the ordinary `POST /v1/search` under their own
-authorization — deliberately not a KT-specific search endpoint, because a second search
-path is a second place an ACL bug can live (§12).
+What a recipient reads through these routes is the package SUBJECT's own documents,
+inside the package's period and categories (ADR 0025). No route here resolves the
+recipient's principals: every reader takes a `KtScope`, built only from the row
+`_open_for` returned, so the capability is re-decided on every request and the
+recipient's own corpus is not an input to any KT read. The recipient's ordinary
+`/v1/search`, `/v1/ask` and `/v1/evidence` are untouched by any of this.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import re
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
@@ -21,7 +28,6 @@ from jutsu_core.rbac import Permission
 from pydantic import BaseModel, EmailStr, Field
 
 from jutsu_api.answers import answers_configured
-from jutsu_api.auth_service import scoped_acl_principals
 from jutsu_api.deps import CurrentPrincipal, Db, StoreDep
 from jutsu_api.kt import (
     SUPPORTED_SCOPES,
@@ -31,6 +37,7 @@ from jutsu_api.kt import (
     get_package,
     kt_document,
     kt_documents,
+    kt_evidence,
     kt_handover_summary,
     kt_insight_summary,
     kt_insights,
@@ -46,7 +53,9 @@ from jutsu_api.kt_files import (
     shared_download_url,
     shared_files,
 )
+from jutsu_api.kt_report import compose_handover_report, render_handover_pdf, report_filename
 from jutsu_api.rate_limit import Bucket, spend_budget
+from jutsu_api.routers.evidence import EvidenceView
 from jutsu_api.routers.search import AnswerTransportDep
 from jutsu_api.security import GuardedAPIRoute, requires
 
@@ -155,7 +164,7 @@ class KtDocumentChunkOut(BaseModel):
     ordinal: int
     #: The MASKED passage, in document order. No character offsets travel with it: the
     #: stored pair indexes the ORIGINAL body, and offering them against this string is the
-    #: mis-highlight trap. A span belongs to `/v1/evidence/{chunk_id}`.
+    #: mis-highlight trap. A span belongs to `/v1/kt/{code}/evidence/{chunk_id}`.
     text: str
 
 
@@ -325,20 +334,16 @@ async def read_kt_documents(
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     cursor: Annotated[str | None, Query(max_length=128)] = None,
 ) -> KtDocumentPageOut:
-    """Documents inside the package window the RECIPIENT may already read.
+    """The package subject's own documents inside the package window (ADR 0025).
 
-    The ACL filter is retrieval's own predicate, inside the SQL, against the caller's
-    principals resolved fresh for this request. The package contributes the period; it
-    grants nothing.
+    `SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's
+    `_open_for`. The requester's principals are not resolved at all.
     """
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     page = await kt_documents(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
         limit=limit,
         cursor=cursor,
     )
@@ -361,22 +366,19 @@ async def read_kt_document(
     """One document from the listing, opened: its masked passages in document order.
 
     The same permission and the same gates as the listing — `_open_for`, the package's
-    scope, then retrieval's own predicate and the package's period ANDed together inside
-    the SQL. A document that does not exist, one this recipient may not read and one
-    outside the window are the identical 404; a closed package is the package's 403.
+    scope, then the subject predicate and the package's period ANDed together inside the
+    SQL. A document that does not exist, one that is not the subject's and one outside the
+    window are the identical 404; a closed package is the package's 403.
 
     Read a page at a time (`from_ordinal`, `next_ordinal`) because a document has no
     bounded size and a whole handbook in one response helps nobody.
     """
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     detail = await kt_document(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
         document_id=document_id,
-        principals=principals,
-        groups=groups,
         from_ordinal=from_ordinal,
         limit=limit,
     )
@@ -388,6 +390,38 @@ async def read_kt_document(
         chunks=[KtDocumentChunkOut(ordinal=c.ordinal, text=c.text) for c in detail.chunks],
         total_chunks=detail.total_chunks,
         next_ordinal=detail.next_ordinal,
+    )
+
+
+@router.get("/kt/{kt_code}/evidence/{chunk_id}")
+@requires(Permission.KT_OPEN)
+async def read_kt_evidence(
+    kt_code: str, chunk_id: UUID, principal: CurrentPrincipal, session: Db
+) -> EvidenceView:
+    """The source span behind one KT citation or claim, if it is inside the package.
+
+    The KT counterpart of `/v1/evidence/{chunk_id}`. A KT answer cites the SUBJECT's
+    chunks, which the recipient's own ACL would call absent, so this door runs the
+    package's gates instead: `_open_for`, the `documents` scope, then the subject predicate
+    and the package window in SQL. Everything outside is 404 — the same answer for "never
+    existed", "not the subject's" and "outside the window", so the route is no oracle.
+    """
+    evidence = await kt_evidence(
+        session,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        chunk_id=chunk_id,
+    )
+    return EvidenceView(
+        chunk_id=str(evidence.chunk_id),
+        document_id=str(evidence.document_id),
+        document_title=evidence.document_title,
+        source_system=evidence.source_system,
+        text=evidence.text,
+        char_start=evidence.char_start,
+        char_end=evidence.char_end,
+        occurred_at=evidence.occurred_at,
     )
 
 
@@ -413,8 +447,8 @@ class KtInsightsOut(BaseModel):
 
 
 class KtInsightSummaryOut(BaseModel):
-    #: Counts per claim type, computed under the same ACL predicate that serves the
-    #: rows — a count here can never exceed what the list would show.
+    #: Counts per claim type, computed under the same `KtScope` that serves the rows — a
+    #: count here can never exceed what the list would show.
     by_type: dict[str, int]
 
 
@@ -427,20 +461,17 @@ async def read_kt_insights(
     type: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> KtInsightsOut:
-    """Extracted, quote-gated claims the RECIPIENT may read, in the package window.
+    """Extracted, quote-gated claims on the package subject's own documents, in the window.
 
     `type` filters to one claim type; omitted, it returns every type the package's
     scope covers, date-ordered — the timeline. Every row carries its verbatim quote and
-    the chunk it anchors to, so a citation is one evidence fetch away.
+    the chunk it anchors to, so a citation is one KT evidence fetch away.
     """
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     items = await kt_insights(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
         claim_type=type,
         limit=limit,
     )
@@ -452,14 +483,11 @@ async def read_kt_insights(
 async def read_kt_insight_summary(
     kt_code: str, principal: CurrentPrincipal, session: Db
 ) -> KtInsightSummaryOut:
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     summary = await kt_insight_summary(
         session,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
     )
     return KtInsightSummaryOut(by_type=summary.by_type)
 
@@ -488,8 +516,8 @@ async def read_kt_handover_summary(
     session: Db,
     transport: AnswerTransportDep,
 ) -> HandoverSummaryOut:
-    """§29's executive summary: composed on demand from the recipient's own claim
-    visibility, grounded and citation-gated exactly like /v1/ask, never persisted.
+    """§29's executive summary: composed on demand from the package subject's claims,
+    grounded and citation-gated exactly like /v1/ask, never persisted.
 
     Refuses before any spend when no answer model is configured — the same honest 503
     the ask surface gives, so the button in the KT console can say why.
@@ -502,15 +530,12 @@ async def read_kt_handover_summary(
     # After the free configuration gate and before anything paid — the same ordering as
     # /v1/ask. A summary is one model call per press; the budget is what stops a held key.
     await spend_budget(Bucket.KT_SUMMARY, org_id=principal.org_id, user_id=principal.user_id)
-    principals, groups = await scoped_acl_principals(session, user_id=principal.user_id)
     outcome = await kt_handover_summary(
         session,
         transport,
         org_id=principal.org_id,
         user_id=principal.user_id,
         kt_code=kt_code,
-        principals=principals,
-        groups=groups,
     )
     return HandoverSummaryOut(
         summary=outcome.answer,
@@ -525,6 +550,94 @@ async def read_kt_handover_summary(
             for c in outcome.citations
         ],
         attempts=outcome.attempts,
+    )
+
+
+class HandoverReferenceOut(BaseModel):
+    number: int
+    document_title: str
+    source_system: str
+    #: The source document's date, when known. Never an id: a reference is for a reader.
+    date: str | None
+
+
+class HandoverReportOut(BaseModel):
+    """One composed handover, as the page shows it and as the PDF prints it.
+
+    Both in one response so they cannot disagree: two requests would be two model calls,
+    and two model calls are two different summaries. Nothing here is stored — the PDF
+    exists in this response and in the recipient's browser, and nowhere else.
+    """
+
+    #: None when the package's claims could not ground a narrative.
+    summary: str | None
+    insufficient_evidence: bool
+    #: The narrative's references, numbered exactly as the PDF numbers them.
+    references: list[HandoverReferenceOut]
+    attempts: int
+    filename: str
+    #: The PDF itself, base64. JSON rather than a binary body so the report travels
+    #: through the typed client and the same proxy as every other call.
+    pdf_base64: str
+    generated_at: datetime
+
+
+#: A reference marker in the renumbered narrative.
+_REFERENCE_MARKER = re.compile(r"\[(\d{1,3})\]")
+
+
+@router.post("/kt/{kt_code}/handover-report")
+@requires(Permission.KT_OPEN)
+async def create_kt_handover_report(
+    kt_code: str,
+    principal: CurrentPrincipal,
+    session: Db,
+    request: Request,
+    transport: AnswerTransportDep,
+) -> HandoverReportOut:
+    """Compose the first-day handover and render it as a PDF, in one request (ADR 0025).
+
+    The summary's gates in the summary's order — the free configuration check, then the
+    `KT_SUMMARY` budget (one model call per press), then ONE open of the package — and a
+    body that carries nothing: the report is composed here from the package, because a PDF
+    that printed text the browser sent would be a forgery kit with JUTSU's name on it. A
+    POST, so it is CSRF-checked: it spends a budget and writes an audit row.
+    """
+    if not answers_configured():
+        raise ServiceUnavailable(
+            "Handover summaries are not configured for this deployment yet. The "
+            "knowledge tabs still work; a summary needs an answer model."
+        )
+    await spend_budget(Bucket.KT_SUMMARY, org_id=principal.org_id, user_id=principal.user_id)
+    report, outcome = await compose_handover_report(
+        session,
+        transport,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+        kt_code=kt_code,
+        correlation_id=request.state.request_id,
+    )
+    # CPU work, a few hundred milliseconds for a long report: off the event loop, so one
+    # recipient's PDF never stalls everybody else's requests on this instance.
+    pdf = await asyncio.to_thread(render_handover_pdf, report)
+    cited = {int(number) for number in _REFERENCE_MARKER.findall(report.summary or "")}
+    return HandoverReportOut(
+        summary=report.summary,
+        insufficient_evidence=outcome.insufficient_evidence,
+        references=[
+            HandoverReferenceOut(
+                number=source.number,
+                document_title=source.title,
+                source_system=source.source_system,
+                date=source.date,
+            )
+            for source in report.sources
+            if source.number in cited
+        ],
+        attempts=outcome.attempts,
+        filename=report_filename(report.generated_at),
+        pdf_base64=base64.b64encode(pdf).decode("ascii"),
+        generated_at=report.generated_at,
     )
 
 

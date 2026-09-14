@@ -46,7 +46,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from jutsu_db.acl import resolve_acl_principals
+from jutsu_db.acl import resolve_acl_principals, resolve_subject_principals
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,11 +57,13 @@ __all__ = [
     "DEFAULT_MAX_SCAN_TUPLES",
     "DEFAULT_STATEMENT_TIMEOUT_MS",
     "ORG_SCOPE_SQL",
+    "SUBJECT_PREDICATE",
     "Evidence",
     "RetrievalWindow",
     "SearchPage",
     "SearchStats",
     "search_chunks",
+    "search_subject_chunks",
     "vector_literal",
 ]
 
@@ -114,6 +116,34 @@ ACL_PREDICATE: Final = (
     "OR (a.principal_type = 'group' AND a.principal_id = ANY(:groups)) "
     f"OR (a.principal_type = 'org' AND a.principal_id = CAST({ORG_SCOPE_SQL} AS text))"
     ")"
+    ")"
+)
+
+#: A knowledge-transfer package's authorization (ADR 0025): documents granted DIRECTLY to
+#: the package's subject, and nothing else.
+#:
+#: **A different question from `ACL_PREDICATE`, not a wider copy of it.** That predicate
+#: asks "may this caller read the document"; this one asks "is this document the subject's
+#: own" — which is why it has exactly one arm. A `group` arm would hand a recipient every
+#: document shared with any team the subject belonged to, and an `org` arm every document
+#: in the tenant. Neither is the subject's knowledge, and a recipient entitled to either
+#: can already search it from their own account. The `user` grant is the one every
+#: connector writes for the account owner (`owner_acl`, floor and ceiling) and the one the
+#: Knowledge Basket writes for the uploader, so it names precisely the subject's accounts.
+#:
+#: **The bind is `:subject_principals`, never `:principals`.** The two predicates can then
+#: never be fed each other's set by accident, and a mutation that swaps one for the other
+#: fails to bind rather than quietly authorizing the wrong person.
+#:
+#: Reached only through a package the caller has opened: `search_subject_chunks` and
+#: `fetch_subject_evidence` here, and `jutsu_api.kt.KtScope` in the API, whose only
+#: constructor takes the row `_open_for` returned. Like `ACL_PREDICATE`, it is a module
+#: constant and never built by interpolation.
+SUBJECT_PREDICATE: Final = (
+    "EXISTS ("
+    "SELECT 1 FROM document_acl a "
+    "WHERE a.document_id = d.id AND a.permission = 'read' "
+    "AND a.principal_type = 'user' AND a.principal_id = ANY(:subject_principals)"
     ")"
 )
 
@@ -224,7 +254,7 @@ def vector_literal(vector: Sequence[float]) -> str:
 #
 # S608: `ORG_SCOPE_SQL` and `ACL_PREDICATE` are constants in this file; `:query`,
 # `:principals`, `:groups` and `:k` are bound parameters.
-_INNER_HEAD: Final = (
+_SCAN_PREFIX: Final = (
     "SELECT c.id, c.document_id, c.text, c.char_start, c.char_end, "  # noqa: S608
     "c.embedding <=> CAST(:query AS vector) AS distance "
     "FROM chunks c "
@@ -237,8 +267,15 @@ _INNER_HEAD: Final = (
     # §4.4 — superseding never overwrites, so retrieval has to exclude what was replaced
     # or an answer cites a version that is no longer true.
     "AND d.superseded_by IS NULL "
-    f"AND {ACL_PREDICATE}"
 )
+
+#: The caller's scan, byte-identical to what it has always been.
+_INNER_HEAD: Final = _SCAN_PREFIX + f"AND {ACL_PREDICATE}"
+
+#: The same scan with the subject's predicate in the authorization slot (ADR 0025). Both
+#: measured performance cliffs above hold for it unchanged, because nothing but that one
+#: conjunct differs — `chunks` alone in the FROM, distance alone in the inner ORDER BY.
+_SUBJECT_INNER_HEAD: Final = _SCAN_PREFIX + f"AND {SUBJECT_PREDICATE}"
 
 #: `RetrievalWindow`, as SQL. It sits INSIDE the documents `EXISTS`, beside the ACL
 #: predicate and ANDed with it, so it can only remove rows the caller was already
@@ -256,14 +293,18 @@ _WINDOW: Final = (
 _INNER: Final = _INNER_HEAD + ")"
 
 
-def _inner(*, windowed: bool) -> str:
+def _inner(*, windowed: bool, subject: bool = False) -> str:
     """The inner scan, with the window conjuncts inside the documents `EXISTS` or not.
 
     Same `FROM chunks c`, same distance-only `ORDER BY`, same predicate — the window is
     two more `AND` terms on `d`, which is the only place a narrowing may go without
     reopening either of the two measured performance cliffs (see `_ORDER`).
+
+    `subject` picks which of the two predicate constants fills the authorization slot.
+    It is a choice between two module constants, never a string a caller supplies.
     """
-    return _INNER_HEAD + _WINDOW + ")" if windowed else _INNER
+    head = _SUBJECT_INNER_HEAD if subject else _INNER_HEAD
+    return head + _WINDOW + ")" if windowed else head + ")"
 
 
 #: Keyset continuation, applied **inside** the inner scan so the `LIMIT` still lands after
@@ -297,9 +338,9 @@ _ORDER: Final = (
 )
 
 
-def _statement(*, paginated: bool, windowed: bool = False) -> str:
+def _statement(*, paginated: bool, windowed: bool = False, subject: bool = False) -> str:
     """Assemble the two halves. A CTE so the `LIMIT` binds to the authorized scan."""
-    inner = _inner(windowed=windowed) + (_CURSOR if paginated else "")
+    inner = _inner(windowed=windowed, subject=subject) + (_CURSOR if paginated else "")
     return (
         "WITH hits AS ("
         + inner
@@ -389,11 +430,126 @@ async def search_chunks(
         "groups": sorted(groups),
         "k": k,
     }
+    _bind_position(params, after=after, within=within)
+
+    page = await _ladder(
+        session,
+        statement=statement,
+        params=params,
+        k=k,
+        ef_search_ladder=ef_search_ladder,
+        statement_timeout_ms=statement_timeout_ms,
+        started=started,
+    )
+    stats = page.stats
+    # Opaque counts and timings. No question, no chunk text, no vector, no principal —
+    # a principal is a provider subject and therefore personal data (§4.9).
+    logger.info(
+        "vector_search returned=%d k=%d attempts=%d ef_search=%d elapsed_ms=%d exhausted=%s",
+        stats.returned,
+        k,
+        stats.attempts,
+        stats.ef_search,
+        stats.elapsed_ms,
+        stats.exhausted,
+    )
+    return page
+
+
+async def search_subject_chunks(
+    session: AsyncSession,
+    *,
+    subject_user_id: UUID,
+    query_vector: Sequence[float],
+    k: int = DEFAULT_K,
+    after: tuple[float, UUID] | None = None,
+    within: RetrievalWindow | None = None,
+    ef_search_ladder: Sequence[int] = DEFAULT_EF_SEARCH_LADDER,
+    statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
+) -> SearchPage:
+    """Top-`k` chunks from a knowledge-transfer SUBJECT's own documents, nearest first.
+
+    The KT copilot's retrieval (ADR 0025). A recipient who has opened a package reads the
+    subject's own documents inside the package's window — not their own corpus, which is
+    what `search_chunks` would return for them, and not the subject's whole reach, which
+    is what `ACL_PREDICATE` over the subject's principals would return.
+
+    **Only ever called with a subject taken from an opened package.** This module cannot
+    see a package, so that guarantee lives in `jutsu_api.kt.KtScope`, whose only
+    constructor takes the row `_open_for` returned, and in a test that fails if a second
+    call site appears. What this function CAN guarantee, it does in the same shape as
+    `search_chunks`: no principal set, no group set and no org id arrive as arguments —
+    the subject's principals are resolved here, in the caller's transaction, and the
+    tenant is still the session's GUC.
+
+    Same scan, same window, same cursor, same escalation ladder; the authorization
+    conjunct is the only difference, and it is a module constant.
+    """
+    started = time.monotonic()
+
+    principals = await resolve_subject_principals(session, subject_user_id=subject_user_id)
+
+    statement = _statement(paginated=after is not None, windowed=within is not None, subject=True)
+    params: dict[str, object] = {
+        "query": vector_literal(query_vector),
+        "subject_principals": sorted(principals),
+        "k": k,
+    }
+    _bind_position(params, after=after, within=within)
+
+    page = await _ladder(
+        session,
+        statement=statement,
+        params=params,
+        k=k,
+        ef_search_ladder=ef_search_ladder,
+        statement_timeout_ms=statement_timeout_ms,
+        started=started,
+    )
+    stats = page.stats
+    # The same opaque line, marked so the two modes are separable in a log query.
+    logger.info(
+        "vector_search authorization=subject returned=%d k=%d attempts=%d ef_search=%d "
+        "elapsed_ms=%d exhausted=%s",
+        stats.returned,
+        k,
+        stats.attempts,
+        stats.ef_search,
+        stats.elapsed_ms,
+        stats.exhausted,
+    )
+    return page
+
+
+def _bind_position(
+    params: dict[str, object],
+    *,
+    after: tuple[float, UUID] | None,
+    within: RetrievalWindow | None,
+) -> None:
+    """Bind the cursor and the window, identically for both authorization modes."""
     if after is not None:
         params["after_score"], params["after_id"] = after[0], str(after[1])
     if within is not None:
         params["window_start"], params["window_end"] = within.created_from, within.created_to
 
+
+async def _ladder(
+    session: AsyncSession,
+    *,
+    statement: str,
+    params: dict[str, object],
+    k: int,
+    ef_search_ladder: Sequence[int],
+    statement_timeout_ms: int,
+    started: float,
+) -> SearchPage:
+    """The escalation ladder, shared by both authorization modes.
+
+    It re-runs the statement it was handed, byte-identical, with a larger `ef_search`. It
+    is one function for both modes so that "search harder" cannot drift into "authorize
+    wider" in one copy and not the other.
+    """
     rows: list[Any] = []
     attempts = 0
     ef_used = 0
@@ -437,17 +593,6 @@ async def search_chunks(
         returned=len(items),
         elapsed_ms=int((time.monotonic() - started) * 1000),
         exhausted=len(items) < k,
-    )
-    # Opaque counts and timings. No question, no chunk text, no vector, no principal —
-    # a principal is a provider subject and therefore personal data (§4.9).
-    logger.info(
-        "vector_search returned=%d k=%d attempts=%d ef_search=%d elapsed_ms=%d exhausted=%s",
-        stats.returned,
-        k,
-        stats.attempts,
-        stats.ef_search,
-        stats.elapsed_ms,
-        stats.exhausted,
     )
 
     next_cursor = (items[-1].score, items[-1].chunk_id) if len(items) == k else None

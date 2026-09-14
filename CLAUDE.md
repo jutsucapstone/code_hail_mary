@@ -640,6 +640,13 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   the deletion away and the cookie lived out its full lifetime. Pass
   `secure=settings.cookies_secure` on every `__Host-` cookie, including when clearing it.
   No test in this suite can see it: httpx's cookie jar implements no prefix rule.
+- **A KT code rides in the URL path, and two things log a path.** `/v1/kt/{kt_code}/…`
+  put a working code in the error handlers' `path` field on every refusal — a test caught
+  it — and on uvicorn's access line for every request. `jutsu_core.logs.RedactKtCode`,
+  installed by `configure` beside `RedactQueryString`, scrubs it from every string a
+  record renders, whichever logger emitted it. Cloud Run's own request log still carries
+  the full URL; only the log sink can exclude that, and moving the code out of the path
+  would be a redesign of every KT route and console URL.
 
 ### The clock's own traps
 
@@ -772,6 +779,46 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   test rendering the console header failed on the logo. `vitest.config.mts` supplies the
   shape rather than mocking `next/image` away.
 
+### KT package scope traps (`jutsu_api.kt.KtScope`, ADR 0025)
+
+- **A package reads its SUBJECT's own documents — never the recipient's corpus.** Before
+  ADR 0025 every KT read used the recipient's `ACL_PREDICATE`, so a new hire opening a
+  leaver's package was shown their own projects. `SUBJECT_PREDICATE` matches direct `user`
+  grants to the subject's active principals and nothing else. Do not "simplify" it into
+  `ACL_PREDICATE` over the subject's principals: that carries the group and org arms and
+  hands the recipient the subject's whole reach — every team space, and the tenant.
+- **`KtScope` is constructed in exactly one place: `_scope_for`, from `_open_for`'s row.**
+  An AST test asserts it, and that `search_subject_chunks` and `fetch_subject_evidence`
+  each have one caller. A scope or a subject id taken from a request parameter is the
+  regression the type exists to make structural.
+- **No KT reader or route resolves the requester's principals.** They are not a parameter
+  of any KT function, so the recipient's corpus has no path into a KT read. Putting
+  `scoped_acl_principals` back into a KT route re-opens the reported defect.
+- **KT citations have their own door: `/v1/kt/{code}/evidence/{chunk_id}`.** The generic
+  `/v1/evidence` answers to the recipient's own ACL and 404s every KT citation. The
+  copilot's citations and the knowledge cards both use the KT door.
+- **Raw passages need the `documents` category — the copilot included.** The listing, the
+  reader, Ask KT and the KT evidence door refuse a package without it, in one sentence. A
+  claims-only package has knowledge tabs and a summary, and no copilot.
+- **Deactivating a leaver's identities before the handover empties the package.** Subject
+  principals are ACTIVE identities, on purpose: a wrongly linked identity must stop
+  contributing documents everywhere. Hand over, then deactivate.
+- **The handover report accepts no content from the browser.** `POST …/handover-report`
+  composes and renders in one request; an endpoint that rendered text it was sent would
+  print a JUTSU-branded handover saying anything. Narrative and PDF return together and
+  are never stored.
+- **The report's font is reportlab's bundled Vera, which draws Latin text.** Devanagari and
+  most symbols become `?` and the PDF says so on its last page; `₹` is written `INR`. Never
+  drop an undrawable character silently — a vanished letter in a name is a quiet
+  falsehood. A wider-coverage font is a file to vendor, and `.gitattributes` needs
+  `*.ttf binary` first or git will rewrite it.
+- **A section heading travels inside its first entry's `KeepTogether`, not beside it.**
+  reportlab's `keepWithNext` never joins a flowable to a container — `_ktAllow` refuses a
+  `_ContainerSpace`, and `KeepTogether` is one — so a heading styled to keep with its next
+  entry still ended page 1 with its entries overleaf, reading as an empty section. Moving it
+  back out of the group "for tidiness" re-breaks it; `TestHeadingsStayWithTheirEntries`
+  grows the overview a line at a time so every heading crosses the page end.
+
 ### KT console traps (`apps/api/src/jutsu_api/kt.py`, `kt_workspace.py`)
 
 - **`_open_for` is the KT session.** Binding, expiry and revocation are re-decided on
@@ -791,16 +838,18 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   and `/handover` names the session's organisation (`GET /v1/me/organisation`) so B can
   see it. `bound_to_another_user` means somebody else opened it first. The admin picks the
   recipient from the directory, and the API refuses the subject as recipient (422).
-- **`RetrievalWindow` narrows inside the ACL `EXISTS`, and that is the only place a
-  narrowing may go.** Two conjuncts on `d.created_at` beside `ACL_PREDICATE`; never a
-  `principals`/`org_id` parameter, never a JOIN in the inner scan, never a secondary
-  `ORDER BY` key. `test_the_window_sits_inside_the_scan_beside_the_acl_predicate` pins it.
+- **`RetrievalWindow` narrows inside the authorization `EXISTS`, and that is the only place
+  a narrowing may go.** Two conjuncts on `d.created_at` beside the predicate —
+  `ACL_PREDICATE` for the caller's own search, `SUBJECT_PREDICATE` for a package's (ADR
+  0025); never a `principals`/`org_id` parameter, never a JOIN in the inner scan, never a
+  secondary `ORDER BY` key. `test_the_window_sits_inside_the_scan_beside_the_acl_predicate`
+  pins it.
 - **History is context, never evidence.** Prior turns reach the model as a labelled
   preamble; the citation gate resolves markers against retrieved passages alone. Numbering
   a history turn like a passage would let an earlier answer launder itself into a source.
 - **Stored citations are references.** `kt_messages.citations_json` holds chunk and
-  document ids, never passage text; every read re-runs them through `ACL_PREDICATE` and
-  marks `available`. The handover summary is still never persisted — the ADR says why one
+  document ids, never passage text; every read re-runs them through the package's
+  `KtScope.conditions` and marks `available`. The handover summary is still never persisted — the ADR says why one
   and not the other.
 - **Two turns, one transaction, one `now()`.** Messages are stamped with
   `clock_timestamp()`, not the column default: `now()` is the transaction's start and is

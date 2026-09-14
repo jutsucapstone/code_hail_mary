@@ -111,12 +111,13 @@ const SECONDARY_BUTTON =
  * the masked text would highlight the wrong span — quietly, and convincingly. "View
  * source" fetches the pair that actually belong together.
  *
- * `available: false` means the chunk behind the citation is no longer readable by this
- * recipient — the document was superseded, or their access changed since the answer was
- * stored. The label stays so the answer's markers still resolve; the button goes,
- * because the fetch would answer 404.
+ * `available: false` means the chunk behind the citation is no longer inside the package —
+ * the document was superseded, or it has left the package since the answer was stored.
+ * The label stays so the answer's markers still resolve; the button goes, because the
+ * fetch would answer 404.
  */
 function Citation({ citation }: { citation: KtStoredCitation }) {
+  const { code } = useKtPackage();
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -126,13 +127,15 @@ function Citation({ citation }: { citation: KtStoredCitation }) {
     setLoading(true);
     setFailure(null);
     try {
-      setEvidence(await api.evidence(citation.chunk_id));
+      // The package's evidence door, never `/v1/evidence`: a KT answer cites the SUBJECT's
+      // chunks, which the recipient's own ACL would call absent (ADR 0025).
+      setEvidence(await api.ktEvidence(code, citation.chunk_id));
     } catch (error) {
       setFailure(classifyApiError(error).message);
     } finally {
       setLoading(false);
     }
-  }, [evidence, loading, citation.chunk_id]);
+  }, [evidence, loading, code, citation.chunk_id]);
 
   const label = `${citation.document_title} (${citation.source_system})`;
 
@@ -649,7 +652,7 @@ export function KtCopilot({
               Answering in prose is not configured for this deployment, so the copilot
               cannot reply. The knowledge tabs — Documents, Projects, Decisions, People,
               Meetings and the rest — still work, and everything in them is real material
-              inside this package&apos;s window that you are authorised to read.
+              from your colleague&apos;s documents inside this package&apos;s window.
             </p>
           </div>
         ) : (

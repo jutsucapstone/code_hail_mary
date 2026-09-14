@@ -684,14 +684,17 @@ class TestTerminalTransitions:
 
 
 class TestKtDocuments:
-    async def test_documents_come_from_the_recipients_own_acl(
+    async def test_documents_are_the_subjects_own_and_never_the_recipients(
         self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
     ) -> None:
-        """The package narrows presentation; the recipient's grants decide visibility.
+        """ADR 0025: the package carries the SUBJECT's documents, and only those.
 
-        Two documents exist. The recipient's principal is on the ACL of exactly one.
-        The KT documents list returns exactly that one — the package does not leak the
-        other, however in-scope and in-period it is.
+        Three documents exist. The subject's principal is on the ACL of one, the
+        recipient's on another, a third person's on the last. The KT documents list returns
+        exactly the subject's — the recipient's own document is not the handover, and the
+        third person's is nobody's to hand over, however in-scope and in-period both are.
+        (Before ADR 0025 this test asserted the opposite: that the recipient's own grants
+        decided the listing. That was the reported defect.)
         """
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
@@ -701,8 +704,10 @@ class TestKtDocuments:
         org_id = (await client.get("/v1/orgs/current")).json()["id"]
 
         await invite_and_accept(client, mailbox, email="newhire@example.com", full_name="New Hire")
-        # Registration linked local:newhire@example.com automatically (ADR 0010's gap
-        # closure) — that is the principal the visible document is granted to.
+        # Invitation acceptance linked local:leaver@example.com automatically (ADR 0010's
+        # gap closure) — the subject's principal, and so the one the package's document is
+        # granted to. The recipient is linked the same way, which is what gives their own
+        # document something to leak through.
         await db_session.execute(
             text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
         )
@@ -714,8 +719,12 @@ class TestKtDocuments:
             ),
             {"id": source_id, "org": org_id},
         )
-        visible, hidden = uuid.uuid4(), uuid.uuid4()
-        for doc_id, title in ((visible, "Visible design doc"), (hidden, "Hidden budget")):
+        visible, recipients_own, hidden = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        for doc_id, title in (
+            (visible, "Visible design doc"),
+            (recipients_own, "Newhire's own notes"),
+            (hidden, "Hidden budget"),
+        ):
             await db_session.execute(
                 text(
                     "INSERT INTO documents (id, org_id, source_id, external_id, title, "
@@ -729,7 +738,14 @@ class TestKtDocuments:
                 "INSERT INTO document_acl (document_id, principal_type, principal_id, "
                 "org_id, permission) VALUES (:doc, 'user', :pid, :org, 'read')"
             ),
-            {"doc": visible, "pid": "local:newhire@example.com", "org": org_id},
+            {"doc": visible, "pid": "local:leaver@example.com", "org": org_id},
+        )
+        await db_session.execute(
+            text(
+                "INSERT INTO document_acl (document_id, principal_type, principal_id, "
+                "org_id, permission) VALUES (:doc, 'user', :pid, :org, 'read')"
+            ),
+            {"doc": recipients_own, "pid": "local:newhire@example.com", "org": org_id},
         )
         await db_session.execute(
             text(
@@ -749,10 +765,17 @@ class TestKtDocuments:
         titles = [item["title"] for item in body["items"]]
         assert titles == ["Visible design doc"]
         assert "Hidden budget" not in response.text
+        assert "Newhire's own notes" not in response.text, "the recipient's corpus leaked"
 
-    async def test_a_recipient_with_no_grants_gets_an_empty_page_not_an_error(
+    async def test_a_subject_with_no_active_identity_gives_an_empty_page_not_an_error(
         self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
     ) -> None:
+        """Fail-closed, and ADR 0025's stated residue.
+
+        The subject's principals come from ACTIVE identities only, so a leaver whose
+        identities were deactivated before the handover contributes no documents: an empty
+        page — never an error, and never a fallback to the recipient's own corpus.
+        """
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
         await sign_in(client, mailbox, email=OWNER_EMAIL)
@@ -761,15 +784,25 @@ class TestKtDocuments:
         org_id = (await client.get("/v1/orgs/current")).json()["id"]
 
         await invite_and_accept(client, mailbox, email="newhire@example.com")
-        # Revoke the recipient's automatically linked identity, leaving them zero
-        # principals — the fail-closed default.
-        me = (await client.get("/v1/me")).json()
-        await db_session.execute(
-            text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
+        source_id = await seed_source(db_session, org_id=org_id)
+        await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Leaver runbook",
+            principal="local:leaver@example.com",
+        )
+        # And the recipient's own, so a fallback to their corpus would show.
+        await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Newhire's own notes",
+            principal="local:newhire@example.com",
         )
         await db_session.execute(
             text("UPDATE source_identities SET is_active = false WHERE user_id = :uid"),
-            {"uid": me["user_id"]},
+            {"uid": subject},
         )
         await db_session.commit()
 
@@ -853,7 +886,7 @@ class TestKtDocumentReader:
             org_id=org_id,
             source_id=source_id,
             title="Runbook",
-            principal="local:newhire@example.com",
+            principal="local:leaver@example.com",
             passages=((2, "third passage"), (0, "first passage"), (1, "second passage")),
         )
         await db_session.commit()
@@ -888,7 +921,7 @@ class TestKtDocumentReader:
             org_id=org_id,
             source_id=source_id,
             title="Handbook",
-            principal="local:newhire@example.com",
+            principal="local:leaver@example.com",
             passages=tuple((n, f"passage {n}") for n in range(5)),
         )
         await db_session.commit()
@@ -913,11 +946,11 @@ class TestKtDocumentReader:
         assert [c["ordinal"] for c in rest["chunks"]] == [2, 3, 4]
         assert rest["next_ordinal"] is None
 
-    async def test_a_document_the_recipient_cannot_read_is_a_404(
+    async def test_a_document_that_is_not_the_subjects_is_a_404(
         self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
     ) -> None:
-        """Non-negotiable 6, and the refusal says no more than "not available": a document
-        granted to somebody else answers exactly as one that never existed."""
+        """The refusal says no more than "not available": a document granted to somebody
+        else — the recipient included — answers exactly as one that never existed."""
         package, org_id = await self.open_package(client, mailbox)
         source_id = await seed_source(db_session, org_id=org_id)
         hidden = await seed_document(
@@ -937,6 +970,19 @@ class TestKtDocumentReader:
         assert refused.status_code == 404
         assert "confidential" not in refused.text
 
+        recipients_own = await seed_document(
+            db_session,
+            org_id=org_id,
+            source_id=source_id,
+            title="Newhire's diary",
+            principal="local:newhire@example.com",
+            passages=((0, "the newhire's own words"),),
+        )
+        await db_session.commit()
+        own = await client.get(f"/v1/kt/{package['kt_code']}/documents/{recipients_own}")
+        assert own.status_code == 404, "the recipient's own document is not the handover"
+        assert "own words" not in own.text
+
         absent = await client.get(f"/v1/kt/{package['kt_code']}/documents/{uuid.uuid4()}")
         assert absent.status_code == 404
         # Identical sentences: the endpoint is not a probe for what the tenant holds.
@@ -945,9 +991,9 @@ class TestKtDocumentReader:
     async def test_a_document_outside_the_package_window_is_a_404(
         self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
     ) -> None:
-        """The window narrows inside the same statement as the ACL predicate: a document
-        this recipient is fully authorised to read is still outside the handover's period,
-        and gets the identical refusal."""
+        """The window narrows inside the same statement as the subject predicate: a
+        document that is entirely the subject's is still outside the handover's period, and
+        gets the identical refusal."""
         package, org_id = await self.open_package(client, mailbox, period_days=1)
         source_id = await seed_source(db_session, org_id=org_id)
         inside = await seed_document(
@@ -955,7 +1001,7 @@ class TestKtDocumentReader:
             org_id=org_id,
             source_id=source_id,
             title="This quarter",
-            principal="local:newhire@example.com",
+            principal="local:leaver@example.com",
             age_days=0.02,
             passages=((0, "recent passage"),),
         )
@@ -964,7 +1010,7 @@ class TestKtDocumentReader:
             org_id=org_id,
             source_id=source_id,
             title="Two years ago",
-            principal="local:newhire@example.com",
+            principal="local:leaver@example.com",
             age_days=730,
             passages=((0, "ancient passage"),),
         )
@@ -993,7 +1039,7 @@ class TestKtDocumentReader:
             org_id=org_id,
             source_id=source_id,
             title="Runbook",
-            principal="local:newhire@example.com",
+            principal="local:leaver@example.com",
             passages=((0, "still readable a moment ago"),),
         )
         await db_session.commit()
@@ -1019,8 +1065,9 @@ class TestKtDocumentReader:
 
 class TestKtInsights:
     async def seed_claims(self, client: AsyncClient, db_session: AsyncSession, org_id: str) -> None:
-        """Two decision claims from finished runs — one on a document the recipient's
-        principal can read, one on a document granted to somebody else."""
+        """Three decision claims from finished runs — one on a document of the package's
+        subject, one on the RECIPIENT's own document, one on somebody else's. Only the
+        first belongs to the handover (ADR 0025)."""
         await db_session.execute(
             text("SELECT set_config('app.current_org_id', :org, true)"), {"org": org_id}
         )
@@ -1033,7 +1080,8 @@ class TestKtInsights:
             {"id": source_id, "org": org_id},
         )
         for title, principal, quote in (
-            ("Visible decision doc", "local:newhire@example.com", "we chose PostgreSQL"),
+            ("Visible decision doc", "local:leaver@example.com", "we chose PostgreSQL"),
+            ("Recipient decision doc", "local:newhire@example.com", "we chose Redis"),
             ("Hidden decision doc", "local:somebody-else", "we chose MongoDB"),
         ):
             doc_id = uuid.uuid4()
@@ -1108,10 +1156,11 @@ class TestKtInsights:
             )
         await db_session.commit()
 
-    async def test_insights_are_filtered_by_the_recipients_own_acl(
+    async def test_insights_are_the_subjects_claims_only(
         self, client: AsyncClient, mailbox: RecordingEmailSender, db_session: AsyncSession
     ) -> None:
-        """Non-negotiable 6: a claim whose evidence the caller cannot read is invisible."""
+        """ADR 0025: a claim whose evidence is not the subject's is invisible — including a
+        claim on the recipient's own document."""
         await register_owner(client, mailbox)
         await invite_and_accept(client, mailbox, email="leaver@example.com")
         await sign_in(client, mailbox, email=OWNER_EMAIL)
@@ -1132,6 +1181,7 @@ class TestKtInsights:
         body = response.json()
         assert [item["document_title"] for item in body["items"]] == ["Visible decision doc"]
         assert "MongoDB" not in response.text
+        assert "Redis" not in response.text, "the recipient's own claim leaked"
 
         summary = (await client.get(f"/v1/kt/{package['kt_code']}/insights-summary")).json()
         assert summary["by_type"] == {"decision": 1}
@@ -1241,7 +1291,7 @@ async def handover(
 
 
 class TestKtHandoverSummary:
-    """§29's executive summary: grounded on the recipient's own claim visibility."""
+    """§29's executive summary: grounded on the package subject's claims (ADR 0025)."""
 
     async def test_grounds_only_on_visible_claims_and_cites_them(
         self,
@@ -1272,9 +1322,10 @@ class TestKtHandoverSummary:
         assert body["insufficient_evidence"] is False
         assert "PostgreSQL" in body["summary"]
         assert [c["document_title"] for c in body["citations"]] == ["Visible decision doc"]
-        # Non-negotiable 6 holds for the composer too: the hidden claim never even
-        # reaches the model's prompt.
+        # The composer reads the same boundary: neither somebody else's claim nor the
+        # recipient's own ever reaches the model's prompt.
         assert "MongoDB" not in scripted.prompts[0]
+        assert "Redis" not in scripted.prompts[0]
 
     async def test_an_unciteable_summary_is_refused_honestly(
         self,

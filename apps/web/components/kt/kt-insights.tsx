@@ -16,13 +16,14 @@ import { classifyApiError } from "@/lib/api-error";
  * The knowledge tabs, backed by extraction_claims.
  *
  * Every row on these screens survived the extraction quote gate — its `quote` appears
- * verbatim in the evidence chunk it anchors to — and passed the recipient's own ACL
- * over that evidence at read time. Nothing here is generated for display: the quote IS
- * the citation, shown with the claim (§23's "source citation").
+ * verbatim in the evidence chunk it anchors to — and is a claim on one of the package
+ * subject's own documents, inside the package's categories and window (ADR 0025).
+ * Nothing here is generated for display: the quote IS the citation, shown with the claim
+ * (§23's "source citation").
  *
  * The empty state distinguishes the two honest reasons for emptiness: extraction has
- * not run on this deployment, or it ran and nothing in scope is readable by this
- * recipient. The package cannot widen either.
+ * not run on this deployment, or it ran and nothing in scope was extracted from the
+ * subject's documents inside this package's window.
  */
 
 const TYPE_SCOPE: Record<string, string> = {
@@ -62,8 +63,10 @@ const CARD_ACTION_CLASS =
  * one `GET /progress` rather than fetched per card. The masked source text is fetched
  * on request and rendered as-is — **never** sliced with `char_start`/`char_end`. Those
  * index the original document, and masking changes lengths, so applying them here would
- * highlight the wrong span, quietly and convincingly. `/v1/evidence/{chunk_id}` returns
- * the pair that actually belong together.
+ * highlight the wrong span, quietly and convincingly. The package's own evidence door,
+ * `/v1/kt/{code}/evidence/{chunk_id}`, returns the pair that actually belong together —
+ * and only when the package carries `documents`, which is why the button is absent
+ * otherwise rather than present and bound to fail (ADR 0025).
  */
 function InsightCard({
   insight,
@@ -75,6 +78,8 @@ function InsightCard({
   progressState?: string;
 }) {
   const queryClient = useQueryClient();
+  const { pkg } = useKtPackage();
+  const canViewSource = pkg.scope.includes("documents");
   const headline =
     insight.name && insight.summary
       ? `${insight.name} — ${insight.summary}`
@@ -90,13 +95,13 @@ function InsightCard({
     setLoading(true);
     setFailure(null);
     try {
-      setEvidence(await api.evidence(insight.chunk_id));
+      setEvidence(await api.ktEvidence(code, insight.chunk_id));
     } catch (error) {
       setFailure(classifyApiError(error).message);
     } finally {
       setLoading(false);
     }
-  }, [evidence, loading, insight.chunk_id]);
+  }, [evidence, loading, code, insight.chunk_id]);
 
   const save = useMutation({
     mutationFn: () => api.ktBookmark(code, { kind: "claim", ref_id: insight.id }),
@@ -144,20 +149,22 @@ function InsightCard({
       </p>
 
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <button
-          type="button"
-          onClick={() => void viewSource()}
-          disabled={loading || evidence !== null}
-          aria-label={`View source for: ${headline}`}
-          className={CARD_ACTION_CLASS}
-        >
-          {loading ? (
-            <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin motion-reduce:animate-none" />
-          ) : (
-            <FileText aria-hidden="true" className="h-3 w-3" />
-          )}
-          {evidence ? "Source shown" : "View source"}
-        </button>
+        {canViewSource ? (
+          <button
+            type="button"
+            onClick={() => void viewSource()}
+            disabled={loading || evidence !== null}
+            aria-label={`View source for: ${headline}`}
+            className={CARD_ACTION_CLASS}
+          >
+            {loading ? (
+              <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin motion-reduce:animate-none" />
+            ) : (
+              <FileText aria-hidden="true" className="h-3 w-3" />
+            )}
+            {evidence ? "Source shown" : "View source"}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => save.mutate()}
@@ -304,13 +311,13 @@ export function KtInsightsList({
           </div>
         </LoadingRegion>
       ) : insights.data.items.length === 0 ? (
-        <EmptyState title={`No ${emptyWord} you are authorised to read`}>
+        <EmptyState title={`No ${emptyWord} in this package yet`}>
           <p>
             {emptyWord.charAt(0).toUpperCase() + emptyWord.slice(1)} come from knowledge
-            extraction over the documents your account may read. Nothing extracted in
-            this package&apos;s window is visible to you yet — either extraction has not
-            run on those documents, or their access lists do not include you. Nothing on
-            this screen is ever invented to fill the gap.
+            extraction over your colleague&apos;s documents inside this package&apos;s
+            window. None has been found there yet — either extraction has not run on those
+            documents, or they hold no {emptyWord}. Nothing on this screen is ever
+            invented to fill the gap.
           </p>
         </EmptyState>
       ) : (
@@ -373,8 +380,8 @@ export function KtTimeline() {
           <p>
             The timeline is built from dated events in this package&apos;s scope
             {pkg.scope.length > 0 ? ` — ${pkg.scope.join(", ")}` : ""}, and only from
-            evidence you are authorised to read. It fills as extraction runs over the
-            package&apos;s documents.
+            your colleague&apos;s documents inside it. It fills as extraction runs over
+            the package&apos;s documents.
           </p>
         </EmptyState>
       ) : (

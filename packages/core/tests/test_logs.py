@@ -13,8 +13,10 @@ import logging
 
 import pytest
 from jutsu_core.logs import (
+    KT_CODE_REDACTED,
     UNBOUND,
     JsonFormatter,
+    RedactKtCode,
     RedactQueryString,
     configure,
     level_from_env,
@@ -217,3 +219,99 @@ class TestTheAccessLineCarriesNoSecrets:
         RedactQueryString().filter(record)
 
         assert json.loads(JsonFormatter().format(record))["message"] == "who? nobody"
+
+
+class TestTheKtCodeNeverReachesALine:
+    """A KT code opens a package, and the recipient routes carry it in their path (ADR 0025).
+
+    Two things log a path — uvicorn's access line on every request, the API's error
+    handlers on every refusal — so each is pinned here in the shape it really has.
+    """
+
+    CODE = "KT-JUTSU-7K2M9Q4R"
+
+    def _access(self, target: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:1", "GET", target, "1.1", 404),
+            None,
+        )
+
+    def test_the_access_line_keeps_the_route_and_loses_the_code(self) -> None:
+        entry = self._access(f"/v1/kt/{self.CODE}/documents")
+        assert RedactKtCode().filter(entry) is True
+
+        message = json.loads(JsonFormatter().format(entry))["message"]
+
+        assert "7K2M9Q4R" not in message
+        assert f"/v1/kt/{KT_CODE_REDACTED}/documents" in message
+        assert message.endswith("404"), "the rest of the line is untouched"
+
+    def test_an_error_handler_path_loses_the_code_and_keeps_the_event(self) -> None:
+        entry = record(
+            "%s",
+            {"event": "request_failed", "status": 404, "path": f"/v1/kt/{self.CODE}/ask"},
+            name="jutsu.api",
+        )
+        RedactKtCode().filter(entry)
+
+        line = json.loads(JsonFormatter().format(entry))
+
+        assert line["path"] == f"/v1/kt/{KT_CODE_REDACTED}/ask"
+        assert (line["event"], line["status"]) == ("request_failed", 404)
+
+    @pytest.mark.parametrize(
+        "typed",
+        ["kt-jutsu-7k2m9q4r", "Kt-Jutsu-7K2M9Q4R", "KT-JUTSU-7K2M%209Q4R", "KT-JUTSU-7K2M 9Q4R"],
+    )
+    def test_a_hand_typed_code_that_still_opens_the_package_is_redacted_too(
+        self, typed: str
+    ) -> None:
+        """`normalise_jutsu_id` repairs case and spaces before the lookup, so each of these
+        opens the same package the canonical form does."""
+        entry = self._access(f"/v1/kt/{typed}/documents")
+        RedactKtCode().filter(entry)
+
+        message = json.loads(JsonFormatter().format(entry))["message"]
+
+        assert "9Q4R" not in message.upper()
+        assert "/documents" in message
+
+    def test_a_query_string_and_a_code_both_leave_one_target(self) -> None:
+        entry = self._access(f"/v1/kt/{self.CODE}/documents?q=SENTINEL-term")
+        RedactQueryString().filter(entry)
+        RedactKtCode().filter(entry)
+
+        message = json.loads(JsonFormatter().format(entry))["message"]
+
+        assert "7K2M9Q4R" not in message
+        assert "SENTINEL" not in message
+
+    def test_every_process_installs_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        root_handlers_before = logging.getLogger().handlers
+        try:
+            installed = {type(log_filter) for log_filter in configure().filters}
+        finally:
+            logging.getLogger().handlers = root_handlers_before
+
+        assert {RedactQueryString, RedactKtCode} <= installed
+
+    def test_a_jutsu_id_is_not_a_kt_code(self) -> None:
+        """A JUTSU ID is read out over the phone and opens nothing, so it stays readable."""
+        entry = record("%s", {"event": "employee_resolved", "jutsu_id": "JUTSU-EMP-7K2M9Q4R"})
+        RedactKtCode().filter(entry)
+
+        assert json.loads(JsonFormatter().format(entry))["jutsu_id"] == "JUTSU-EMP-7K2M9Q4R"
+
+    def test_numbers_and_flags_pass_through_as_themselves(self) -> None:
+        entry = record("%s", {"event": "kt_search_completed", "results": 2, "windowed": True})
+        RedactKtCode().filter(entry)
+
+        line = json.loads(JsonFormatter().format(entry))
+
+        assert (line["results"], line["windowed"]) == (2, True)

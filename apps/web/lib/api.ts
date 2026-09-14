@@ -291,6 +291,8 @@ export type KtInsights =
 export type KtInsight = KtInsights["items"][number];
 export type KtHandoverSummary =
   paths["/v1/kt/{kt_code}/handover-summary"]["get"]["responses"][200]["content"]["application/json"];
+export type KtHandoverReport =
+  paths["/v1/kt/{kt_code}/handover-report"]["post"]["responses"][200]["content"]["application/json"];
 type KtInsightSummary =
   paths["/v1/kt/{kt_code}/insights-summary"]["get"]["responses"][200]["content"]["application/json"];
 
@@ -994,6 +996,27 @@ export const api = {
   ktHandoverSummary: (ktCode: string) =>
     call<KtHandoverSummary>(
       `/v1/kt/${encodeURIComponent(ktCode)}/handover-summary`,
+      { method: "GET" },
+    ),
+
+  /**
+   * Compose the first-day handover: the grounded narrative for the page and the same
+   * report as a real PDF (base64), in one POST. One press is one model call and one
+   * `KT_SUMMARY` allowance; the server composes from the package and accepts no content.
+   */
+  ktHandoverReport: (ktCode: string) =>
+    call<KtHandoverReport>(`/v1/kt/${encodeURIComponent(ktCode)}/handover-report`, {
+      method: "POST",
+    }),
+
+  /**
+   * The source span behind a KT citation or claim, through the package's own door
+   * (ADR 0025). A KT answer cites the subject's chunks, which `/v1/evidence` — the
+   * recipient's own ACL — would call absent.
+   */
+  ktEvidence: (ktCode: string, chunkId: string) =>
+    call<Evidence>(
+      `/v1/kt/${encodeURIComponent(ktCode)}/evidence/${encodeURIComponent(chunkId)}`,
       { method: "GET" },
     ),
 

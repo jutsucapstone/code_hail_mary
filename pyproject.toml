@@ -35,6 +35,7 @@ dev = [
     # stubs rather than an `ignore_missing_imports` override: the parser handles an
     # uploaded file, and `Any` is exactly the wrong thing to have there.
     "types-openpyxl>=3.1",
+    "types-reportlab>=5.0.0.20260911",
 ]
 
 [tool.ruff]

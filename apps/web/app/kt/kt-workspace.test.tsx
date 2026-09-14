@@ -71,7 +71,7 @@ function reliableCoverage(overrides: Json = {}): Json {
     extraction_ratio: 0.5,
     reliable: true,
     reason:
-      "Computed from the documents your account may read inside this package's window and the latest extraction run over each of them.",
+      "Computed from this package's documents inside its window and the latest extraction run over each of them.",
     ...overrides,
   };
 }
@@ -152,7 +152,7 @@ function workspace(overrides: Json = {}): Json {
       {
         key: "category:meetings",
         label: "No meetings evidence is visible to you yet",
-        why: "Nothing extracted in this window is readable by your account.",
+        why: "Nothing extracted in this package's window falls in this category.",
         source: "evidence",
         tab: "meetings",
         ref_id: null,
