@@ -80,6 +80,13 @@ class RawDocument(BaseModel):
     modified_at: datetime | None = None
     acls: list[AclEntry]
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
+    #: Where the source keeps the document, as a person would read it — "My Drive/Projects/
+    #: Astro Agent", "OneDrive/Handover", "GitHub/acme/astro-agent" — or None when the source
+    #: has no folders (ADR 0029). Metadata, not content: it is not in `content_hash`, so a
+    #: moved file is refreshed in place rather than versioned.
+    folder_path: str | None = None
+    #: A link to that folder in the source, when the source gives one.
+    folder_uri: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

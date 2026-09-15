@@ -149,6 +149,9 @@ class GitHubConnector:
             modified_at=_instant(repo.get("pushed_at")),
             acls=owner_acl(self._context),
             raw_metadata={"repo": full_name, "kind": "readme"},
+            # A repository is where GitHub keeps its README and issues (ADR 0029).
+            folder_path=f"GitHub/{full_name}",
+            folder_uri=repo.get("html_url"),
         )
 
     async def _fetch_issue(self, full_name: str, number: int) -> RawDocument:
@@ -183,6 +186,8 @@ class GitHubConnector:
                 "state": issue.get("state"),
                 "labels": labels,
             },
+            folder_path=f"GitHub/{full_name}",
+            folder_uri=f"https://github.com/{full_name}",
         )
 
     async def acls(self, external_id: str) -> list[AclEntry]:

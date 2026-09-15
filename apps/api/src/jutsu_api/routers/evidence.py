@@ -51,6 +51,8 @@ class EvidenceView(BaseModel):
     char_start: int
     char_end: int
     occurred_at: datetime
+    #: Where the source keeps the document, when it says (ADR 0029).
+    folder_path: str | None = None
 
 
 @router.get("/evidence/{chunk_id}")
@@ -74,4 +76,5 @@ async def read_evidence(chunk_id: UUID, principal: CurrentPrincipal, session: Db
         char_start=evidence.char_start,
         char_end=evidence.char_end,
         occurred_at=evidence.occurred_at,
+        folder_path=evidence.folder_path,
     )

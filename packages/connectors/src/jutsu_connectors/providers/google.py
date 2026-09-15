@@ -31,6 +31,7 @@ from jutsu_core.models import AclEntry, RawDocument, SourceSystem
 from jutsu_connectors.providers.base import (
     ListingIncomplete,
     ProviderApiError,
+    ProviderAuthError,
     ProviderContext,
     ProviderHttp,
     TokenSource,
@@ -51,7 +52,12 @@ _MEET_PAGE_SIZE = 50
 _MAX_PAGES = 50
 
 _GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
-_DRIVE_FILE_FIELDS = "id,name,mimeType,modifiedTime,createdTime,webViewLink"
+_DRIVE_FILE_FIELDS = "id,name,mimeType,modifiedTime,createdTime,webViewLink,parents"
+#: What resolving one level of a file's folder path reads (ADR 0029).
+_DRIVE_FOLDER_FIELDS = "id,name,parents"
+#: How far up a folder path is resolved. Deeper trees are rare, and the bound keeps a
+#: pathological hierarchy from turning one document into dozens of requests.
+_MAX_FOLDER_DEPTH = 8
 #: Text-bearing files only. Binary formats need per-format extraction this slice does
 #: not do, and a base64 blob embedded as "text" would poison retrieval quietly.
 _DRIVE_LIST_QUERY = (
@@ -200,6 +206,60 @@ class GoogleDriveConnector(_GoogleConnector):
     is not fetched at all.
     """
 
+    def __init__(
+        self, context: ProviderContext, token: TokenSource, client: httpx.AsyncClient
+    ) -> None:
+        super().__init__(context, token, client)
+        #: Folder id -> (name, parent id), for this connector's lifetime. A walk's files
+        #: share their folders, and resolving one path per file must not re-read them.
+        self._folders: dict[str, tuple[str, str | None]] = {}
+
+    async def _folder(self, meta: dict[str, Any]) -> tuple[str | None, str | None]:
+        """The file's folder as a path a person reads, and a link to it (ADR 0029).
+
+        Drive answers parent ids only, so the path is resolved by walking up one
+        `files.get` per level, with names cached and the depth bounded. A parent this
+        account may not read — a file shared out of somebody else's drive — ends the walk
+        at what was resolved instead of failing the document: a partial location is still
+        true, and a missing one is no reason to lose the file. A refused token and a
+        transient failure still fail the fetch, exactly as for the file itself.
+        """
+        parents = meta.get("parents")
+        if not isinstance(parents, list) or not parents or not isinstance(parents[0], str):
+            return None, None
+        first: str = parents[0]
+        names: list[str] = []
+        current: str | None = first
+        for _ in range(_MAX_FOLDER_DEPTH):
+            if current is None:
+                break
+            known = self._folders.get(current)
+            if known is None:
+                try:
+                    folder = await self._http.get_json(
+                        f"{_DRIVE_API}/files/{current}", params={"fields": _DRIVE_FOLDER_FIELDS}
+                    )
+                except ProviderAuthError:
+                    raise
+                except ProviderApiError as error:
+                    if error.transient:
+                        raise
+                    break
+                above = folder.get("parents")
+                known = (
+                    str(folder.get("name") or "").strip(),
+                    above[0]
+                    if isinstance(above, list) and above and isinstance(above[0], str)
+                    else None,
+                )
+                self._folders[current] = known
+            name, current = known
+            if name:
+                names.append(name)
+        if not names:
+            return None, None
+        return "/".join(reversed(names)), f"https://drive.google.com/drive/folders/{first}"
+
     async def list_since(self, cursor: str | None) -> AsyncIterator[str]:
         since = parse_cursor(cursor)
         query = _DRIVE_LIST_QUERY
@@ -232,6 +292,7 @@ class GoogleDriveConnector(_GoogleConnector):
             body = await self._http.get_text(
                 f"{_DRIVE_API}/files/{file_id}", params={"alt": "media"}
             )
+        folder_path, folder_uri = await self._folder(meta)
         return RawDocument(
             external_id=external_id,
             source_system=self.system,
@@ -244,6 +305,8 @@ class GoogleDriveConnector(_GoogleConnector):
             modified_at=_instant(meta.get("modifiedTime")),
             acls=owner_acl(self._context),
             raw_metadata={"kind": "drive_file", "source_mime": source_mime},
+            folder_path=folder_path,
+            folder_uri=folder_uri,
         )
 
 

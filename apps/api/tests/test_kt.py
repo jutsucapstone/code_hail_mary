@@ -142,6 +142,8 @@ async def create_kt(
     }
     if period_days is not None:
         payload["period_days"] = period_days
+    else:
+        payload["whole_history"] = True
     if recipient_email:
         payload["recipient_email"] = recipient_email
     response = await client.post("/v1/kt", json=payload, headers=csrf(client))

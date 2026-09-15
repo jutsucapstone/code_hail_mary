@@ -3,9 +3,12 @@
   kt:manage  POST /v1/kt · GET /v1/kt · GET /v1/kt/{id} · revoke · complete
   kt:open    POST /v1/kt/claim · GET /v1/kt/{code}/documents · …/documents/{document_id}
              GET /v1/kt/{code}/evidence/{chunk_id} · insights · handover summary/report
+  curator    GET /v1/kt/{id}/contents · POST/DELETE /v1/kt/{id}/exclusions
+             (kt:manage or the package's subject, decided in the service)
 
 What a recipient reads through these routes is the package SUBJECT's own documents,
-inside the package's period and categories (ADR 0025). No route here resolves the
+inside the package's period and categories, plus the Knowledge Basket files attached to
+it and minus what its curator excluded (ADR 0025, ADR 0027). No route here resolves the
 recipient's principals: every reader takes a `KtScope`, built only from the row
 `_open_for` returned, so the capability is re-decided on every request and the
 recipient's own corpus is not an input to any KT read. The recipient's ordinary
@@ -45,6 +48,7 @@ from jutsu_api.kt import (
     revoke_package,
     update_package,
 )
+from jutsu_api.kt_curation import exclude_document, include_document, package_contents
 from jutsu_api.kt_files import (
     attach_files,
     attachable_files,
@@ -119,8 +123,12 @@ class KtCreatePayload(BaseModel):
     subject_user_id: UUID
     scope: list[str] = Field(min_length=1, max_length=8)
     validity_days: int = Field(ge=1, le=365)
-    #: How far back the package looks. Omitted means the subject's whole history.
+    #: How far back the package looks, for documents from connected applications.
     period_days: int | None = Field(default=None, ge=1, le=3650)
+    #: The subject's whole history instead of a period. Required when `period_days` is
+    #: omitted and refused beside it: carrying everything is a decision, never a default
+    #: (ADR 0027).
+    whole_history: bool = False
     #: Bind the package to one address up front. Omitted, the first eligible opener
     #: claims it — after which it is bound anyway.
     recipient_email: EmailStr | None = None
@@ -153,6 +161,8 @@ class KtDocumentOut(BaseModel):
     title: str
     source_system: str
     created_at: datetime
+    #: Where the source keeps it, when it says (ADR 0029).
+    folder_path: str | None = None
 
 
 class KtDocumentPageOut(BaseModel):
@@ -173,6 +183,8 @@ class KtDocumentDetailOut(BaseModel):
     title: str
     source_system: str
     created_at: datetime
+    #: Where the source keeps it, when it says (ADR 0029).
+    folder_path: str | None = None
     chunks: list[KtDocumentChunkOut]
     total_chunks: int
     #: `from_ordinal` for the next request, or null at the end of the document.
@@ -193,8 +205,14 @@ async def read_supported_scopes(principal: CurrentPrincipal, session: Db) -> KtS
 async def create(
     payload: KtCreatePayload, principal: CurrentPrincipal, session: Db, request: Request
 ) -> KtAdminOut:
-    """Create a package. Creates no access: what the recipient reads inside it is
-    bounded by their own grants, per query, exactly as everywhere else."""
+    """Create a package — which grants access (ADR 0025, ADR 0027).
+
+    Once its recipient opens it, they read this employee's own documents from their
+    connected applications, inside the chosen categories and period, plus any Knowledge
+    Basket files attached to it and minus anything a curator excluded. The recipient's own
+    grants play no part in it. The access lasts only while the package stays open: it is
+    re-decided on every request and ends at revocation, completion or expiry.
+    """
     view = await create_package(
         session,
         org_id=principal.org_id,
@@ -203,6 +221,7 @@ async def create(
         scope=payload.scope,
         validity_days=payload.validity_days,
         period_days=payload.period_days,
+        whole_history=payload.whole_history,
         recipient_email=str(payload.recipient_email) if payload.recipient_email else None,
         correlation_id=request.state.request_id,
     )
@@ -336,7 +355,7 @@ async def read_kt_documents(
 ) -> KtDocumentPageOut:
     """The package subject's own documents inside the package window (ADR 0025).
 
-    `SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's
+    `KT_PACKAGE_PREDICATE` inside the SQL, from a `KtScope` built by this request's
     `_open_for`. The requester's principals are not resolved at all.
     """
     page = await kt_documents(
@@ -387,6 +406,7 @@ async def read_kt_document(
         title=detail.title,
         source_system=detail.source_system,
         created_at=detail.created_at,
+        folder_path=detail.folder_path,
         chunks=[KtDocumentChunkOut(ordinal=c.ordinal, text=c.text) for c in detail.chunks],
         total_chunks=detail.total_chunks,
         next_ordinal=detail.next_ordinal,
@@ -422,6 +442,7 @@ async def read_kt_evidence(
         char_start=evidence.char_start,
         char_end=evidence.char_end,
         occurred_at=evidence.occurred_at,
+        folder_path=evidence.folder_path,
     )
 
 
@@ -806,3 +827,106 @@ async def remove_attachment(
 ) -> None:
     """Stop sharing one file. The file itself is untouched and stays the owner's."""
     await detach_file(session, actor=principal, package_id=package_id, file_id=file_id)
+
+
+# ------------------------------------------------------------ what a package shares
+#
+# The curator's review (ADR 0027). `kt:open` at the decorator and `kt:manage`-or-subject in
+# the service, for the reason the attachment routes above give: the departing employee may
+# curate their own handover and holds no admin permission. Anybody else gets a 404.
+
+
+class KtContentOut(BaseModel):
+    """One document a package shares, as its curator reviews it: enough to recognise it,
+    never a passage of it."""
+
+    document_id: UUID
+    title: str
+    source_system: str
+    created_at: datetime
+    #: Where the source keeps it, when it says (ADR 0029).
+    folder_path: str | None = None
+    #: A Knowledge Basket file attached to this package, not a document from a connected
+    #: application.
+    attached_file: bool
+    #: Kept back from the recipient, from their next request on.
+    excluded: bool
+
+
+class KtContentPageOut(BaseModel):
+    items: list[KtContentOut]
+    next_cursor: str | None
+
+
+class KtExclusionPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    document_id: UUID
+
+
+@router.get("/kt/{package_id}/contents")
+@requires(Permission.KT_OPEN)
+async def read_package_contents(
+    package_id: UUID,
+    principal: CurrentPrincipal,
+    session: Db,
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=128)] = None,
+) -> KtContentPageOut:
+    """Every document this package shares, newest first, flagged where a curator excluded it.
+
+    Titles, sources and dates only. Authorized in the service: `kt:manage` or the package's
+    own subject, and the same 404 as an unknown package for anybody else.
+    """
+    page = await package_contents(
+        session,
+        actor=principal,
+        package_id=package_id,
+        limit=limit,
+        cursor=cursor,
+        correlation_id=request.state.request_id,
+    )
+    return KtContentPageOut(
+        items=[KtContentOut(**asdict(item)) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.post("/kt/{package_id}/exclusions", status_code=status.HTTP_201_CREATED)
+@requires(Permission.KT_OPEN)
+async def create_exclusion(
+    package_id: UUID,
+    payload: KtExclusionPayload,
+    principal: CurrentPrincipal,
+    session: Db,
+    request: Request,
+) -> KtContentOut:
+    """Keep one document back from the recipient, from their next request on."""
+    item = await exclude_document(
+        session,
+        actor=principal,
+        package_id=package_id,
+        document_id=payload.document_id,
+        correlation_id=request.state.request_id,
+    )
+    return KtContentOut(**asdict(item))
+
+
+@router.delete("/kt/{package_id}/exclusions/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+@requires(Permission.KT_OPEN)
+async def remove_exclusion(
+    package_id: UUID,
+    document_id: UUID,
+    principal: CurrentPrincipal,
+    session: Db,
+    request: Request,
+) -> None:
+    """Put an excluded document back. Refused with 409 once the package is closed."""
+    await include_document(
+        session,
+        actor=principal,
+        package_id=package_id,
+        document_id=document_id,
+        correlation_id=request.state.request_id,
+    )

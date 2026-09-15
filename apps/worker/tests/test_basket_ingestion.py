@@ -484,6 +484,163 @@ class TestAnUploadedFileBecomesSearchableKnowledge:
         assert state == "completed", "a gone document must end the job, not retry it"
 
 
+#: The KT ID alphabet (`kt_packages.code` check constraint), for packages written directly.
+_KT_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+async def searchable_upload(session: AsyncSession, store: FakeStore) -> dict[str, Any]:
+    """One uploaded file taken through the real worker, embedded, with its owner's principal.
+
+    The embedding and the principal are written directly for the reasons
+    `test_the_uploader_can_actually_retrieve_what_they_uploaded` gives.
+    """
+    basket = await a_basket(
+        session, store, body=b"The migration to Postgres 16 was decided in March 2026."
+    )
+    assert await queue_and_run(session, basket, store) is IngestOutcome.CREATED
+    await scope(session, basket["org_id"])
+    vector = "[" + ",".join(["0.1"] * 768) + "]"
+    await session.execute(
+        text(
+            "UPDATE chunks SET embedding = CAST(:v AS vector) WHERE document_id IN "
+            "(SELECT id FROM documents WHERE source_id = :s)"
+        ),
+        {"v": vector, "s": basket["source_id"]},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO source_identities (org_id, user_id, source_system, subject, "
+            "linked_by) VALUES (:o, :u, CAST('basket' AS source_system), :s, 'basket_upload')"
+        ),
+        {"o": basket["org_id"], "u": basket["user_id"], "s": str(basket["user_id"])},
+    )
+    await session.commit()
+    return basket
+
+
+async def a_package(session: AsyncSession, basket: dict[str, Any], *, attach: bool) -> uuid.UUID:
+    """A package whose subject is the uploader, with the file attached to it or not."""
+    package_id = uuid.uuid4()
+    code = "KT-JUTSU-" + "".join(_KT_ALPHABET[byte % 32] for byte in uuid.uuid4().bytes[:8])
+    await scope(session, basket["org_id"])
+    await session.execute(
+        text(
+            "INSERT INTO kt_packages (id, org_id, kt_code, subject_user_id, created_by, scope, "
+            "expires_at) VALUES (:id, :o, :code, :u, :u, CAST(:scope AS jsonb), "
+            "now() + interval '30 days')"
+        ),
+        {
+            "id": package_id,
+            "o": basket["org_id"],
+            "code": code,
+            "u": basket["user_id"],
+            "scope": '["documents"]',
+        },
+    )
+    if attach:
+        await session.execute(
+            text(
+                "INSERT INTO kt_package_files (id, org_id, package_id, basket_file_id, "
+                "attached_by) VALUES (:id, :o, :p, :f, :u)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "o": basket["org_id"],
+                "p": package_id,
+                "f": basket["file_id"],
+                "u": basket["user_id"],
+            },
+        )
+    await session.commit()
+    await scope(session, basket["org_id"])
+    return package_id
+
+
+class TestAnAttachedFileReachesOnlyItsPackage:
+    """The chain a handover's Knowledge Basket rests on, end to end (ADR 0021, ADR 0027).
+
+    upload row → ingest job → the real worker → document → chunks → a package's retrieval,
+    and back out again. `search_subject_chunks` is the one reader of a package's passages,
+    so this asks it directly, over the document the worker wrote.
+    """
+
+    async def test_the_package_it_is_attached_to_reads_it_and_no_other_does(
+        self, session: AsyncSession
+    ) -> None:
+        from jutsu_retrieval.search import search_subject_chunks
+
+        store = FakeStore()
+        basket = await searchable_upload(session, store)
+        attached = await a_package(session, basket, attach=True)
+        unattached = await a_package(session, basket, attach=False)
+
+        found = await search_subject_chunks(
+            session,
+            subject_user_id=basket["user_id"],
+            package_id=attached,
+            query_vector=[0.1] * 768,
+            k=10,
+            within=None,
+        )
+        elsewhere = await search_subject_chunks(
+            session,
+            subject_user_id=basket["user_id"],
+            package_id=unattached,
+            query_vector=[0.1] * 768,
+            k=10,
+            within=None,
+        )
+
+        assert any("Postgres 16" in item.text for item in found.items)
+        assert not elsewhere.items, "a package the file was never attached to read it"
+
+    @pytest.mark.parametrize("withdrawal", ["detached", "deleted", "kept_back"])
+    async def test_withdrawing_the_file_takes_it_out_of_the_package(
+        self, session: AsyncSession, withdrawal: str
+    ) -> None:
+        from jutsu_retrieval.search import search_subject_chunks
+
+        store = FakeStore()
+        basket = await searchable_upload(session, store)
+        package_id = await a_package(session, basket, attach=True)
+
+        statement, params = {
+            "detached": (
+                "UPDATE kt_package_files SET detached_at = now(), detached_by = :u "
+                "WHERE package_id = :p AND basket_file_id = :f RETURNING id",
+                {"p": package_id, "f": basket["file_id"], "u": basket["user_id"]},
+            ),
+            "deleted": (
+                # `ck_basket_files_deletion`: who deleted it moves with when.
+                "UPDATE basket_files SET deleted_at = now(), deleted_by = :u "
+                "WHERE id = :f RETURNING id",
+                {"f": basket["file_id"], "u": basket["user_id"]},
+            ),
+            "kept_back": (
+                "INSERT INTO kt_package_exclusions (id, org_id, package_id, source_id, "
+                "external_id, document_id, excluded_by) SELECT gen_random_uuid(), d.org_id, "
+                ":p, d.source_id, d.external_id, d.id, :u FROM documents d "
+                "WHERE d.external_id = :f RETURNING id",
+                {"p": package_id, "f": str(basket["file_id"]), "u": basket["user_id"]},
+            ),
+        }[withdrawal]
+        changed = (await session.execute(text(statement), params)).all()
+        assert len(changed) == 1, f"nothing was {withdrawal}"
+        await session.commit()
+        await scope(session, basket["org_id"])
+
+        found = await search_subject_chunks(
+            session,
+            subject_user_id=basket["user_id"],
+            package_id=package_id,
+            query_vector=[0.1] * 768,
+            k=10,
+            within=None,
+        )
+
+        assert not found.items, f"a {withdrawal} file was still read by its package"
+
+
 class TestTenantIsolation:
     async def test_a_basket_file_is_invisible_to_another_organisation(
         self, session: AsyncSession

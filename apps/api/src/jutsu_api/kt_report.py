@@ -8,6 +8,8 @@ so that it is not fake:
       answers_configured ─► KT_SUMMARY budget ─► _open_for + _scope_for, ONCE
         ─► handover_summary_in_scope   the grounded narrative, and the claims it read
         ─► documents_in_scope          the documents section, when in scope
+        ─► _folders_in_scope           where those documents are kept (ADR 0029)
+        ─► files_in_scope              the basket files attached to the package (ADR 0021)
         ─► render_handover_pdf         bytes, in memory, never persisted
       ─► audit kt.handover_report (counts only)
 
@@ -56,12 +58,14 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import AnswerOutcome, AnswerTransport
 from jutsu_api.kt import (
     KtDocument,
     KtInsight,
+    KtScope,
     _open_for,
     _scope_for,
     _subject_profile,
@@ -69,6 +73,7 @@ from jutsu_api.kt import (
     documents_in_scope,
     handover_summary_in_scope,
 )
+from jutsu_api.kt_files import SharedFileRow, files_in_scope
 
 __all__ = [
     "REPORT_TITLE",
@@ -87,6 +92,18 @@ REPORT_TITLE: Final = "Knowledge Transfer — Handover Summary"
 
 #: How many of the subject's documents the report lists. A bibliography, not the corpus.
 REPORT_DOCUMENTS: Final = 25
+
+#: How many folders the report names: where most of the package's documents live, not a tree.
+REPORT_FOLDERS: Final = 15
+
+#: What an attached file's state means to a reader, in the Files tab's own words
+#: (`components/kt/kt-files.tsx`), so the report and the console cannot disagree.
+_FILE_STATES: Final[dict[str, str]] = {
+    "ready": "Searchable — Ask KT can quote and cite it",
+    "stored": "Stored — downloadable; this kind of file is not read for text",
+    "failed": "Text unavailable — downloadable; its text could not be read",
+}
+_FILE_PROCESSING: Final = "Processing — downloadable now; searchable once it finishes"
 
 #: `(claim type, package category, section title)`, in the order a first day reads them.
 _SECTIONS: Final[tuple[tuple[str, str, str], ...]] = (
@@ -123,7 +140,12 @@ class ReportItem:
     #: documents-section entry, which is its own evidence.
     quote: str
     date: str | None
-    source: int
+    #: The reference number, or None for an entry that is not evidence: a folder, or a file
+    #: listed so the reader knows it was shared.
+    source: int | None
+    #: A short qualifier printed muted: where a document is kept, a folder's size, a file's
+    #: state.
+    detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +172,11 @@ class HandoverReport:
     sources: tuple[ReportSource, ...]
     #: How many claims the summary and the sections stood on — they are the same list.
     claims_considered: int
+    #: Where the package's documents are kept (ADR 0029). None only for a report built
+    #: without the section, which then prints none.
+    folders: ReportSection | None = None
+    #: The Knowledge Basket files attached to the package, as its Files tab lists them.
+    files: ReportSection | None = None
 
 
 class _References:
@@ -204,6 +231,52 @@ def _role(profile: object) -> str | None:
     title = getattr(profile, "role_title", None) or getattr(profile, "designation", None)
     parts = [part for part in (title, getattr(profile, "role_level", None)) if part]
     return " · ".join(parts) or None
+
+
+def _file_item(file: SharedFileRow) -> ReportItem:
+    return ReportItem(
+        headline=file.filename,
+        quote="",
+        date=file.uploaded_at.strftime("%Y-%m-%d"),
+        source=None,
+        detail=_FILE_STATES.get(file.state, _FILE_PROCESSING),
+    )
+
+
+async def _folders_in_scope(
+    session: AsyncSession, scope: KtScope, *, limit: int
+) -> tuple[ReportItem, ...]:
+    """Where the package's documents are kept, most documents first (ADR 0029).
+
+    `KtScope.conditions`, grouped: the documents the documents section and Ask KT read, so
+    a folder is named only through a document the package carries, and a kept-back
+    document is not counted. Paths and counts, never a passage.
+    """
+    params: dict[str, object] = {"limit": max(1, min(limit, 50))}
+    filters = [*scope.conditions(params), "d.folder_path IS NOT NULL"]
+    rows = (
+        await session.execute(
+            text(
+                "SELECT d.folder_path, count(*) AS documents, "  # noqa: S608
+                "max(d.created_at) AS latest FROM documents d "
+                f"WHERE {' AND '.join(filters)} "
+                "GROUP BY d.folder_path "
+                "ORDER BY count(*) DESC, max(d.created_at) DESC, d.folder_path "
+                "LIMIT :limit"
+            ),
+            params,
+        )
+    ).all()
+    return tuple(
+        ReportItem(
+            headline=str(row.folder_path),
+            quote="",
+            date=row.latest.strftime("%Y-%m-%d"),
+            source=None,
+            detail="1 document" if row.documents == 1 else f"{row.documents} documents",
+        )
+        for row in rows
+    )
 
 
 def report_filename(generated_at: datetime) -> str:
@@ -293,6 +366,7 @@ async def compose_handover_report(
                 source=references.number(
                     document.id, document.title, document.source_system, document.created_at
                 ),
+                detail=f"kept in {document.folder_path}" if document.folder_path else None,
             )
             for document in documents
         )
@@ -302,10 +376,30 @@ async def compose_handover_report(
             SECTION_INCLUDED if document_items else SECTION_EMPTY,
             document_items,
         )
+        folder_items = await _folders_in_scope(session, scope, limit=REPORT_FOLDERS)
+        folder_section = ReportSection(
+            "folders",
+            "Where documents are kept",
+            SECTION_INCLUDED if folder_items else SECTION_EMPTY,
+            folder_items,
+        )
     else:
         document_section = ReportSection(
             "documents", "Important documents", SECTION_OUT_OF_SCOPE, ()
         )
+        folder_section = ReportSection(
+            "folders", "Where documents are kept", SECTION_OUT_OF_SCOPE, ()
+        )
+
+    # The Files tab's own list, through the scope this request opened. Not category-gated,
+    # exactly as the Files tab is not (ADR 0021): a file is a download, not a passage.
+    file_items = tuple(_file_item(file) for file in await files_in_scope(session, scope))
+    file_section = ReportSection(
+        "files",
+        "Files shared with this package",
+        SECTION_INCLUDED if file_items else SECTION_EMPTY,
+        file_items,
+    )
 
     report = HandoverReport(
         subject_name=profile.display_name,
@@ -319,6 +413,8 @@ async def compose_handover_report(
         documents=document_section,
         sources=references.all(),
         claims_considered=len(claims),
+        folders=folder_section,
+        files=file_section,
     )
     logger.info(
         "%s",
@@ -590,9 +686,12 @@ def render_handover_pdf(report: HandoverReport) -> bytes:
             lead.append(Paragraph(note, styles["note"]))
         for item in block.items:
             line = clean(item.headline)
+            if item.detail:
+                line += f" <font color='#5f6660'>· {clean(item.detail)}</font>"
             if item.date:
                 line += f" <font color='#5f6660'>· {clean(item.date)}</font>"
-            line += f" <font color='#499f02'>[{item.source}]</font>"
+            if item.source is not None:
+                line += f" <font color='#499f02'>[{item.source}]</font>"
             parts: list[Any] = [*lead, Paragraph(line, styles["item"])]
             lead = []
             if item.quote:
@@ -605,6 +704,13 @@ def render_handover_pdf(report: HandoverReport) -> bytes:
         note = "Listed by most recent mention, never ranked." if block.key == "people" else None
         section(block, empty="No evidence for this section in the package yet.", note=note)
     section(report.documents, empty="No documents in this package's window yet.")
+    if report.folders is not None:
+        section(
+            report.folders,
+            empty="No document in this package records the folder its source keeps it in.",
+        )
+    if report.files is not None:
+        section(report.files, empty="No Knowledge Basket files are attached to this package.")
 
     story.append(Paragraph("Current and open work", styles["h2"]))
     story.append(

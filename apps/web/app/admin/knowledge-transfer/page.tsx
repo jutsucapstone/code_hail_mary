@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { useCapabilities } from "@/components/admin/admin-shell";
 import { KtAttachments } from "@/components/admin/kt-attachments";
+import { KtContents } from "@/components/admin/kt-contents";
 import { CopyButton } from "@/components/copy-button";
 import {
   LoadMore,
@@ -34,8 +35,12 @@ type Employee = components["schemas"]["Employee"];
 /**
  * Knowledge Transfer — the admin lifecycle.
  *
- * Creating a package creates no access: what its recipient reads inside the workspace
- * is bounded by their own grants, per query. The wizard's scope step offers only what
+ * Creating a package grants access. Once its recipient opens it, they read this
+ * employee's own documents inside the chosen scope and period, plus the Knowledge Basket
+ * files attached to it and minus whatever a curator kept back — re-decided on every
+ * request, and closed by revocation, completion or expiry (ADR 0025, ADR 0027). So the
+ * panel that shows a new KT ID also shows what it carries, before the ID is shared, and a
+ * whole-history package has to be confirmed. The wizard's scope step offers only what
  * `GET /v1/kt/scopes` says the backend can serve (§13) — categories arrive as the
  * platform grows them, and this page never invents one.
  *
@@ -351,6 +356,15 @@ function PackageDetails({
         />
       ) : null}
 
+      {/* Everything the package carries, attached files included, with what a curator kept
+          back (ADR 0027). Below the attachments, because attaching changes this list. */}
+      {detail.data ? (
+        <KtContents
+          packageId={id}
+          closed={detail.data.status === "revoked" || detail.data.status === "completed"}
+        />
+      ) : null}
+
       <section aria-labelledby="kt-activity-heading" className="flex flex-col gap-3">
         <h3 id="kt-activity-heading" className="text-sm font-medium text-foreground">
           Activity
@@ -519,7 +533,9 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
   // them rather than reverting to "choose an employee".
   const [subject, setSubject] = useState<Employee | null>(null);
   const [scope, setScope] = useState<string[]>(["documents", "profile"]);
-  const [periodDays, setPeriodDays] = useState<number | null>(null);
+  // Three months, not the whole history: carrying everything is a stated choice (ADR 0027).
+  const [periodDays, setPeriodDays] = useState<number | null>(92);
+  const [wholeHistoryConfirmed, setWholeHistoryConfirmed] = useState(false);
   const [validityDays, setValidityDays] = useState<number>(30);
   // The whole person for the same reason as `subject`: the review sentence names them.
   const [recipient, setRecipient] = useState<Employee | null>(null);
@@ -538,6 +554,7 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
         scope,
         validity_days: validityDays,
         period_days: periodDays,
+        whole_history: periodDays === null,
         recipient_email: recipient?.email ?? null,
       }),
     onSuccess: (pkg) => onCreated(pkg),
@@ -637,8 +654,9 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          Every category is served from real data: documents under the recipient&apos;s
-          own access, and the rest from evidence-anchored knowledge extraction.
+          Every category is served from real data: documents from this employee&apos;s own
+          connected applications and the Knowledge Basket files attached to the package, and
+          the rest from evidence-anchored knowledge extraction.
         </p>
       </fieldset>
 
@@ -649,9 +667,10 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
           <select
             aria-label="Knowledge period"
             value={periodDays === null ? "all" : String(periodDays)}
-            onChange={(event) =>
-              setPeriodDays(event.target.value === "all" ? null : Number(event.target.value))
-            }
+            onChange={(event) => {
+              setPeriodDays(event.target.value === "all" ? null : Number(event.target.value));
+              setWholeHistoryConfirmed(false);
+            }}
             className="h-11 rounded-xl border border-hairline-strong bg-surface/40 px-3.5 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             {PERIOD_CHOICES.map((choice) => (
@@ -660,6 +679,20 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
               </option>
             ))}
           </select>
+          {periodDays === null ? (
+            <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={wholeHistoryConfirmed}
+                onChange={(event) => setWholeHistoryConfirmed(event.target.checked)}
+                className="mt-0.5 accent-[var(--brand)]"
+              />
+              <span>
+                Carry everything this employee&apos;s connected applications hold, however old.
+                You can keep individual documents back once the package is created.
+              </span>
+            </label>
+          ) : null}
         </fieldset>
         <fieldset className="flex flex-col gap-2">
           <legend className="text-sm font-medium text-foreground">4 · Package validity</legend>
@@ -712,7 +745,13 @@ function CreateWizard({ onCreated }: { onCreated: (pkg: KtAdmin) => void }) {
             backend never offered is exactly what the wizard exists to prevent. */}
         <button
           type="button"
-          disabled={create.isPending || !subject || scope.length === 0 || !scopes.data}
+          disabled={
+            create.isPending ||
+            !subject ||
+            scope.length === 0 ||
+            !scopes.data ||
+            (periodDays === null && !wholeHistoryConfirmed)
+          }
           aria-busy={create.isPending}
           onClick={() => {
             setError(null);
@@ -753,15 +792,18 @@ function CreatedPanel({ pkg, onDone }: { pkg: KtAdmin; onDone: () => void }) {
           </dd>
         </div>
       </dl>
-      {/* What the recipient will find inside is measured at THEIR first open, under
-          THEIR access — a pre-claim count here would be somebody else's visibility
-          served to the caller, which is exactly what the ACL rules forbid. */}
       <p className="max-w-prose text-sm text-muted-foreground">
         Share this ID with the recipient
         {pkg.recipient_email ? ` (${pkg.recipient_email})` : ""}. They enter it under
         Knowledge Transfer in their console. It expires <When iso={pkg.expires_at} /> and
         can be revoked here at any time.
       </p>
+      {/* Reviewed here, before the ID leaves this screen (ADR 0027): something kept back
+          after the ID was shared may already have been read. */}
+      <p className="max-w-prose text-sm font-medium text-foreground">
+        Review what it carries before you share it.
+      </p>
+      <KtContents packageId={pkg.id} closed={false} />
       <div className="flex flex-wrap items-center gap-2">
         {/* The only screen this ID appears on before it has to be passed to somebody
             else, so the confirmation has to be true: `CopyButton` awaits the clipboard

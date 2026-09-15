@@ -167,6 +167,11 @@ type KtAttachmentPage =
   paths["/v1/kt/{package_id}/attachments"]["get"]["responses"][200]["content"]["application/json"];
 type KtAttached =
   paths["/v1/kt/{package_id}/attachments"]["post"]["responses"][201]["content"]["application/json"];
+/** One document a package shares, as its curator reviews it (ADR 0027). Titles only. */
+export type KtContent =
+  paths["/v1/kt/{package_id}/contents"]["get"]["responses"][200]["content"]["application/json"]["items"][number];
+type KtContentPage =
+  paths["/v1/kt/{package_id}/contents"]["get"]["responses"][200]["content"]["application/json"];
 
 type AcceptBody =
   paths["/v1/invitations/accept"]["post"]["requestBody"]["content"]["application/json"];
@@ -829,7 +834,9 @@ export const api = {
   /** The scope categories the backend can actually serve — the wizard offers no more. */
   ktScopes: () => call<KtScopes>("/v1/kt/scopes", { method: "GET" }),
 
-  /** Create a package. Creates no access; scope narrows presentation only. */
+  /** Create a package. Once opened, it lets its recipient read the employee's own
+   *  documents inside its scope and period, plus attached basket files, while it stays
+   *  open (ADR 0025, ADR 0027). A period, or `whole_history: true`, is required. */
   ktCreate: (body: KtCreateBody) =>
     call<KtAdmin>("/v1/kt", { method: "POST", body: JSON.stringify(body) }),
 
@@ -919,10 +926,37 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  /** Documents in the package window the RECIPIENT may already read (their own ACL). */
-  /** One document in the package window the recipient may read, as ordered masked
-   *  chunks. A document outside the window, or one their own ACL does not admit, is the
-   *  same 404 as one that does not exist — the server never distinguishes them. */
+  /**
+   * Everything a package shares, for whoever curates it (ADR 0027): titles, sources and
+   * dates, each flagged when it has been kept back — never a passage. `kt:manage` or the
+   * package's own employee; anybody else gets the same 404 as an unknown package.
+   */
+  ktContents: (packageId: string, params: { cursor?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.cursor) search.set("cursor", params.cursor);
+    const suffix = search.size ? `?${search}` : "";
+    return call<KtContentPage>(`/v1/kt/${encodeURIComponent(packageId)}/contents${suffix}`, {
+      method: "GET",
+    });
+  },
+
+  /** Keep one document back from the recipient, from their next request on. */
+  ktExclude: (packageId: string, documentId: string) =>
+    call<KtContent>(`/v1/kt/${encodeURIComponent(packageId)}/exclusions`, {
+      method: "POST",
+      body: JSON.stringify({ document_id: documentId }),
+    }),
+
+  /** Share a kept-back document again. A revoked or completed package answers 409. */
+  ktInclude: (packageId: string, documentId: string) =>
+    call<void>(
+      `/v1/kt/${encodeURIComponent(packageId)}/exclusions/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" },
+    ),
+
+  /** One document the package shares, as ordered masked chunks. A document outside the
+   *  package — out of its period, not the employee's, not attached, or kept back — is the
+   *  same 404 as one that does not exist; the server never distinguishes them. */
   ktDocument: (ktCode: string, documentId: string, params: { fromOrdinal?: number } = {}) => {
     const search = new URLSearchParams();
     if (params.fromOrdinal) search.set("from_ordinal", String(params.fromOrdinal));

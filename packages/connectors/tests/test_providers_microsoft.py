@@ -357,6 +357,81 @@ def sharepoint_scripted(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"unexpected call: {path}")
 
 
+#: A OneDrive file in Projects / Astro Agent. Graph percent-encodes `parentReference.path`.
+FOLDERED_ITEM = {
+    **DOC_ITEM,
+    "id": "01BYE5RZ5ASTROAGENTPLAN0000000000",
+    "name": "plan.md",
+    "webUrl": (
+        "https://contoso-my.sharepoint.com/personal/megan_contoso_com/Documents/"
+        "Projects/Astro%20Agent/plan.md"
+    ),
+    "parentReference": {
+        "driveId": "b!-RIj2DuyvEyV1T4NlOaMHk8XkS_I8MdFlUCq1BlcjgmhRfAj3-Z8RY2VpuvV_tpd",
+        "path": "/drive/root:/Projects/Astro%20Agent",
+    },
+}
+
+
+def serving(prefix: str, item: dict[str, Any], text: str) -> Any:
+    """One driveItem under `prefix` and its content, and nothing else."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == f"{prefix}/{item['id']}":
+            return httpx.Response(200, json=item)
+        if request.url.path == f"{prefix}/{item['id']}/content":
+            return httpx.Response(200, text=text)
+        raise AssertionError(f"unexpected call: {request.url.path}")
+
+    return handler
+
+
+class TestDriveItemFolders:
+    """Where OneDrive and SharePoint keep a file, read from the item GET the fetch already
+    makes (ADR 0029)."""
+
+    async def test_a_onedrive_file_carries_its_decoded_path_and_the_folders_link(self) -> None:
+        handler = serving("/v1.0/me/drive/items", FOLDERED_ITEM, DOC_TEXT)
+        connector, client = connector_over(OneDriveConnector, handler)
+        async with client:
+            doc = await connector.fetch(f"item:{FOLDERED_ITEM['id']}")
+        assert doc.folder_path == "OneDrive/Projects/Astro Agent"
+        assert doc.folder_uri == (
+            "https://contoso-my.sharepoint.com/personal/megan_contoso_com/Documents/"
+            "Projects/Astro%20Agent"
+        )
+
+    async def test_a_file_at_the_root_is_kept_in_the_drive_itself(self) -> None:
+        item = {**FOLDERED_ITEM, "parentReference": {"path": "/drive/root:"}}
+        connector, client = connector_over(
+            OneDriveConnector, serving("/v1.0/me/drive/items", item, DOC_TEXT)
+        )
+        async with client:
+            doc = await connector.fetch(f"item:{item['id']}")
+        assert doc.folder_path == "OneDrive"
+
+    async def test_no_parent_path_is_an_unknown_location_never_a_guess(self) -> None:
+        connector, client = connector_over(OneDriveConnector, onedrive_scripted)
+        async with client:
+            doc = await connector.fetch(f"item:{DOC_ITEM['id']}")
+        assert doc.folder_path is None
+        assert doc.folder_uri is None
+
+    async def test_a_sharepoint_file_is_kept_under_sharepoint(self) -> None:
+        library = "https://contoso.sharepoint.com/sites/operations/Shared%20Documents"
+        item = {
+            **SITE_A_FILE,
+            "webUrl": f"{library}/General/Runbooks/incident-runbook.md",
+            "parentReference": {"path": "/drives/b!ops/root:/General/Runbooks"},
+        }
+        handler = serving(f"/v1.0/sites/{SITE_A_ID}/drive/items", item, RUNBOOK_TEXT)
+        connector, client = connector_over(SharePointConnector, handler)
+        async with client:
+            doc = await connector.fetch(f"site:{SITE_A_ID}:{item['id']}")
+        assert doc.folder_path == "SharePoint/General/Runbooks"
+        assert doc.folder_uri == f"{library}/General/Runbooks"
+
+
 class TestSharePoint:
     async def test_two_sites_each_contribute_their_files(self) -> None:
         # SITE_EMPTY sits between A and B, so reaching B's file proves the walk

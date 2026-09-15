@@ -280,6 +280,8 @@ async def recipient_in_package(
     }
     if period_days is not None:
         payload["period_days"] = period_days
+    else:
+        payload["whole_history"] = True
     created = await client.post("/v1/kt", json=payload, headers=csrf(client))
     assert created.status_code == 201, created.text
     code = str(created.json()["kt_code"])
@@ -384,8 +386,13 @@ class TestCopilot:
         assert [c["marker"] for c in body["citations"]] == [1]
         assert body["citations"][0]["document_id"] == str(doc_id)
         assert body["citations"][0]["available"] is True
-        assert len(body["sources"]) == 1
+        assert body["citations"][0]["kind"] == "passage"
+        # The passage, then the decision extracted from it: "choose" asks about decisions,
+        # and Ask KT reads the package's claims beside its passages (ADR 0028).
+        assert [source["kind"] for source in body["sources"]] == ["passage", "claim"]
         assert body["sources"][0]["text"] == "we chose PostgreSQL"
+        assert body["sources"][1]["claim_type"] == "decision"
+        assert body["sources"][1]["document_id"] == str(doc_id)
 
         detail = (await client.get(f"/v1/kt/{code}/conversations/{body['conversation_id']}")).json()
         kept = detail["messages"][1]
@@ -471,7 +478,12 @@ class TestCopilot:
         other_package = (
             await client.post(
                 "/v1/kt",
-                json={"subject_user_id": subject, "scope": ["documents"], "validity_days": 30},
+                json={
+                    "subject_user_id": subject,
+                    "scope": ["documents"],
+                    "validity_days": 30,
+                    "whole_history": True,
+                },
                 headers=csrf(client),
             )
         ).json()

@@ -207,6 +207,126 @@ class TestDriveListing:
         assert queries[0].endswith(f"and modifiedTime > '{CURSOR}'")
 
 
+#: A file in My Drive / Projects / Astro Agent, and another beside it.
+FOLDER_FILE = {
+    "id": "1AsTrOpLaN5vT4wZ8yB3nH6jL0aC5eD1fQ",
+    "name": "astro-agent-plan.md",
+    "mimeType": "text/markdown",
+    "createdTime": "2026-07-02T08:00:00Z",
+    "modifiedTime": "2026-08-15T10:00:00Z",
+    "webViewLink": "https://drive.google.com/file/d/1AsTrOpLaN5vT4wZ8yB3nH6jL0aC5eD1fQ/view",
+    "parents": ["astro-folder"],
+}
+SIBLING_FILE = {**FOLDER_FILE, "id": "1AsTrOrIsK5vT4wZ8yB3nH6jL0aC5eD1fR", "name": "risks.md"}
+#: Each level as Drive answers it: a name and, above My Drive, nothing.
+FOLDERS: dict[str, dict[str, Any]] = {
+    "astro-folder": {"id": "astro-folder", "name": "Astro Agent", "parents": ["projects-folder"]},
+    "projects-folder": {"id": "projects-folder", "name": "Projects", "parents": ["my-drive"]},
+    "my-drive": {"id": "my-drive", "name": "My Drive"},
+}
+
+
+def drive_with_folders(
+    folders: dict[str, dict[str, Any]],
+    *,
+    files: tuple[dict[str, Any], ...] = (FOLDER_FILE, SIBLING_FILE),
+    seen: list[str] | None = None,
+    refuse: dict[str, int] | None = None,
+) -> Any:
+    """Drive serving `files` and the folders above them, recording every folder read."""
+    by_id = {str(file["id"]): file for file in files}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        identifier = request.url.path.removeprefix("/drive/v3/files/")
+        if identifier in by_id:
+            if request.url.params.get("alt") == "media":
+                return httpx.Response(200, text="# Astro Agent\nThe plan.")
+            return httpx.Response(200, json=by_id[identifier])
+        if seen is not None:
+            seen.append(identifier)
+        if refuse and identifier in refuse:
+            return httpx.Response(refuse[identifier], json={"error": {"code": refuse[identifier]}})
+        if identifier in folders:
+            assert request.url.params.get("fields") == "id,name,parents"
+            return httpx.Response(200, json=folders[identifier])
+        raise AssertionError(f"unexpected call: {request.url.path}")
+
+    return handler
+
+
+class TestDriveFolders:
+    """Where a Drive file is kept, resolved from its parents (ADR 0029)."""
+
+    async def test_the_path_is_resolved_up_to_my_drive(self) -> None:
+        async with client_over(drive_with_folders(FOLDERS)) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            doc = await connector.fetch(f"file:{FOLDER_FILE['id']}")
+        assert doc.folder_path == "My Drive/Projects/Astro Agent"
+        assert doc.folder_uri == "https://drive.google.com/drive/folders/astro-folder"
+
+    async def test_files_in_one_walk_share_their_folder_reads(self) -> None:
+        seen: list[str] = []
+        async with client_over(drive_with_folders(FOLDERS, seen=seen)) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            first = await connector.fetch(f"file:{FOLDER_FILE['id']}")
+            second = await connector.fetch(f"file:{SIBLING_FILE['id']}")
+        assert first.folder_path == second.folder_path == "My Drive/Projects/Astro Agent"
+        assert seen == ["astro-folder", "projects-folder", "my-drive"]
+
+    async def test_a_file_drive_names_no_parent_for_has_no_folder(self) -> None:
+        # DRIVE_DOC carries no `parents`, and `drive_scripted` fails any folder read.
+        async with client_over(drive_scripted) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            doc = await connector.fetch(f"file:{DRIVE_DOC['id']}")
+        assert doc.folder_path is None
+        assert doc.folder_uri is None
+
+    async def test_a_parent_this_account_cannot_read_ends_the_path_there(self) -> None:
+        handler = drive_with_folders(FOLDERS, refuse={"projects-folder": 404})
+        async with client_over(handler) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            doc = await connector.fetch(f"file:{FOLDER_FILE['id']}")
+        assert doc.body.startswith("# Astro Agent")
+        assert doc.folder_path == "Astro Agent"
+
+    async def test_an_unreadable_immediate_parent_leaves_the_location_unknown(self) -> None:
+        handler = drive_with_folders(FOLDERS, refuse={"astro-folder": 404})
+        async with client_over(handler) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            doc = await connector.fetch(f"file:{FOLDER_FILE['id']}")
+        assert doc.body.startswith("# Astro Agent")
+        assert doc.folder_path is None
+        assert doc.folder_uri is None
+
+    async def test_a_dead_token_on_a_folder_read_still_fails_the_fetch(self) -> None:
+        handler = drive_with_folders(FOLDERS, refuse={"projects-folder": 401})
+        async with client_over(handler) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            with pytest.raises(ProviderAuthError):
+                await connector.fetch(f"file:{FOLDER_FILE['id']}")
+
+    async def test_a_transient_folder_failure_still_fails_the_fetch(self) -> None:
+        handler = drive_with_folders(FOLDERS, refuse={"projects-folder": 503})
+        async with client_over(handler) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            with pytest.raises(ProviderApiError) as excinfo:
+                await connector.fetch(f"file:{FOLDER_FILE['id']}")
+        assert excinfo.value.transient is True
+
+    async def test_the_walk_up_is_bounded(self) -> None:
+        deep = {
+            f"level-{n}": {"id": f"level-{n}", "name": f"Level {n}", "parents": [f"level-{n + 1}"]}
+            for n in range(20)
+        }
+        buried = {**FOLDER_FILE, "parents": ["level-0"]}
+        seen: list[str] = []
+        async with client_over(drive_with_folders(deep, files=(buried,), seen=seen)) as client:
+            connector = GoogleDriveConnector(CONTEXT, StaticToken(), client)
+            doc = await connector.fetch(f"file:{buried['id']}")
+        assert len(seen) == 8
+        assert doc.folder_path == "/".join(f"Level {n}" for n in reversed(range(8)))
+
+
 class TestDriveFetch:
     async def test_a_google_doc_exports_as_plain_text(self) -> None:
         async with client_over(drive_scripted) as client:

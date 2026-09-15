@@ -524,6 +524,64 @@ class TestIdempotency:
         assert after["documents"] == before["documents"]
         assert after["chunks"] == before["chunks"]
 
+    async def test_an_unchanged_document_still_takes_its_folder(
+        self, session: AsyncSession, corpus: Path
+    ) -> None:
+        """ADR 0029: where a document is kept is metadata, not content.
+
+        A file moved between folders, or a document ingested before folders were recorded,
+        has an unchanged body — and must still reach its current folder without becoming a
+        new version, re-chunked and re-embedded for a location.
+        """
+        tenant = await make_tenant(session, "grace", corpus)
+        await ingest_everything(session, tenant)
+
+        async def folder_words_recorded() -> dict[str, list[str]]:
+            rows = await session.execute(
+                text(
+                    "SELECT d.external_id, array_agg(w.word ORDER BY w.word) "
+                    "FROM document_folder_words w JOIN documents d ON d.id = w.document_id "
+                    "GROUP BY d.external_id"
+                )
+            )
+            return {str(key): list(words) for key, words in rows.tuples().all()}
+
+        stored = dict(
+            (await session.execute(text("SELECT external_id, folder_path FROM documents")))
+            .tuples()
+            .all()
+        )
+        assert sorted(stored.values()) == ["eve", "grace"], "the first ingest stored no folder"
+        words = await folder_words_recorded()
+        assert sorted(words.values()) == [["eve"], ["grace"]], "the first ingest recorded no words"
+
+        # A document ingested before folders were recorded: no path and no words.
+        await session.execute(text("DELETE FROM document_folder_words"))
+        await session.execute(text("UPDATE documents SET folder_path = NULL, folder_uri = NULL"))
+        await session.commit()
+        await scope(session, tenant["org_id"])
+        before = await counts(session)
+
+        await requeue(session, tenant, kind=JobKind.INGEST_DOCUMENT)
+        outcomes = await drain_documents(tenant)
+        await refresh(session, tenant)
+
+        assert outcomes == [IngestOutcome.UNCHANGED, IngestOutcome.UNCHANGED]
+        restored = dict(
+            (await session.execute(text("SELECT external_id, folder_path FROM documents")))
+            .tuples()
+            .all()
+        )
+        assert restored == stored
+        assert await folder_words_recorded() == words
+        assert await counts(session) == before
+        versions = (
+            await session.execute(
+                text("SELECT count(*) FROM documents WHERE superseded_by IS NOT NULL")
+            )
+        ).scalar_one()
+        assert versions == 0, "a folder change versioned the document"
+
     async def test_an_unchanged_document_queues_no_embedding_work(
         self, session: AsyncSession, corpus: Path
     ) -> None:

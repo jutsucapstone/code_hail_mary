@@ -1104,6 +1104,22 @@
             "title": "Document Title",
             "type": "string"
           },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "kind": {
+            "default": "passage",
+            "title": "Kind",
+            "type": "string"
+          },
           "marker": {
             "title": "Marker",
             "type": "integer"
@@ -1493,7 +1509,7 @@
           },
           "sources": {
             "items": {
-              "$ref": "#/components/schemas/SearchResultView"
+              "$ref": "#/components/schemas/KtSourceOut"
             },
             "title": "Sources",
             "type": "array"
@@ -1890,6 +1906,17 @@
           "document_title": {
             "title": "Document Title",
             "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
           },
           "occurred_at": {
             "format": "date-time",
@@ -2590,6 +2617,86 @@
         "title": "KtClaimPayload",
         "type": "object"
       },
+      "KtContentOut": {
+        "description": "One document a package shares, as its curator reviews it: enough to recognise it,\nnever a passage of it.",
+        "properties": {
+          "attached_file": {
+            "title": "Attached File",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "excluded": {
+            "title": "Excluded",
+            "type": "boolean"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "title",
+          "source_system",
+          "created_at",
+          "attached_file",
+          "excluded"
+        ],
+        "title": "KtContentOut",
+        "type": "object"
+      },
+      "KtContentPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KtContentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "KtContentPageOut",
+        "type": "object"
+      },
       "KtCreatePayload": {
         "additionalProperties": false,
         "properties": {
@@ -2637,6 +2744,11 @@
             "minimum": 1.0,
             "title": "Validity Days",
             "type": "integer"
+          },
+          "whole_history": {
+            "default": false,
+            "title": "Whole History",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2678,6 +2790,17 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
           },
           "id": {
             "format": "uuid",
@@ -2726,6 +2849,17 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
           },
           "id": {
             "format": "uuid",
@@ -2776,6 +2910,21 @@
           "next_cursor"
         ],
         "title": "KtDocumentPageOut",
+        "type": "object"
+      },
+      "KtExclusionPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "title": "KtExclusionPayload",
         "type": "object"
       },
       "KtFileDownloadOut": {
@@ -2998,6 +3147,88 @@
           "supported"
         ],
         "title": "KtScopesOut",
+        "type": "object"
+      },
+      "KtSourceOut": {
+        "description": "One numbered item an answer could cite: a passage, a claim, or a folder.\n\nA claim's `text` is its structured fields beside its verbatim quote, and its chunk and\nspan are the passage it was extracted from \u2014 which is what the KT evidence door opens.\nA folder's `text` names the folder and titles kept in it, and its chunk is the first\npassage of one of those documents (ADR 0029).",
+        "properties": {
+          "char_end": {
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "claim_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Type"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "kind": {
+            "default": "passage",
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "text",
+          "char_start",
+          "char_end",
+          "score",
+          "occurred_at"
+        ],
+        "title": "KtSourceOut",
         "type": "object"
       },
       "KtUpdatePayload": {
@@ -4385,6 +4616,22 @@
             "title": "Document Title",
             "type": "string"
           },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "kind": {
+            "default": "passage",
+            "title": "Kind",
+            "type": "string"
+          },
           "occurred_at": {
             "format": "date-time",
             "title": "Occurred At",
@@ -4747,6 +4994,11 @@
           },
           "document_title": {
             "title": "Document Title",
+            "type": "string"
+          },
+          "kind": {
+            "default": "passage",
+            "title": "Kind",
             "type": "string"
           },
           "marker": {
@@ -7250,7 +7502,7 @@
         ]
       },
       "post": {
-        "description": "Create a package. Creates no access: what the recipient reads inside it is\nbounded by their own grants, per query, exactly as everywhere else.",
+        "description": "Create a package \u2014 which grants access (ADR 0025, ADR 0027).\n\nOnce its recipient opens it, they read this employee's own documents from their\nconnected applications, inside the chosen categories and period, plus any Knowledge\nBasket files attached to it and minus anything a curator excluded. The recipient's own\ngrants play no part in it. The access lasts only while the package stays open: it is\nre-decided on every request and ends at revocation, completion or expiry.",
         "operationId": "create_v1_kt_post",
         "requestBody": {
           "content": {
@@ -7768,7 +8020,7 @@
     },
     "/v1/kt/{kt_code}/documents": {
       "get": {
-        "description": "The package subject's own documents inside the package window (ADR 0025).\n\n`SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's\n`_open_for`. The requester's principals are not resolved at all.",
+        "description": "The package subject's own documents inside the package window (ADR 0025).\n\n`KT_PACKAGE_PREDICATE` inside the SQL, from a `KtScope` built by this request's\n`_open_for`. The requester's principals are not resolved at all.",
         "operationId": "read_kt_documents_v1_kt__kt_code__documents_get",
         "parameters": [
           {
@@ -8771,6 +9023,180 @@
           }
         },
         "summary": "Complete",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/contents": {
+      "get": {
+        "description": "Every document this package shares, newest first, flagged where a curator excluded it.\n\nTitles, sources and dates only. Authorized in the service: `kt:manage` or the package's\nown subject, and the same 404 as an unknown package for anybody else.",
+        "operationId": "read_package_contents_v1_kt__package_id__contents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtContentPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Package Contents",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/exclusions": {
+      "post": {
+        "description": "Keep one document back from the recipient, from their next request on.",
+        "operationId": "create_exclusion_v1_kt__package_id__exclusions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KtExclusionPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KtContentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Exclusion",
+        "tags": [
+          "kt"
+        ]
+      }
+    },
+    "/v1/kt/{package_id}/exclusions/{document_id}": {
+      "delete": {
+        "description": "Put an excluded document back. Refused with 409 once the package is closed.",
+        "operationId": "remove_exclusion_v1_kt__package_id__exclusions__document_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Exclusion",
         "tags": [
           "kt"
         ]

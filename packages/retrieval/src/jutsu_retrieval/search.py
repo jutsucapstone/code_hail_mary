@@ -56,6 +56,8 @@ __all__ = [
     "DEFAULT_K",
     "DEFAULT_MAX_SCAN_TUPLES",
     "DEFAULT_STATEMENT_TIMEOUT_MS",
+    "KT_PACKAGE_PREDICATE",
+    "KT_PACKAGE_RULE",
     "ORG_SCOPE_SQL",
     "SUBJECT_PREDICATE",
     "Evidence",
@@ -147,6 +149,54 @@ SUBJECT_PREDICATE: Final = (
     ")"
 )
 
+#: What makes a document part of ONE knowledge-transfer package, before its exclusions
+#: (ADR 0027): it is the subject's own (`SUBJECT_PREDICATE`), and it is EITHER a document
+#: from a connected application inside the package's period OR a Knowledge Basket file
+#: attached to this package.
+#:
+#: **A basket file enters by attachment, never by ownership.** The subject's uploads carry
+#: the same direct grant their connected accounts do, so `SUBJECT_PREDICATE` alone admitted
+#: the whole basket. An upload has its own deliberate curation step (`kt_package_files`,
+#: ADR 0021), so a package carries exactly the files somebody chose, and a detached or
+#: deleted file leaves on the next request.
+#:
+#: **The period binds connector documents only.** A package's period ends when it is
+#: created, and the handover files a leaver uploads afterwards are the ones it exists for:
+#: an attachment is an explicit choice that a date cannot overrule.
+#:
+#: Binds `:subject_principals`, `:package_id`, `:window_start` and `:window_end`; either
+#: window bound may be NULL, with the same CASTs `_WINDOW` uses. A module constant like every
+#: predicate here, composed by the vector scan, the KT citation door and every KT read
+#: through `jutsu_api.kt.KtScope`, and never built per call.
+KT_PACKAGE_RULE: Final = (
+    f"{SUBJECT_PREDICATE} "  # noqa: S608
+    "AND (("
+    "NOT EXISTS (SELECT 1 FROM sources ks WHERE ks.id = d.source_id AND ks.system = 'basket') "
+    "AND (CAST(:window_start AS timestamptz) IS NULL "
+    "OR d.created_at >= CAST(:window_start AS timestamptz)) "
+    "AND (CAST(:window_end AS timestamptz) IS NULL "
+    "OR d.created_at <= CAST(:window_end AS timestamptz))"
+    ") OR EXISTS ("
+    "SELECT 1 FROM kt_package_files kf "
+    "JOIN basket_files kb ON kb.id = kf.basket_file_id AND kb.org_id = kf.org_id "
+    "JOIN sources ks ON ks.id = d.source_id AND ks.system = 'basket' "
+    "WHERE kf.package_id = CAST(:package_id AS uuid) AND kf.detached_at IS NULL "
+    "AND kb.deleted_at IS NULL AND CAST(kb.id AS text) = d.external_id"
+    "))"
+)
+
+#: `KT_PACKAGE_RULE`, minus what a curator kept back (ADR 0027).
+#:
+#: An exclusion names the document's stable identity — its source and external id — so a
+#: re-sync that versions the text cannot quietly re-admit what somebody deliberately left
+#: out. It can only remove a row the rule admits; nothing here adds one.
+KT_PACKAGE_PREDICATE: Final = (
+    f"{KT_PACKAGE_RULE} "  # noqa: S608
+    "AND NOT EXISTS (SELECT 1 FROM kt_package_exclusions kx "
+    "WHERE kx.package_id = CAST(:package_id AS uuid) "
+    "AND kx.source_id = d.source_id AND kx.external_id = d.external_id)"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
@@ -170,6 +220,9 @@ class Evidence:
     #: relevance decision and not an authorization one.
     score: float
     occurred_at: datetime
+    #: Where the source keeps the document — "My Drive/Projects/Astro Agent" — or None
+    #: (ADR 0029). Carried so an answer can say where something is stored.
+    folder_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,10 +325,12 @@ _SCAN_PREFIX: Final = (
 #: The caller's scan, byte-identical to what it has always been.
 _INNER_HEAD: Final = _SCAN_PREFIX + f"AND {ACL_PREDICATE}"
 
-#: The same scan with the subject's predicate in the authorization slot (ADR 0025). Both
-#: measured performance cliffs above hold for it unchanged, because nothing but that one
-#: conjunct differs — `chunks` alone in the FROM, distance alone in the inner ORDER BY.
-_SUBJECT_INNER_HEAD: Final = _SCAN_PREFIX + f"AND {SUBJECT_PREDICATE}"
+#: The same scan with a package's predicate in the authorization slot (ADR 0025, 0027).
+#: Both measured performance cliffs above hold for it unchanged, because nothing but that
+#: one conjunct differs — `chunks` alone in the FROM, distance alone in the inner ORDER BY.
+#: The period lives inside the package predicate rather than in `_WINDOW`, because an
+#: attached basket file is exempt from it.
+_SUBJECT_INNER_HEAD: Final = _SCAN_PREFIX + f"AND {KT_PACKAGE_PREDICATE}"
 
 #: `RetrievalWindow`, as SQL. It sits INSIDE the documents `EXISTS`, beside the ACL
 #: predicate and ANDed with it, so it can only remove rows the caller was already
@@ -300,11 +355,13 @@ def _inner(*, windowed: bool, subject: bool = False) -> str:
     two more `AND` terms on `d`, which is the only place a narrowing may go without
     reopening either of the two measured performance cliffs (see `_ORDER`).
 
-    `subject` picks which of the two predicate constants fills the authorization slot.
-    It is a choice between two module constants, never a string a caller supplies.
+    `subject` picks which predicate constant fills the authorization slot. It is a choice
+    between two module constants, never a string a caller supplies. A package's predicate
+    carries its own period (ADR 0027), so `windowed` does not apply to it.
     """
-    head = _SUBJECT_INNER_HEAD if subject else _INNER_HEAD
-    return head + _WINDOW + ")" if windowed else head + ")"
+    if subject:
+        return _SUBJECT_INNER_HEAD + ")"
+    return _INNER_HEAD + _WINDOW + ")" if windowed else _INNER_HEAD + ")"
 
 
 #: Keyset continuation, applied **inside** the inner scan so the `LIMIT` still lands after
@@ -330,7 +387,7 @@ _CURSOR: Final = (
 _ORDER: Final = (
     "SELECT h.id, h.document_id, h.text, h.char_start, h.char_end, "  # noqa: S608
     "1 - h.distance AS score, d.title AS document_title, d.created_at AS occurred_at, "
-    "CAST(s.system AS text) AS source_system "
+    "CAST(s.system AS text) AS source_system, d.folder_path "
     "FROM hits h "
     f"JOIN documents d ON d.id = h.document_id AND d.org_id = {ORG_SCOPE_SQL} "
     "JOIN sources s ON s.id = d.source_id "
@@ -460,6 +517,7 @@ async def search_subject_chunks(
     session: AsyncSession,
     *,
     subject_user_id: UUID,
+    package_id: UUID,
     query_vector: Sequence[float],
     k: int = DEFAULT_K,
     after: tuple[float, UUID] | None = None,
@@ -467,7 +525,7 @@ async def search_subject_chunks(
     ef_search_ladder: Sequence[int] = DEFAULT_EF_SEARCH_LADDER,
     statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
 ) -> SearchPage:
-    """Top-`k` chunks from a knowledge-transfer SUBJECT's own documents, nearest first.
+    """Top-`k` chunks from one knowledge-transfer package's documents, nearest first.
 
     The KT copilot's retrieval (ADR 0025). A recipient who has opened a package reads the
     subject's own documents inside the package's window — not their own corpus, which is
@@ -482,20 +540,28 @@ async def search_subject_chunks(
     the subject's principals are resolved here, in the caller's transaction, and the
     tenant is still the session's GUC.
 
-    Same scan, same window, same cursor, same escalation ladder; the authorization
-    conjunct is the only difference, and it is a module constant.
+    Same scan, same cursor, same escalation ladder; the authorization conjunct is the only
+    difference, and it is a module constant — `KT_PACKAGE_PREDICATE`, which also carries
+    the package's period, its attached basket files and its exclusions (ADR 0027).
+    `package_id` names the package whose attachments and exclusions apply. Like `within`,
+    it can only narrow the subject's own documents; it cannot add one.
     """
     started = time.monotonic()
 
     principals = await resolve_subject_principals(session, subject_user_id=subject_user_id)
 
-    statement = _statement(paginated=after is not None, windowed=within is not None, subject=True)
+    statement = _statement(paginated=after is not None, subject=True)
     params: dict[str, object] = {
         "query": vector_literal(query_vector),
         "subject_principals": sorted(principals),
+        "package_id": str(package_id),
+        # Always bound: the package predicate carries the period, and a NULL bound is an
+        # unbounded side.
+        "window_start": within.created_from if within is not None else None,
+        "window_end": within.created_to if within is not None else None,
         "k": k,
     }
-    _bind_position(params, after=after, within=within)
+    _bind_position(params, after=after, within=None)
 
     page = await _ladder(
         session,
@@ -583,6 +649,7 @@ async def _ladder(
             char_end=row.char_end,
             score=float(row.score),
             occurred_at=row.occurred_at,
+            folder_path=row.folder_path,
         )
         for row in rows
     )

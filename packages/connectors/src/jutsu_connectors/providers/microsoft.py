@@ -30,6 +30,7 @@ import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from jutsu_core.models import AclEntry, RawDocument, SourceSystem
@@ -197,6 +198,26 @@ async def _download_text(http: ProviderHttp, client: httpx.AsyncClient, url: str
     return response.text
 
 
+def _folder(item: dict[str, Any], *, root: str) -> tuple[str | None, str | None]:
+    """Where a driveItem lives: a path a person reads, and a link to that folder (ADR 0029).
+
+    A plain item GET — the one `_drive_document` already makes — answers
+    `parentReference.path` as `/drive/root:/Projects/Astro Agent` (or `/drives/{id}/root:…`),
+    so this costs no extra request. The link is the file's own `webUrl` without its last
+    segment, which is the folder's address in OneDrive and SharePoint alike. A path Graph did
+    not send is an unknown location, never a guessed one.
+    """
+    parent = item.get("parentReference")
+    path = parent.get("path") if isinstance(parent, dict) else None
+    if not isinstance(path, str) or "root:" not in path:
+        return None, None
+    inner = unquote(path.split("root:", 1)[1]).strip("/")
+    folder_path = f"{root}/{inner}" if inner else root
+    web_url = item.get("webUrl")
+    folder_uri = web_url.rsplit("/", 1)[0] if isinstance(web_url, str) and "/" in web_url else None
+    return folder_path, folder_uri
+
+
 async def _drive_document(
     http: ProviderHttp,
     client: httpx.AsyncClient,
@@ -206,6 +227,7 @@ async def _drive_document(
     external_id: str,
     thread_id: str | None,
     raw_metadata: dict[str, Any],
+    folder_root: str,
 ) -> RawDocument:
     """OneDrive and SharePoint items share one driveItem shape and one download dance."""
     item = await http.get_json(item_url)
@@ -214,6 +236,7 @@ async def _drive_document(
     mime = file_facet.get("mimeType") if isinstance(file_facet, dict) else None
     author_id = _user_id(item.get("createdBy"))
     name = item.get("name")
+    folder_path, folder_uri = _folder(item, root=folder_root)
     return RawDocument(
         external_id=external_id,
         source_system=SourceSystem.M365,
@@ -229,6 +252,8 @@ async def _drive_document(
         modified_at=_instant(item.get("lastModifiedDateTime")),
         acls=owner_acl(context),
         raw_metadata=raw_metadata,
+        folder_path=folder_path,
+        folder_uri=folder_uri,
     )
 
 
@@ -268,6 +293,7 @@ class OneDriveConnector:
                     external_id=external_id,
                     thread_id=None,
                     raw_metadata={"kind": "onedrive_file"},
+                    folder_root="OneDrive",
                 )
         raise ProviderApiError("unrecognised onedrive external id shape", transient=False)
 
@@ -427,6 +453,7 @@ class SharePointConnector:
                     external_id=external_id,
                     thread_id=f"m365-site:{site_id}",
                     raw_metadata={"kind": "sharepoint_file", "site_id": site_id},
+                    folder_root="SharePoint",
                 )
         raise ProviderApiError("unrecognised sharepoint external id shape", transient=False)
 

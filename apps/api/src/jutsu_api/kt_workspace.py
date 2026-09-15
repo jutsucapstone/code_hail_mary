@@ -50,7 +50,7 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from jutsu_core.errors import NotFound, PermissionDenied, ValidationFailed
-from jutsu_retrieval.search import Evidence, search_subject_chunks
+from jutsu_retrieval.search import search_subject_chunks
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,6 +68,12 @@ from jutsu_api.kt import (
     documents_in_scope,
     insight_counts_in_scope,
     insights_in_scope,
+)
+from jutsu_api.kt_search import (
+    KtEvidence,
+    claims_for_question,
+    folders_for_question,
+    passage,
 )
 from jutsu_api.retrieval import QueryEmbedder
 
@@ -176,6 +182,9 @@ class StoredCitation:
     document_title: str
     source_system: str
     available: bool
+    #: What the marker named when the answer was composed: a passage, or a claim extracted
+    #: from this chunk (ADR 0028). Rows kept before claims were read say "passage".
+    kind: str = "passage"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,9 +215,9 @@ class CopilotTurn:
     answer: str | None
     insufficient_evidence: bool
     citations: list[StoredCitation]
-    #: The retrieved passages the answer stood on, for the client to render what was
+    #: The passages and claims the answer stood on, for the client to render what was
     #: read. Every citation's marker indexes into this list (1-based).
-    sources: list[Evidence]
+    sources: list[KtEvidence]
     attempts: int
     query_tokens: int
 
@@ -484,6 +493,7 @@ def _citations_from_json(raw: object, visible: set[UUID]) -> list[StoredCitation
                     document_title=str(item.get("document_title", "")),
                     source_system=str(item.get("source_system", "")),
                     available=document_id in visible,
+                    kind=str(item.get("kind") or "passage"),
                 )
             )
         except (KeyError, ValueError, TypeError):
@@ -680,21 +690,31 @@ async def ask_copilot(
     page = await search_subject_chunks(
         session,
         subject_user_id=scope.subject_user_id,
+        package_id=scope.package_id,
         query_vector=vector,
         k=k,
         within=scope.window,
     )
+    # The structured half, inside the same boundary (ADR 0028): extracted claims whose type
+    # the question asks about or whose words it shares, each carrying its own chunk.
+    claims = await claims_for_question(session, scope, question)
+    # And the package's folders the question names, each citing a document kept in it
+    # (ADR 0029).
+    folders = await folders_for_question(session, scope, question)
+    evidence = [*(passage(item) for item in page.items), *claims, *folders]
     logger.info(
         "%s",
         {
             "event": "kt_search_completed",
             "package_id": str(package_id),
             "results": len(page.items),
+            "claims": len(claims),
+            "folders": len(folders),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         },
     )
     outcome = await synthesise_answer(
-        transport, question=question, evidence=list(page.items), history=history
+        transport, question=question, evidence=evidence, history=history
     )
 
     citations_json = [
@@ -704,6 +724,7 @@ async def ask_copilot(
             "document_id": c.document_id,
             "document_title": c.document_title,
             "source_system": c.source_system,
+            "kind": evidence[c.marker - 1].kind,
         }
         for c in outcome.citations
     ]
@@ -769,6 +790,7 @@ async def ask_copilot(
             document_title=c.document_title,
             source_system=c.source_system,
             available=True,
+            kind=evidence[c.marker - 1].kind,
         )
         for c in outcome.citations
     ]
@@ -779,7 +801,7 @@ async def ask_copilot(
         answer=outcome.answer,
         insufficient_evidence=outcome.insufficient_evidence,
         citations=citations,
-        sources=list(page.items),
+        sources=evidence,
         attempts=outcome.attempts,
         query_tokens=query_tokens,
     )

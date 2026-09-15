@@ -168,8 +168,11 @@ function SourceRow({
           [{citation.marker}] {citation.document_title}
         </span>
         <span className="font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground/80">
-          {citation.source_system}
+          {citation.kind === "folder" ? "Folder" : citation.source_system}
         </span>
+        {citation.folder_path ? (
+          <span className="min-w-0 break-words">{citation.folder_path}</span>
+        ) : null}
         <span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[0.625rem] uppercase tracking-[0.16em] text-brand">
           {state?.status === "loading" ? (
             <Loader2 aria-hidden="true" className="size-3 animate-spin motion-reduce:animate-none" />

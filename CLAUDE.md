@@ -756,6 +756,13 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
 - **Chunk and ACL rows carry a denormalised `org_id`** with a composite FK to
   `(documents.id, documents.org_id)`. Dropping it to "match §8" makes the RLS policy a
   correlated subquery on the hot retrieval path (ADR 0002).
+- **Beneath a row-level security policy, only a leakproof operator is ever an index
+  condition.** `jutsu_app` is subject to RLS, so PostgreSQL will not evaluate a user qual
+  that could leak through an error before the policy has filtered the row. `@@`
+  (`ts_match_vq`), `LIKE`, `&&` and `@>` are not leakproof; `text` and `uuid` equality are.
+  An index built for the former serves the owner and never the application role, so read a
+  plan as `jutsu_app` before believing an index is used — the migration role bypasses RLS,
+  and ADR 0029 measured a 9 ms owner plan that was 269 ms for the role production runs as.
 
 ### Landing-page traps (`apps/web`)
 
@@ -809,6 +816,21 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   grants to the subject's active principals and nothing else. Do not "simplify" it into
   `ACL_PREDICATE` over the subject's principals: that carries the group and org arms and
   hands the recipient the subject's whole reach — every team space, and the tenant.
+- **What a package carries is `KT_PACKAGE_PREDICATE`, and every KT read composes it.** The
+  subject's own connector documents inside the period, plus the Knowledge Basket files
+  attached to THIS package (exempt from the period), minus `kt_package_exclusions` (ADR
+  0027). An upload the subject never attached is in no package, whoever owns it. The vector
+  scan, the citation door and `KtScope.conditions` all use the one constant; a KT statement
+  built on `SUBJECT_PREDICATE` alone re-admits the whole basket and ignores every exclusion.
+- **An exclusion is keyed by `(source_id, external_id)`, never the document id.** A re-sync
+  that changes the text supersedes the row, so an id-keyed exclusion would lapse silently and
+  the thread somebody kept back would return with the next nightly sync.
+- **Keeping back an attached file's document withdraws the file too.** `kt_package_files`
+  is a separate table the Files tab and its download read, so they carry `kt_files._KEPT_BACK`
+  in their own SQL. Without it a curator's "Keep back" hid the passages and left the original
+  file one click away, listed and signed for download.
+- **A package needs a period or `whole_history: true`.** Omitting both is a 422, and so is
+  sending both; the wizard defaults to three months. Whole history used to be the default.
 - **`KtScope` is constructed in exactly one place: `_scope_for`, from `_open_for`'s row.**
   An AST test asserts it, and that `search_subject_chunks` and `fetch_subject_evidence`
   each have one caller. A scope or a subject id taken from a request parameter is the
@@ -841,6 +863,40 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   back out of the group "for tidiness" re-breaks it; `TestHeadingsStayWithTheirEntries`
   grows the overview a line at a time so every heading crosses the page end.
 
+### Folder traps (`jutsu_retrieval.folders`, ADR 0029)
+
+- **A folder is reached through a document, never granted on its own.** Nothing in
+  `document_acl` names a folder and no connector could say who may see one — a folder's
+  sharing is not the union of its children's. `search_folders` runs under `ACL_PREDICATE`,
+  `search_subject_folders` under `KT_PACKAGE_PREDICATE`; a folder whose documents the asker
+  cannot read does not exist for them, as a name or a count. A folder "document" with its
+  own ACL would be a guessed grant.
+- **A folder's evidence is its path and titles, never text.** It is cited through the
+  newest matching document's first chunk, so the citation opens a real document through the
+  door that document already has. Copying child passages into a folder row would duplicate
+  content outside every per-document check.
+- **Folder words are rows matched by `text` equality, because nothing else indexes under
+  RLS.** See the leakproof trap under Postgres / RLS: an expression GIN index over the
+  path's `tsvector` served the owner in 9 ms and `jutsu_app` never (269 ms at 50,000
+  documents), while `document_folder_words` with `word = ANY(...)` is 0.4–0.7 ms. A
+  "simpler" `@@`, `LIKE`, `&&` or `@>` over `documents` goes back to reading every
+  authorized document on every question.
+- **Only a question that asks where reads folders.** Words most folders share match most of
+  a tenant and cost hundreds of milliseconds to authorize and rank under any design, so
+  `folder_terms` returns nothing without a location word. Passages still carry their folder
+  in the prompt header, so other questions lose nothing a folder could have told them.
+- **Folder metadata is not in `content_hash`.** A moved file must not become a new
+  version, re-chunked and re-embedded for a location; the pipeline refreshes
+  `folder_path`, `folder_uri` and the folder words on the current row when the body is
+  unchanged.
+- **A document synced before migration 0025 has no folder until the walk lists it
+  again.** The cursor filters unchanged files out of every later listing, so its
+  `folder_path` stays NULL until it changes or its source is walked from no cursor. A
+  migration cannot backfill it — only the provider knows where the file is.
+- **A Drive parent the account cannot read answers 404 and ends the path; it does not fail
+  the file.** A 401 and a transient error still fail the fetch: losing a document over its
+  location is worse than a partial path, and a dead token must still ask for reconnection.
+
 ### KT console traps (`apps/api/src/jutsu_api/kt.py`, `kt_workspace.py`)
 
 - **`_open_for` is the KT session.** Binding, expiry and revocation are re-decided on
@@ -862,8 +918,9 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   recipient from the directory, and the API refuses the subject as recipient (422).
 - **`RetrievalWindow` narrows inside the authorization `EXISTS`, and that is the only place
   a narrowing may go.** Two conjuncts on `d.created_at` beside the predicate —
-  `ACL_PREDICATE` for the caller's own search, `SUBJECT_PREDICATE` for a package's (ADR
-  0025); never a `principals`/`org_id` parameter, never a JOIN in the inner scan, never a
+  `ACL_PREDICATE` for the caller's own search, and inside `KT_PACKAGE_PREDICATE` for a
+  package's, where attached basket files are exempt (ADR 0025, ADR 0027); never a
+  `principals`/`org_id` parameter, never a JOIN in the inner scan, never a
   secondary `ORDER BY` key. `test_the_window_sits_inside_the_scan_beside_the_acl_predicate`
   pins it.
 - **History is context, never evidence.** Prior turns reach the model as a labelled

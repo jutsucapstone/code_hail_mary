@@ -3,7 +3,7 @@
 The security model, stated once and enforced in `_open_for` (§15 of the UI brief):
 
     KT code  x  recipient identity  x  organisation  x  scope  x  expiry
-             x  the subject's own documents (SUBJECT_PREDICATE, ADR 0025)
+             x  the subject's own documents (KT_PACKAGE_PREDICATE, ADR 0025, ADR 0027)
 
 * **Organisation** — the code lookup runs under RLS, so a foreign tenant's code finds
   nothing and is indistinguishable from a typo. No cross-org probe exists.
@@ -15,11 +15,12 @@ The security model, stated once and enforced in `_open_for` (§15 of the UI brie
 * **Expiry and revocation** — checked server-side on every open. The two sentences the
   UI shows for them come from here, so the frontend cannot soften either.
 * **What a recipient reads** — the package SUBJECT's own documents, inside the package's
-  period and categories, and nothing else (ADR 0025, which supersedes the "never widens"
-  rule of migration 0013 and ADR 0016 §3). `SUBJECT_PREDICATE` runs inside the SQL over
-  the subject's direct `user` grants — no group arm, no org arm — so a recipient reads what
-  came from the subject's own accounts and Knowledge Basket: never their own corpus, and
-  never the subject's whole reach. Every KT reader takes a `KtScope`, and a `KtScope` is
+  period and categories, plus the Knowledge Basket files attached to the package and minus
+  what its curator excluded, and nothing else (ADR 0025, which supersedes the "never
+  widens" rule of migration 0013 and ADR 0016 §3; ADR 0027). `KT_PACKAGE_PREDICATE` runs
+  inside the SQL over the subject's direct `user` grants — no group arm, no org arm — so a
+  recipient reads what came from the subject's own accounts and the files chosen for the
+  handover: never their own corpus, and never the subject's whole reach. Every KT reader takes a `KtScope`, and a `KtScope` is
   built only from the row `_open_for` returned, so the capability is re-decided on every
   request exactly as binding, revocation, completion and expiry always were. The
   recipient's own `/v1/search`, `/v1/ask` and `/v1/evidence` are untouched.
@@ -35,20 +36,30 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from jutsu_core.errors import Conflict, NotFound, PermissionDenied, ValidationFailed
 from jutsu_core.ids import ALPHABET, KT_CODE_PREFIX, normalise_jutsu_id
+from jutsu_core.rbac import Permission
 from jutsu_db.acl import resolve_subject_principals
 from jutsu_db.engine import org_session
 from jutsu_retrieval import fetch_subject_evidence
-from jutsu_retrieval.search import SUBJECT_PREDICATE, Evidence, RetrievalWindow
+from jutsu_retrieval.search import (
+    KT_PACKAGE_PREDICATE,
+    KT_PACKAGE_RULE,
+    Evidence,
+    RetrievalWindow,
+)
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import AnswerOutcome, AnswerTransport, synthesise_answer
 from jutsu_api.rate_limit import Bucket, spend_budget
+
+if TYPE_CHECKING:
+    from jutsu_api.security import Principal
 
 __all__ = [
     "SUPPORTED_SCOPES",
@@ -58,6 +69,7 @@ __all__ = [
     "claim_or_open",
     "complete_package",
     "create_package",
+    "curation_scope",
     "get_package",
     "kt_document",
     "kt_documents",
@@ -70,7 +82,7 @@ __all__ = [
 
 #: The categories the backend can actually serve (§13). Documents come from the
 #: subject's own accounts (ADR 0025); profile from `employee_profiles`; the rest from
-#: extraction_claims — evidence-anchored, quote-gated, and filtered by `SUBJECT_PREDICATE`
+#: extraction_claims — evidence-anchored, quote-gated, and filtered by `KT_PACKAGE_PREDICATE`
 #: over each claim's evidence document at read time.
 SUPPORTED_SCOPES: tuple[str, ...] = (
     "documents",
@@ -105,6 +117,13 @@ _NOT_FOUND = "No package matches that ID. Check it with your administrator."
 _SELF_HANDOVER = (
     "A package can't be handed over to the employee it is about. "
     "Choose the colleague who is taking over."
+)
+
+#: Refused when a package would carry the subject's whole history without anybody saying
+#: so (ADR 0027).
+_PERIOD_REQUIRED = (
+    "Choose how far back this package looks, or confirm that it should carry the "
+    "employee's whole history."
 )
 
 
@@ -248,6 +267,7 @@ async def create_package(
     validity_days: int,
     period_days: int | None,
     recipient_email: str | None,
+    whole_history: bool = False,
     correlation_id: str | None = None,
 ) -> KtAdminView:
     """Create a package for one employee's context.
@@ -269,6 +289,12 @@ async def create_package(
         raise ValidationFailed("Validity must be between 1 and 365 days.")
     if period_days is not None and not 1 <= period_days <= 3650:
         raise ValidationFailed("The knowledge period must be between 1 day and 10 years.")
+    # Carrying everything the employee ever connected is a decision, never a default: the
+    # wizard used to fall through to it (ADR 0027).
+    if period_days is None and not whole_history:
+        raise ValidationFailed(_PERIOD_REQUIRED)
+    if period_days is not None and whole_history:
+        raise ValidationFailed("Choose a knowledge period or the whole history, not both.")
 
     subject = (
         await session.execute(
@@ -815,6 +841,36 @@ async def open_package_for(
     return UUID(str(row.id))  # type: ignore[attr-defined]
 
 
+async def curation_scope(
+    session: AsyncSession, *, actor: Principal, package_id: UUID
+) -> tuple[object, KtScope]:
+    """A package and its scope, for somebody entitled to curate what it shares (ADR 0027).
+
+    Deliberately not `_open_for`: that answers whether a caller may open a package as its
+    recipient, which would refuse every administrator and every subject. The rule is the
+    one attaching a basket file follows (ADR 0021) — `kt:manage`, or the package's own
+    subject — and anybody else gets the same 404 as a package that does not exist, so
+    nothing here confirms another employee's package. RLS keeps it in the caller's tenant.
+
+    The scope comes from `_scope_for`, like every other, so a curator reviews exactly what
+    a recipient's reads compose.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT id, subject_user_id, scope, period_start, period_end, revoked_at, "
+                "completed_at FROM kt_packages WHERE id = :id"
+            ),
+            {"id": package_id},
+        )
+    ).first()
+    if row is None or not (
+        actor.can(Permission.KT_MANAGE) or actor.user_id == UUID(str(row.subject_user_id))
+    ):
+        raise NotFound("That package was not found.")
+    return row, await _scope_for(session, row)
+
+
 @dataclass(frozen=True, slots=True)
 class KtScope:
     """The one authorization boundary every knowledge-transfer read runs inside (ADR 0025).
@@ -846,20 +902,30 @@ class KtScope:
     def conditions(self, params: dict[str, object]) -> list[str]:
         """The package's document conditions as SQL on `d`, binding what they use.
 
-        `SUBJECT_PREDICATE`, the supersession filter and the period. Every KT statement
-        composes exactly this list, which is what keeps Ask KT, the knowledge tabs, the
-        counts, the workspace, the bookmarks, the conversation replay and the handover
-        report from disagreeing about what the package contains.
+        `KT_PACKAGE_PREDICATE` — the subject's own documents, the period for documents from
+        connected applications, the attached basket files, minus the curator's exclusions
+        (ADR 0027) — and the supersession filter. Every KT statement composes exactly this
+        list, which is what keeps Ask KT, the knowledge tabs, the counts, the workspace, the
+        bookmarks, the conversation replay and the handover report from disagreeing about
+        what the package contains. The vector scan and the citation door use the constant.
         """
+        self._bind(params)
+        return [KT_PACKAGE_PREDICATE, "d.superseded_by IS NULL"]
+
+    def curation_conditions(self, params: dict[str, object]) -> list[str]:
+        """`conditions` without the exclusions: what a curator reviews (ADR 0027).
+
+        Only the contents listing and the exclude/include writes compose it, so a curator
+        can see what they left out and put it back. No reader a recipient reaches does.
+        """
+        self._bind(params)
+        return [KT_PACKAGE_RULE, "d.superseded_by IS NULL"]
+
+    def _bind(self, params: dict[str, object]) -> None:
         params["subject_principals"] = list(self.subject_principals)
-        filters = [SUBJECT_PREDICATE, "d.superseded_by IS NULL"]
-        if self.window is not None and self.window.created_from is not None:
-            params["period_start"] = self.window.created_from
-            filters.append("d.created_at >= :period_start")
-        if self.window is not None and self.window.created_to is not None:
-            params["period_end"] = self.window.created_to
-            filters.append("d.created_at <= :period_end")
-        return filters
+        params["package_id"] = str(self.package_id)
+        params["window_start"] = self.window.created_from if self.window is not None else None
+        params["window_end"] = self.window.created_to if self.window is not None else None
 
     def claim_types(self) -> list[str]:
         """The extraction claim types this package's categories cover, in taxonomy order."""
@@ -1006,6 +1072,8 @@ class KtDocument:
     title: str
     source_system: str
     created_at: datetime
+    #: Where the source keeps it, when it says (ADR 0029).
+    folder_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1062,7 +1130,7 @@ async def documents_in_scope(
     rows = (
         await session.execute(
             text(
-                "SELECT d.id, d.title, d.created_at, "  # noqa: S608
+                "SELECT d.id, d.title, d.created_at, d.folder_path, "  # noqa: S608
                 "s.system AS source_system "
                 "FROM documents d "
                 "JOIN sources s ON s.id = d.source_id "
@@ -1083,6 +1151,7 @@ async def documents_in_scope(
                 title=r.title,
                 source_system=r.source_system,
                 created_at=r.created_at,
+                folder_path=r.folder_path,
             )
             for r in page
         ],
@@ -1118,6 +1187,8 @@ class KtDocumentDetail:
     #: than an opaque cursor because it is already the document's own total order and a
     #: reader legitimately wants to say "showing 1-50 of 214".
     next_ordinal: int | None
+    #: Where the source keeps it, when it says (ADR 0029).
+    folder_path: str | None = None
 
 
 #: One sentence for three different facts: no such document, not one this caller may read,
@@ -1148,7 +1219,7 @@ async def kt_document(
     recipient read not a word of it. This is the same window, opened.
 
     Every gate the listing runs, in the same order and from the same `KtScope`: `_open_for`
-    first, then the package's scope, then `SUBJECT_PREDICATE` and the period — ANDed
+    first, then the package's scope, then `KT_PACKAGE_PREDICATE`, period included — ANDed
     together **inside** the SQL, so one statement decides both. The passage read re-runs
     that whole condition rather than inheriting the header's verdict; two statements that
     could disagree about authorization is one more than there should be.
@@ -1168,7 +1239,7 @@ async def kt_document(
     header = (
         await session.execute(
             text(
-                "SELECT d.id, d.title, d.created_at, "  # noqa: S608
+                "SELECT d.id, d.title, d.created_at, d.folder_path, "  # noqa: S608
                 "CAST(s.system AS text) AS source_system, "
                 "(SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS total_chunks "
                 "FROM documents d "
@@ -1209,6 +1280,7 @@ async def kt_document(
         chunks=[KtDocumentChunk(ordinal=r.ordinal, text=r.text) for r in page],
         total_chunks=header.total_chunks,
         next_ordinal=next_ordinal,
+        folder_path=header.folder_path,
     )
 
 
@@ -1236,6 +1308,7 @@ async def kt_evidence(
     return await fetch_subject_evidence(
         session,
         subject_user_id=scope.subject_user_id,
+        package_id=scope.package_id,
         chunk_id=chunk_id,
         within=scope.window,
     )
@@ -1299,8 +1372,8 @@ async def kt_insights(
 
     Three gates, in the order they run: the package itself (`_open_for` — binding, expiry,
     revocation), the package's scope (a claim type outside it is refused), and
-    `SUBJECT_PREDICATE` inside the SQL over the DOCUMENT each claim's evidence chunk
-    belongs to. A claim whose evidence is not the subject's does not exist here.
+    `KT_PACKAGE_PREDICATE` inside the SQL over the DOCUMENT each claim's evidence chunk
+    belongs to. A claim whose evidence is not in the package does not exist here.
 
     Only claims from each document's LATEST finished run qualify: re-extraction
     supersedes by versioning, and the read model is where "current" is defined.

@@ -43,6 +43,13 @@ from jutsu_retrieval.evidence import (
     fetch_evidence_many,
     fetch_subject_evidence,
 )
+from jutsu_retrieval.folders import (
+    FOLDER_LIMIT,
+    FolderEvidence,
+    folder_terms,
+    search_folders,
+    search_subject_folders,
+)
 from jutsu_retrieval.fusion import RRF_K, reciprocal_rank_fusion
 from jutsu_retrieval.persistence import (
     EmbeddingRun,
@@ -55,6 +62,8 @@ from jutsu_retrieval.search import (
     ACL_PREDICATE,
     DEFAULT_EF_SEARCH_LADDER,
     DEFAULT_K,
+    KT_PACKAGE_PREDICATE,
+    KT_PACKAGE_RULE,
     ORG_SCOPE_SQL,
     SUBJECT_PREDICATE,
     Evidence,
@@ -70,6 +79,9 @@ __all__ = [
     "DEFAULT_EF_SEARCH_LADDER",
     "DEFAULT_K",
     "DEFAULT_MAX_BATCH_SIZE",
+    "FOLDER_LIMIT",
+    "KT_PACKAGE_PREDICATE",
+    "KT_PACKAGE_RULE",
     "MEASURED_INPUT_TOKEN_LIMIT",
     "ORG_SCOPE_SQL",
     "RRF_K",
@@ -83,6 +95,7 @@ __all__ = [
     "EmbeddingTask",
     "EmbeddingTransport",
     "Evidence",
+    "FolderEvidence",
     "MissingEmbeddingSettings",
     "PendingChunk",
     "PermanentEmbeddingError",
@@ -99,12 +112,15 @@ __all__ = [
     "fetch_evidence",
     "fetch_evidence_many",
     "fetch_subject_evidence",
+    "folder_terms",
     "get_embedding_settings",
     "l2_normalise",
     "pending_chunks",
     "plan_batches",
     "reciprocal_rank_fusion",
     "search_chunks",
+    "search_folders",
     "search_subject_chunks",
+    "search_subject_folders",
     "store_embeddings",
 ]

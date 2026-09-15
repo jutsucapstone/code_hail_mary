@@ -45,7 +45,7 @@ from fastapi import APIRouter, Depends
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from jutsu_llm import FailoverTransport
-from jutsu_retrieval import DEFAULT_K
+from jutsu_retrieval import DEFAULT_K, Evidence, FolderEvidence, search_folders
 from pydantic import BaseModel, Field
 
 from jutsu_api.answers import (
@@ -132,6 +132,11 @@ class SearchResultView(BaseModel):
     #: authorization one, and the two must not be confused in the same number.
     score: float
     occurred_at: datetime
+    #: `passage` for a retrieved chunk, or `folder` for a folder an answer named, cited
+    #: through a document kept in it (ADR 0029). Ask KT adds `claim` (ADR 0028).
+    kind: str = "passage"
+    #: Where the source keeps the document, when it says (ADR 0029).
+    folder_path: str | None = None
 
 
 class SearchStatsView(BaseModel):
@@ -256,6 +261,7 @@ async def search(
                 char_end=item.char_end,
                 score=item.score,
                 occurred_at=item.occurred_at,
+                folder_path=item.folder_path,
             )
             for item in outcome.evidence
         ],
@@ -298,6 +304,10 @@ class CitationView(BaseModel):
     document_id: str
     document_title: str
     source_system: str
+    #: `passage`, or `folder` when the answer cited where documents are kept (ADR 0029).
+    kind: str = "passage"
+    #: The folder cited, or the cited passage's own folder when its source says.
+    folder_path: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -380,28 +390,18 @@ async def ask(
         mode=payload.retrieval_mode,
     )
 
-    outcome = await synthesise_answer(
-        transport, question=payload.question, evidence=list(retrieved.evidence)
-    )
+    # The folders the question names, among documents this caller may already read, each
+    # cited through a document kept in it (ADR 0029). The same ACL and tenant, bounded.
+    folders = await search_folders(session, user_id=principal.user_id, question=payload.question)
+    evidence: list[Evidence | FolderEvidence] = [*retrieved.evidence, *folders]
+    outcome = await synthesise_answer(transport, question=payload.question, evidence=evidence)
 
     return AskResponse(
         answer=outcome.answer,
         insufficient_evidence=outcome.insufficient_evidence,
-        citations=[CitationView(**vars_citation(c)) for c in outcome.citations],
-        sources=[
-            SearchResultView(
-                chunk_id=str(item.chunk_id),
-                document_id=str(item.document_id),
-                document_title=item.document_title,
-                source_system=item.source_system,
-                text=item.text,
-                char_start=item.char_start,
-                char_end=item.char_end,
-                score=item.score,
-                occurred_at=item.occurred_at,
-            )
-            for item in retrieved.evidence
-        ],
+        # The gate resolved every marker against `evidence`, so each indexes into it.
+        citations=[_citation(c, evidence[c.marker - 1]) for c in outcome.citations],
+        sources=[_result(item) for item in evidence],
         attempts=outcome.attempts,
         query_tokens=query_tokens,
         retrieval=_retrieval_view(retrieved.report),
@@ -410,3 +410,27 @@ async def ask(
 
 def vars_citation(citation: Citation) -> dict[str, object]:
     return asdict(citation)
+
+
+def _kind(item: Evidence | FolderEvidence) -> str:
+    return "folder" if isinstance(item, FolderEvidence) else "passage"
+
+
+def _citation(citation: Citation, item: Evidence | FolderEvidence) -> CitationView:
+    return CitationView(**vars_citation(citation), kind=_kind(item), folder_path=item.folder_path)
+
+
+def _result(item: Evidence | FolderEvidence) -> SearchResultView:
+    return SearchResultView(
+        chunk_id=str(item.chunk_id),
+        document_id=str(item.document_id),
+        document_title=item.document_title,
+        source_system=item.source_system,
+        text=item.text,
+        char_start=item.char_start,
+        char_end=item.char_end,
+        score=item.score,
+        occurred_at=item.occurred_at,
+        kind=_kind(item),
+        folder_path=item.folder_path,
+    )

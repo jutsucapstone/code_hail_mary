@@ -276,13 +276,20 @@ class LocalConnector:
         parsed = self._parse(path)
         local_thread = parsed.references[0] if parsed.references else parsed.message_id
 
-        return to_raw_document(
+        document = to_raw_document(
             parsed,
             external_id=external_id,
             source_system=self.system,
             uri=external_id,
             thread_id=local_thread,
             fallback_sent_at=utc_from_timestamp(os.stat(os_path(path)).st_mtime),
+        )
+        # The corpus-relative directory — `maildir/allen-p/sent_items` — is where this corpus
+        # keeps the message (ADR 0029). `resolve` contained the identifier above, so its
+        # parent names a directory inside the root and never one outside it.
+        parent = PurePosixPath(external_id).parent.as_posix()
+        return document.model_copy(
+            update={"folder_path": parent if parent not in ("", ".") else None}
         )
 
     async def acls(self, external_id: str) -> list[AclEntry]:

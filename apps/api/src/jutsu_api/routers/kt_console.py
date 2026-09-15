@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from jutsu_api.answers import answers_configured
 from jutsu_api.deps import CurrentPrincipal, Db
+from jutsu_api.kt_search import KtEvidence
 from jutsu_api.kt_workspace import (
     add_bookmark,
     archive_conversation,
@@ -96,9 +97,25 @@ class StoredCitationOut(BaseModel):
     document_id: UUID
     document_title: str
     source_system: str
-    #: Re-decided on every read against the caller's ACL. False renders as "no longer
+    #: Re-decided on every read against the package. False renders as "no longer
     #: available", never as a link.
     available: bool
+    #: `passage`, or `claim` when the marker named a claim extracted from this chunk
+    #: (ADR 0028). Either way the chunk is the source a citation opens.
+    kind: str = "passage"
+
+
+class KtSourceOut(SearchResultView):
+    """One numbered item an answer could cite: a passage, a claim, or a folder.
+
+    A claim's `text` is its structured fields beside its verbatim quote, and its chunk and
+    span are the passage it was extracted from — which is what the KT evidence door opens.
+    A folder's `text` names the folder and titles kept in it, and its chunk is the first
+    passage of one of those documents (ADR 0029).
+    """
+
+    #: project, meeting, person, responsibility or decision — for a claim only.
+    claim_type: str | None = None
 
 
 class MessageOut(BaseModel):
@@ -139,8 +156,9 @@ class CopilotTurnOut(BaseModel):
     answer: str | None
     insufficient_evidence: bool
     citations: list[StoredCitationOut]
-    #: The passages the answer stood on; every citation's marker indexes into this list.
-    sources: list[SearchResultView]
+    #: The passages and claims the answer stood on; every citation's marker indexes into
+    #: this list.
+    sources: list[KtSourceOut]
     attempts: int
     query_tokens: int
 
@@ -260,17 +278,20 @@ def _conversation(view: object) -> ConversationOut:
     return ConversationOut(**asdict(view))  # type: ignore[call-overload]
 
 
-def _source(item: object) -> SearchResultView:
-    return SearchResultView(
-        chunk_id=str(item.chunk_id),  # type: ignore[attr-defined]
-        document_id=str(item.document_id),  # type: ignore[attr-defined]
-        document_title=item.document_title,  # type: ignore[attr-defined]
-        source_system=item.source_system,  # type: ignore[attr-defined]
-        text=item.text,  # type: ignore[attr-defined]
-        char_start=item.char_start,  # type: ignore[attr-defined]
-        char_end=item.char_end,  # type: ignore[attr-defined]
-        score=item.score,  # type: ignore[attr-defined]
-        occurred_at=item.occurred_at,  # type: ignore[attr-defined]
+def _source(item: KtEvidence) -> KtSourceOut:
+    return KtSourceOut(
+        chunk_id=str(item.chunk_id),
+        document_id=str(item.document_id),
+        document_title=item.document_title,
+        source_system=item.source_system,
+        text=item.text,
+        char_start=item.char_start,
+        char_end=item.char_end,
+        score=item.score,
+        occurred_at=item.occurred_at,
+        kind=item.kind,
+        claim_type=item.claim_type,
+        folder_path=item.folder_path,
     )
 
 

@@ -117,6 +117,94 @@ class TestItIsARealDocument:
             assert REPORT_TITLE in page_text
 
 
+FOLDERS = ReportSection(
+    "folders",
+    "Where documents are kept",
+    SECTION_INCLUDED,
+    (ReportItem("Projects/Astro Agent", "", "2026-09-02", None, "3 documents"),),
+)
+FILES = ReportSection(
+    "files",
+    "Files shared with this package",
+    SECTION_INCLUDED,
+    (
+        ReportItem(
+            "astro-runbook.md", "", "2026-09-03", None, "Searchable — Ask KT can quote and cite it"
+        ),
+        ReportItem(
+            "board-deck.pptx",
+            "",
+            "2026-09-04",
+            None,
+            "Stored — downloadable; this kind of file is not read for text",
+        ),
+    ),
+)
+
+
+class TestWhereThingsAreKept:
+    """Folders (ADR 0029) and the basket files a package shares (ADR 0021), on paper."""
+
+    def test_folders_and_files_follow_the_documents_and_precede_open_work(self) -> None:
+        _, text = read(render_handover_pdf(report(folders=FOLDERS, files=FILES)))
+
+        order = [
+            "Important documents",
+            "Where documents are kept",
+            "Files shared with this package",
+            "Current and open work",
+        ]
+        positions = [text.index(heading) for heading in order]
+        assert positions == sorted(positions)
+
+    def test_a_folder_names_its_path_and_size_and_cites_nothing(self) -> None:
+        _, text = read(render_handover_pdf(report(folders=FOLDERS, files=FILES)))
+
+        assert "Projects/Astro Agent · 3 documents · 2026-09-02" in text
+        assert "Projects/Astro Agent · 3 documents · 2026-09-02 [" not in text
+
+    def test_a_file_says_whether_ask_kt_can_search_it(self) -> None:
+        _, text = read(render_handover_pdf(report(folders=FOLDERS, files=FILES)))
+
+        assert "astro-runbook.md · Searchable — Ask KT can quote and cite it" in text
+        assert "board-deck.pptx · Stored — downloadable; this kind of file is not read" in text
+
+    def test_a_document_says_where_it_is_kept(self) -> None:
+        kept = ReportSection(
+            "documents",
+            "Important documents",
+            SECTION_INCLUDED,
+            (ReportItem("Atlas migration plan", "", "2026-09-01", 1, "kept in Projects/Atlas"),),
+        )
+
+        _, text = read(render_handover_pdf(report(documents=kept)))
+
+        assert "Atlas migration plan · kept in Projects/Atlas · 2026-09-01 [1]" in text
+
+    def test_nothing_attached_and_nothing_foldered_each_say_so(self) -> None:
+        folders = ReportSection("folders", "Where documents are kept", SECTION_EMPTY, ())
+        files = ReportSection("files", "Files shared with this package", SECTION_EMPTY, ())
+
+        _, text = read(render_handover_pdf(report(folders=folders, files=files)))
+
+        assert "No document in this package records the folder its source keeps it in." in text
+        assert "No Knowledge Basket files are attached to this package." in text
+
+    def test_folders_outside_the_scope_say_that_instead(self) -> None:
+        folders = ReportSection("folders", "Where documents are kept", SECTION_OUT_OF_SCOPE, ())
+
+        _, text = read(render_handover_pdf(report(folders=folders)))
+
+        after = text[text.index("Where documents are kept") :]
+        assert after.startswith("Where documents are kept Not part of this package's scope.")
+
+    def test_a_report_built_without_them_prints_neither_section(self) -> None:
+        _, text = read(render_handover_pdf(report()))
+
+        assert "Where documents are kept" not in text
+        assert "Files shared with this package" not in text
+
+
 class TestWhatItSays:
     def test_the_required_sections_appear_in_reading_order(self) -> None:
         _, text = read(render_handover_pdf(report()))

@@ -135,6 +135,14 @@ function script(...responses: ScriptedResponse[]) {
     if (url.includes("/attachments") || url.includes("/attachable")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: [] }) });
     }
+    // The contents review (ADR 0027) is proven in `kt-contents.test.tsx`; here it is data.
+    if (url.includes("/contents")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [], next_cursor: null }),
+      });
+    }
     if (url.includes("/v1/employees")) {
       return Promise.resolve({
         ok: true,
@@ -504,6 +512,36 @@ describe("creating a package", () => {
 
     await waitFor(() => expect(postIndex(fetchMock)).toBeGreaterThan(-1));
     expect(sentBody(fetchMock, postIndex(fetchMock))).toMatchObject({ recipient_email: null });
+  });
+
+  it("sends a period by default, and the whole history only once it is confirmed", async () => {
+    const fetchMock = script(
+      { status: 200, body: listPage() },
+      { status: 200, body: { supported: ["documents", "profile"] } },
+      { status: 201, body: ktAdmin() },
+    );
+    renderWithQuery(<KnowledgeTransferPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "+ Create KT" }));
+    const employees = await screen.findByRole("list", { name: "Employees" });
+    await userEvent.click(within(employees).getByRole("button", { name: /grace hopper/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Generate KT" })).toBeEnabled(),
+    );
+
+    // Carrying everything is a stated choice, never the default (ADR 0027).
+    expect(screen.getByLabelText("Knowledge period")).toHaveValue("92");
+    await userEvent.selectOptions(screen.getByLabelText("Knowledge period"), "all");
+    expect(screen.getByRole("button", { name: "Generate KT" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /carry everything/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Generate KT" }));
+
+    await waitFor(() => expect(postIndex(fetchMock)).toBeGreaterThan(-1));
+    expect(sentBody(fetchMock, postIndex(fetchMock))).toMatchObject({
+      period_days: null,
+      whole_history: true,
+    });
   });
 });
 

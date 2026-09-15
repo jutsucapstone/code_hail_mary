@@ -30,8 +30,10 @@ import { classifyApiError, type Failure } from "@/lib/api-error";
  * answers, and every conversation is listed until the recipient archives it.
  *
  * **The ask body carries only `question` and `conversation_id`.** No `k`, no filter, no
- * tenant, no person, no model. The package contributes the window and the caller's own
- * grants bound what is read, both server-side; nothing a browser sends can widen either.
+ * tenant, no person, no model. The package decides what is read, server-side: its
+ * employee's documents inside its period, the Knowledge Basket files attached to it and
+ * the claims extracted from them, minus anything a curator kept back (ADR 0025, 0027,
+ * 0028). The recipient's own grants play no part, and nothing a browser sends can widen it.
  */
 
 /** The API's own limit on a question, mirrored so the field refuses before a round trip. */
@@ -143,6 +145,13 @@ function Citation({ citation }: { citation: KtStoredCitation }) {
     <li className="flex flex-col gap-2 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="font-mono text-brand">[{citation.marker}]</span>
+        {/* A claim is cited through the passage it was extracted from (ADR 0028): the
+            label says which it was, and "View source" opens that passage either way. */}
+        {citation.kind === "claim" || citation.kind === "folder" ? (
+          <span className="font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground/80">
+            {citation.kind === "claim" ? "Extracted claim" : "Folder"}
+          </span>
+        ) : null}
         <span className="min-w-0 break-words">{label}</span>
         {citation.available ? (
           <button
@@ -178,6 +187,9 @@ function Citation({ citation }: { citation: KtStoredCitation }) {
           <p className="mt-2 whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground">
             {evidence.text}
           </p>
+          {evidence.folder_path ? (
+            <p className="mt-3 text-xs text-muted-foreground">Kept in {evidence.folder_path}</p>
+          ) : null}
           <p className="mt-3 font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground/80">
             {evidence.source_system} · chars {evidence.char_start}–{evidence.char_end}
           </p>

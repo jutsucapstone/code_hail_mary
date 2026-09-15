@@ -8,6 +8,7 @@ the escapes are tested adversarially rather than assumed closed by construction.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -213,3 +214,15 @@ class TestFetch:
         and the two disagree by design."""
         document = await LocalConnector(corpus).fetch("taylor/inbox/1")
         assert document.thread_id == "a1@example.com"
+
+    async def test_the_folder_is_the_corpus_relative_directory(self, corpus: Path) -> None:
+        """ADR 0029. Containment already held the identifier inside the root, so its
+        directory is too."""
+        document = await LocalConnector(corpus).fetch("allen/sent/1")
+        assert document.folder_path == "allen/sent"
+        assert document.folder_uri is None
+
+    async def test_a_message_at_the_root_has_no_folder(self, tmp_path: Path) -> None:
+        root = write_corpus(tmp_path / "flat", [replace(THREADED_CORPUS[0], path="loose")])
+        document = await LocalConnector(root).fetch("loose")
+        assert document.folder_path is None

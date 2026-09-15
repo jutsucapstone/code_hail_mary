@@ -854,8 +854,13 @@ export interface paths {
         put?: never;
         /**
          * Create
-         * @description Create a package. Creates no access: what the recipient reads inside it is
-         *     bounded by their own grants, per query, exactly as everywhere else.
+         * @description Create a package — which grants access (ADR 0025, ADR 0027).
+         *
+         *     Once its recipient opens it, they read this employee's own documents from their
+         *     connected applications, inside the chosen categories and period, plus any Knowledge
+         *     Basket files attached to it and minus anything a curator excluded. The recipient's own
+         *     grants play no part in it. The access lasts only while the package stays open: it is
+         *     re-decided on every request and ends at revocation, completion or expiry.
          */
         post: operations["create_v1_kt_post"];
         delete?: never;
@@ -1062,7 +1067,7 @@ export interface paths {
          * Read Kt Documents
          * @description The package subject's own documents inside the package window (ADR 0025).
          *
-         *     `SUBJECT_PREDICATE` inside the SQL, from a `KtScope` built by this request's
+         *     `KT_PACKAGE_PREDICATE` inside the SQL, from a `KtScope` built by this request's
          *     `_open_for`. The requester's principals are not resolved at all.
          */
         get: operations["read_kt_documents_v1_kt__kt_code__documents_get"];
@@ -1425,6 +1430,69 @@ export interface paths {
         /** Complete */
         post: operations["complete_v1_kt__package_id__complete_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/contents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Package Contents
+         * @description Every document this package shares, newest first, flagged where a curator excluded it.
+         *
+         *     Titles, sources and dates only. Authorized in the service: `kt:manage` or the package's
+         *     own subject, and the same 404 as an unknown package for anybody else.
+         */
+        get: operations["read_package_contents_v1_kt__package_id__contents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Exclusion
+         * @description Keep one document back from the recipient, from their next request on.
+         */
+        post: operations["create_exclusion_v1_kt__package_id__exclusions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kt/{package_id}/exclusions/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Exclusion
+         * @description Put an excluded document back. Refused with 409 once the package is closed.
+         */
+        delete: operations["remove_exclusion_v1_kt__package_id__exclusions__document_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2388,6 +2456,13 @@ export interface components {
             document_id: string;
             /** Document Title */
             document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
+            /**
+             * Kind
+             * @default passage
+             */
+            kind: string;
             /** Marker */
             marker: number;
             /** Source System */
@@ -2551,7 +2626,7 @@ export interface components {
              */
             question_message_id: string;
             /** Sources */
-            sources: components["schemas"]["SearchResultView"][];
+            sources: components["schemas"]["KtSourceOut"][];
         };
         /** CoverageCategoryOut */
         CoverageCategoryOut: {
@@ -2686,6 +2761,8 @@ export interface components {
             document_id: string;
             /** Document Title */
             document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
             /**
              * Occurred At
              * Format: date-time
@@ -2943,6 +3020,40 @@ export interface components {
             /** Kt Code */
             kt_code: string;
         };
+        /**
+         * KtContentOut
+         * @description One document a package shares, as its curator reviews it: enough to recognise it,
+         *     never a passage of it.
+         */
+        KtContentOut: {
+            /** Attached File */
+            attached_file: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Excluded */
+            excluded: boolean;
+            /** Folder Path */
+            folder_path?: string | null;
+            /** Source System */
+            source_system: string;
+            /** Title */
+            title: string;
+        };
+        /** KtContentPageOut */
+        KtContentPageOut: {
+            /** Items */
+            items: components["schemas"]["KtContentOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /** KtCreatePayload */
         KtCreatePayload: {
             /** Period Days */
@@ -2958,6 +3069,11 @@ export interface components {
             subject_user_id: string;
             /** Validity Days */
             validity_days: number;
+            /**
+             * Whole History
+             * @default false
+             */
+            whole_history: boolean;
         };
         /** KtDocumentChunkOut */
         KtDocumentChunkOut: {
@@ -2975,6 +3091,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Folder Path */
+            folder_path?: string | null;
             /**
              * Id
              * Format: uuid
@@ -2996,6 +3114,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Folder Path */
+            folder_path?: string | null;
             /**
              * Id
              * Format: uuid
@@ -3012,6 +3132,14 @@ export interface components {
             items: components["schemas"]["KtDocumentOut"][];
             /** Next Cursor */
             next_cursor: string | null;
+        };
+        /** KtExclusionPayload */
+        KtExclusionPayload: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
         };
         /** KtFileDownloadOut */
         KtFileDownloadOut: {
@@ -3097,6 +3225,47 @@ export interface components {
         KtScopesOut: {
             /** Supported */
             supported: string[];
+        };
+        /**
+         * KtSourceOut
+         * @description One numbered item an answer could cite: a passage, a claim, or a folder.
+         *
+         *     A claim's `text` is its structured fields beside its verbatim quote, and its chunk and
+         *     span are the passage it was extracted from — which is what the KT evidence door opens.
+         *     A folder's `text` names the folder and titles kept in it, and its chunk is the first
+         *     passage of one of those documents (ADR 0029).
+         */
+        KtSourceOut: {
+            /** Char End */
+            char_end: number;
+            /** Char Start */
+            char_start: number;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Claim Type */
+            claim_type?: string | null;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
+            /**
+             * Kind
+             * @default passage
+             */
+            kind: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Score */
+            score: number;
+            /** Source System */
+            source_system: string;
+            /** Text */
+            text: string;
         };
         /**
          * KtUpdatePayload
@@ -3644,6 +3813,13 @@ export interface components {
             document_id: string;
             /** Document Title */
             document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
+            /**
+             * Kind
+             * @default passage
+             */
+            kind: string;
             /**
              * Occurred At
              * Format: date-time
@@ -3813,6 +3989,11 @@ export interface components {
             document_id: string;
             /** Document Title */
             document_title: string;
+            /**
+             * Kind
+             * @default passage
+             */
+            kind: string;
             /** Marker */
             marker: number;
             /** Source System */
@@ -6156,6 +6337,105 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["KtAdminOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_package_contents_v1_kt__package_id__contents_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtContentPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_exclusion_v1_kt__package_id__exclusions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KtExclusionPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KtContentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_exclusion_v1_kt__package_id__exclusions__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

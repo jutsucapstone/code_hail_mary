@@ -267,6 +267,7 @@ function KtDocumentReader({ documentId, onBack }: { documentId: string; onBack: 
                 {head.data.source_system}
               </span>
               <When iso={head.data.created_at} />
+              {head.data.folder_path ? <span>Kept in {head.data.folder_path}</span> : null}
               <span>
                 {passages.length} of {head.data.total_chunks}{" "}
                 {head.data.total_chunks === 1 ? "passage" : "passages"}
@@ -402,6 +403,11 @@ export function KtDocuments() {
                   <span className="block font-mono text-[0.625rem] uppercase tracking-[0.14em] text-muted-foreground">
                     {doc.source_system}
                   </span>
+                  {doc.folder_path ? (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {doc.folder_path}
+                    </span>
+                  ) : null}
                 </button>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   <When iso={doc.created_at} />

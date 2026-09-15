@@ -927,6 +927,7 @@ class TestTheLogs:
             "results",
             "elapsed_ms",
             "claims",
+            "folders",
             "citations",
             "sources",
             "insufficient_evidence",
@@ -1060,8 +1061,15 @@ class TestTheScopeIsStructural:
             for file, tree in _sources().items()
             if _calls(tree, "fetch_subject_evidence")
         }
+        folders = {
+            file: _enclosing_functions(tree, "search_subject_folders")
+            for file, tree in _sources().items()
+            if _calls(tree, "search_subject_folders")
+        }
         assert search == {"kt_workspace.py": ["ask_copilot"]}
         assert evidence == {"kt.py": ["kt_evidence"]}
+        # ADR 0029: a package's folders are read in one place, from an opened scope.
+        assert folders == {"kt_search.py": ["folders_for_question"]}
 
     def test_no_kt_route_resolves_the_requesters_principals(self) -> None:
         for router in ("routers/kt.py", "routers/kt_console.py"):

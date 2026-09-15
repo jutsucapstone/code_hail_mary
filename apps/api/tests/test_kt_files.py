@@ -211,6 +211,7 @@ async def create_kt(
         "subject_user_id": subject_user_id,
         "scope": ["documents", "profile"],
         "validity_days": 30,
+        "whole_history": True,
     }
     if recipient_email:
         payload["recipient_email"] = recipient_email

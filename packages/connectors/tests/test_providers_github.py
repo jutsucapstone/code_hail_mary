@@ -132,6 +132,15 @@ class TestFetch:
                 await connector.fetch("gist:whatever")
         assert excinfo.value.transient is False
 
+    async def test_a_repository_is_where_its_readme_and_issues_are_kept(self) -> None:
+        """ADR 0029: GitHub has no folders, and a repository is what a person looks in."""
+        connector, client = connector_over(scripted)
+        async with client:
+            readme = await connector.fetch("readme:octocat/hello")
+            issue = await connector.fetch("issue:octocat/hello#7")
+        assert readme.folder_path == issue.folder_path == "GitHub/octocat/hello"
+        assert readme.folder_uri == issue.folder_uri == "https://github.com/octocat/hello"
+
 
 class TestFailureTaxonomy:
     async def test_a_rate_limit_is_transient_and_carries_retry_after(self) -> None:

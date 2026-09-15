@@ -148,6 +148,7 @@ async def create_kt(
         "subject_user_id": subject_user_id,
         "scope": scope or ["documents", "profile"],
         "validity_days": 30,
+        "whole_history": True,
     }
     if recipient_email:
         payload["recipient_email"] = recipient_email
@@ -322,7 +323,12 @@ class TestTheTrailNamesTheRequest:
 
         created = await client.post(
             "/v1/kt",
-            json={"subject_user_id": subject, "scope": ["documents"], "validity_days": 7},
+            json={
+                "subject_user_id": subject,
+                "scope": ["documents"],
+                "validity_days": 7,
+                "whole_history": True,
+            },
             headers=csrf(client),
         )
         assert created.status_code == 201

@@ -19,6 +19,10 @@ the subject's files, because seeing another employee's uploads is `basket:manage
 "may read"; the grant is computed per request from the package's live state. Revoking a
 package therefore closes access to its files with no code running at revocation time, and
 there is no grant row anywhere that could outlive the thing that justified it.
+
+**A file whose document a curator kept back is withdrawn exactly like a detached one**
+(ADR 0027): gone from the recipient's listing and refused a download on their next request,
+read from `kt_package_exclusions` inside the same statement.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.basket import visible_to
-from jutsu_api.kt import open_package_for
+from jutsu_api.kt import KtScope, open_package_for
 from jutsu_api.security import Principal
 
 logger = logging.getLogger("jutsu.kt.files")
@@ -47,6 +51,7 @@ __all__ = [
     "attach_files",
     "attachable_files",
     "detach_file",
+    "files_in_scope",
     "package_attachments",
     "shared_download_url",
     "shared_files",
@@ -81,6 +86,15 @@ _NO_PACKAGE: Final = "That package was not found."
 #: three places that filter on it cannot drift — and built from `_UNSHAREABLE` so the
 #: Python membership test and the SQL predicate are the same set by construction.
 _UNSHAREABLE_SQL: Final = "(" + ", ".join(f"'{state}'" for state in _UNSHAREABLE) + ")"
+
+#: The attachment `a` on file `f` is kept back from its package (ADR 0027). An exclusion is
+#: keyed by the document's identity, and a basket document's is the basket source plus the
+#: file's id — `KT_PACKAGE_RULE` joins a file to its document the same way.
+_KEPT_BACK: Final = (
+    "EXISTS (SELECT 1 FROM kt_package_exclusions kx "
+    "JOIN sources ks ON ks.id = kx.source_id AND ks.system = 'basket' "
+    "WHERE kx.package_id = a.package_id AND kx.external_id = CAST(f.id AS text))"
+)
 
 #: Columns the recipient sees. Deliberately narrower than `BasketFileRow`: no owner id, no
 #: object key, no failure reason, no attempt count. A recipient is told what the file is
@@ -146,17 +160,8 @@ def _shared(record: Any) -> SharedFileRow:
 # --------------------------------------------------------------------- recipient side
 
 
-async def shared_files(
-    session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str
-) -> list[SharedFileRow]:
-    """Every live attachment on a package the caller may currently open.
-
-    One `_open_for` and one join, not one open per file: the allowance is spent for the
-    act of reading the package, and charging a recipient twenty times for opening one
-    panel would exhaust `KT_OPEN` in a single page load.
-    """
-    package_id = await open_package_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
-
+async def _live_files(session: AsyncSession, package_id: UUID) -> list[SharedFileRow]:
+    """The attachments a recipient sees on one package. Every caller opened it first."""
     rows = (
         await session.execute(
             text(
@@ -169,12 +174,36 @@ async def shared_files(
                 # they deleted stops being readable here in the same instant.
                 "  AND f.deleted_at IS NULL "
                 f"  AND f.state NOT IN {_UNSHAREABLE_SQL} "
+                f"  AND NOT {_KEPT_BACK} "
                 "ORDER BY a.attached_at, f.id"
             ),
             {"pkg": package_id},
         )
     ).all()
     return [_shared(row) for row in rows]
+
+
+async def shared_files(
+    session: AsyncSession, *, org_id: UUID, user_id: UUID, kt_code: str
+) -> list[SharedFileRow]:
+    """Every live attachment on a package the caller may currently open.
+
+    One `_open_for` and one join, not one open per file: the allowance is spent for the
+    act of reading the package, and charging a recipient twenty times for opening one
+    panel would exhaust `KT_OPEN` in a single page load.
+    """
+    package_id = await open_package_for(session, org_id=org_id, user_id=user_id, kt_code=kt_code)
+    return await _live_files(session, package_id)
+
+
+async def files_in_scope(session: AsyncSession, scope: KtScope) -> list[SharedFileRow]:
+    """`shared_files` for a package already opened in this request: the handover report's.
+
+    It takes a `KtScope` rather than an id because a scope exists only for a package
+    `_open_for` opened — an AST test pins its one constructor — so this cannot become a way
+    to list the files of a package nobody opened.
+    """
+    return await _live_files(session, scope.package_id)
 
 
 async def shared_download_url(
@@ -202,18 +231,18 @@ async def shared_download_url(
     record = (
         await session.execute(
             text(
-                "SELECT f.object_key, f.original_filename, f.state "
+                "SELECT f.object_key, f.original_filename, f.state "  # noqa: S608
                 "FROM kt_package_files a "
                 "JOIN basket_files f ON f.id = a.basket_file_id AND f.org_id = a.org_id "
                 "WHERE a.package_id = :pkg AND a.basket_file_id = :file "
-                "  AND a.detached_at IS NULL AND f.deleted_at IS NULL"
+                f"  AND a.detached_at IS NULL AND f.deleted_at IS NULL AND NOT {_KEPT_BACK}"
             ),
             {"pkg": package_id, "file": file_id},
         )
     ).first()
-    # One 404 for "not attached", "detached", "deleted" and "never existed". A recipient
-    # must not be able to tell a file that was withdrawn from one that was never there —
-    # the difference would map the subject's basket one id at a time.
+    # One 404 for "not attached", "detached", "deleted", "kept back" and "never existed".
+    # A recipient must not be able to tell a file that was withdrawn from one that was never
+    # there — the difference would map the subject's basket one id at a time.
     if record is None:
         raise NotFound("That file is not part of this package.")
     if record.state in _UNSHAREABLE:

@@ -161,11 +161,18 @@ class AnswerTransport(Protocol):
     async def complete(self, *, system: str, prompt: str) -> str: ...
 
 
+def _location(item: Groundable) -> str:
+    """Where the source keeps the document, when it says (ADR 0029). Without it, "where is
+    the handover plan kept?" is unanswerable from a passage's own text."""
+    folder = getattr(item, "folder_path", None)
+    return f" — folder: {folder}" if folder else ""
+
+
 def _compose_prompt(
     question: str, evidence: Sequence[Groundable], history: Sequence[Turn] = ()
 ) -> str:
     passages = "\n\n".join(
-        f"[{index}] {item.document_title} ({item.source_system})\n{item.text}"
+        f"[{index}] {item.document_title} ({item.source_system}){_location(item)}\n{item.text}"
         for index, item in enumerate(evidence, start=1)
     )
     preamble = ""

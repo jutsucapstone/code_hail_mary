@@ -36,6 +36,7 @@ from typing import Final
 from jutsu_core import AclEntry, MaskResult, RawDocument, acl_hash_of
 from jutsu_core.chunking import chunk_document
 from jutsu_core.pii import mask
+from jutsu_retrieval.terms import folder_words
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,9 +78,17 @@ class PersistedDocument:
     acl_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class _Current:
+    id: uuid.UUID
+    content_hash: str
+    folder_path: str | None
+    folder_uri: str | None
+
+
 async def _current_version(
     session: AsyncSession, *, source_id: uuid.UUID, external_id: str
-) -> tuple[uuid.UUID, str] | None:
+) -> _Current | None:
     """The live document for this source identifier, if there is one.
 
     No `org_id` predicate, and that is not an omission. The row-level security policy
@@ -90,14 +99,21 @@ async def _current_version(
     row = (
         await session.execute(
             text(
-                "SELECT id, content_hash FROM documents "
+                "SELECT id, content_hash, folder_path, folder_uri FROM documents "
                 "WHERE source_id = :source AND external_id = :external "
                 "AND superseded_by IS NULL"
             ),
             {"source": str(source_id), "external": external_id},
         )
     ).first()
-    return (uuid.UUID(str(row.id)), row.content_hash) if row is not None else None
+    if row is None:
+        return None
+    return _Current(
+        id=uuid.UUID(str(row.id)),
+        content_hash=row.content_hash,
+        folder_path=row.folder_path,
+        folder_uri=row.folder_uri,
+    )
 
 
 async def _insert_document(
@@ -114,9 +130,9 @@ async def _insert_document(
         text(
             "INSERT INTO documents (id, org_id, source_id, external_id, uri, title, mime, "
             "author_external_id, content_hash, acl_hash, body_original, body_masked, "
-            "created_at, modified_at) "
+            "created_at, modified_at, folder_path, folder_uri) "
             "VALUES (:id, :org, :source, :external, :uri, :title, :mime, :author, :content, "
-            ":acl, :original, :masked, :created, :modified)"
+            ":acl, :original, :masked, :created, :modified, :folder_path, :folder_uri)"
         ),
         {
             "id": str(document_id),
@@ -135,8 +151,34 @@ async def _insert_document(
             "masked": masked_text,
             "created": raw.created_at,
             "modified": raw.modified_at,
+            "folder_path": raw.folder_path,
+            "folder_uri": raw.folder_uri,
         },
     )
+
+
+async def _write_folder_words(
+    session: AsyncSession, *, document_id: uuid.UUID, org_id: uuid.UUID, folder_path: str | None
+) -> None:
+    """The words a folder search matches for this document (ADR 0029): replaced, never edited.
+
+    Rows rather than an expression index over the path, because the application role reads
+    under row-level security, and beneath a policy only a leakproof operator — `text`
+    equality, not full-text `@@` — is ever an index condition.
+    """
+    await session.execute(
+        text("DELETE FROM document_folder_words WHERE document_id = :doc"),
+        {"doc": str(document_id)},
+    )
+    words = folder_words(folder_path)
+    if words:
+        await session.execute(
+            text(
+                "INSERT INTO document_folder_words (org_id, document_id, word) "
+                "SELECT CAST(:org AS uuid), CAST(:doc AS uuid), unnest(CAST(:words AS text[]))"
+            ),
+            {"org": str(org_id), "doc": str(document_id), "words": words},
+        )
 
 
 async def _insert_acls(
@@ -223,7 +265,9 @@ async def persist_document(
 
       * **unchanged** — the live version has the same body. Nothing is written: no
         document, no grants, no chunks, and therefore no embedding work. This is what
-        makes a repeated source run free rather than merely safe.
+        makes a repeated source run free rather than merely safe. The one exception is
+        the folder: a file its source moved keeps its version and has its location and
+        folder words refreshed in place (ADR 0029).
       * **created** — nothing current exists for this identifier.
       * **updated** — the body differs. The live version is superseded and a new current
         version is inserted, in that order, with the self-referential foreign key deferred
@@ -240,16 +284,33 @@ async def persist_document(
     """
     existing = await _current_version(session, source_id=source_id, external_id=raw.external_id)
 
-    if existing is not None and existing[1] == raw.content_hash:
+    if existing is not None and existing.content_hash == raw.content_hash:
+        if (raw.folder_path, raw.folder_uri) != (existing.folder_path, existing.folder_uri):
+            # Where a document lives is metadata, not content (ADR 0029): a moved file is the
+            # same version in a new place, so nothing is re-chunked or re-embedded.
+            await session.execute(
+                text(
+                    "UPDATE documents SET folder_path = :folder_path, folder_uri = :folder_uri "
+                    "WHERE id = :id"
+                ),
+                {
+                    "folder_path": raw.folder_path,
+                    "folder_uri": raw.folder_uri,
+                    "id": str(existing.id),
+                },
+            )
+            await _write_folder_words(
+                session, document_id=existing.id, org_id=org_id, folder_path=raw.folder_path
+            )
         logger.info(
             "document_unchanged org=%s source=%s document=%s",
             org_id,
             source_id,
-            existing[0],
+            existing.id,
         )
         return PersistedDocument(
             outcome=IngestOutcome.UNCHANGED,
-            document_id=existing[0],
+            document_id=existing.id,
             superseded_id=None,
             chunk_count=0,
             acl_count=0,
@@ -259,7 +320,7 @@ async def persist_document(
     superseded_id: uuid.UUID | None = None
 
     if existing is not None:
-        superseded_id = existing[0]
+        superseded_id = existing.id
         await session.execute(text(_DEFER_SUPERSEDE))
         await session.execute(
             text("UPDATE documents SET superseded_by = :new WHERE id = :old"),
@@ -280,6 +341,9 @@ async def persist_document(
         raw=raw,
         masked_text=masked.masked_text,
         acls=raw.acls,
+    )
+    await _write_folder_words(
+        session, document_id=document_id, org_id=org_id, folder_path=raw.folder_path
     )
     acl_count = await _insert_acls(session, document_id=document_id, org_id=org_id, acls=raw.acls)
     chunk_count = await _insert_chunks(
