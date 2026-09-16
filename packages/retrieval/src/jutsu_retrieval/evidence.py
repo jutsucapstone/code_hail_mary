@@ -36,6 +36,7 @@ from jutsu_db.acl import resolve_acl_principals, resolve_subject_principals
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_retrieval.links import safe_source_uri
 from jutsu_retrieval.search import (
     ACL_PREDICATE,
     KT_PACKAGE_PREDICATE,
@@ -59,7 +60,7 @@ MAX_EVIDENCE_IDS: Final = 200
 _FETCH: Final = (
     "SELECT c.id, c.document_id, c.text, c.char_start, c.char_end, "  # noqa: S608
     "d.title AS document_title, d.created_at AS occurred_at, "
-    "CAST(s.system AS text) AS source_system, d.folder_path "
+    "CAST(s.system AS text) AS source_system, d.folder_path, d.uri AS source_uri "
     "FROM chunks c "
     "JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id "
     "JOIN sources s ON s.id = d.source_id "
@@ -106,6 +107,7 @@ async def fetch_evidence(session: AsyncSession, *, user_id: UUID, chunk_id: UUID
         score=1.0,
         occurred_at=row.occurred_at,
         folder_path=row.folder_path,
+        source_uri=safe_source_uri(row.source_uri),
     )
 
 
@@ -124,7 +126,7 @@ async def fetch_evidence(session: AsyncSession, *, user_id: UUID, chunk_id: UUID
 #: formatting error — the same reason `search.py` assembles its statement in a function.
 _FETCH_MANY_TAIL: Final = (
     " AS score, d.title AS document_title, d.created_at AS occurred_at, "
-    "CAST(s.system AS text) AS source_system, d.folder_path "
+    "CAST(s.system AS text) AS source_system, d.folder_path, d.uri AS source_uri "
     "FROM chunks c "
     "JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id "
     "JOIN sources s ON s.id = d.source_id "
@@ -214,6 +216,7 @@ async def fetch_evidence_many(
             score=float(row.score),
             occurred_at=row.occurred_at,
             folder_path=row.folder_path,
+            source_uri=safe_source_uri(row.source_uri),
         )
         for row in rows
     }

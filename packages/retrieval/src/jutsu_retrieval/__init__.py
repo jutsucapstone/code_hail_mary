@@ -14,6 +14,12 @@ design: MRL-truncated vectors are not normalised, and over-long input is truncat
 silently under HTTP 200.
 """
 
+from jutsu_retrieval.claims import (
+    CLAIM_LIMIT,
+    ClaimEvidence,
+    claim_intents,
+    search_claims,
+)
 from jutsu_retrieval.client import EmbeddingTransport, VertexTransport, classify_status
 from jutsu_retrieval.config import (
     DEFAULT_MAX_BATCH_SIZE,
@@ -76,6 +82,7 @@ from jutsu_retrieval.search import (
 
 __all__ = [
     "ACL_PREDICATE",
+    "CLAIM_LIMIT",
     "DEFAULT_EF_SEARCH_LADDER",
     "DEFAULT_K",
     "DEFAULT_MAX_BATCH_SIZE",
@@ -86,6 +93,7 @@ __all__ = [
     "ORG_SCOPE_SQL",
     "RRF_K",
     "SUBJECT_PREDICATE",
+    "ClaimEvidence",
     "Embedder",
     "Embedding",
     "EmbeddingBudgetExceeded",
@@ -106,6 +114,7 @@ __all__ = [
     "TransientEmbeddingError",
     "TruncatedInput",
     "VertexTransport",
+    "claim_intents",
     "classify_status",
     "embed_batch",
     "embed_pending_chunks",
@@ -119,6 +128,7 @@ __all__ = [
     "plan_batches",
     "reciprocal_rank_fusion",
     "search_chunks",
+    "search_claims",
     "search_folders",
     "search_subject_chunks",
     "search_subject_folders",

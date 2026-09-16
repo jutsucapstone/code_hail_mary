@@ -116,7 +116,7 @@
         "type": "object"
       },
       "AskResponse": {
-        "description": "A grounded answer, or an honest refusal \u2014 never a fluent guess.\n\n`answer` is None exactly when `insufficient_evidence` is true. `sources` carries\nthe retrieved passages so the UI can render what the answer was grounded ON, and\nevery citation's `marker` indexes into it (1-based).",
+        "description": "A grounded answer, or an honest refusal \u2014 never a fluent guess.\n\n`answer` is None exactly when `insufficient_evidence` is true, and then\n`refusal_reason` says which of the two refusals it was. `sources` carries the retrieved\npassages, claims and folders so the UI can render what the answer was grounded ON, and\nevery citation's `marker` indexes into it (1-based).",
         "properties": {
           "answer": {
             "anyOf": [
@@ -148,12 +148,27 @@
             "title": "Query Tokens",
             "type": "integer"
           },
+          "refusal_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_authorized_evidence",
+                  "evidence_does_not_answer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal Reason"
+          },
           "retrieval": {
             "$ref": "#/components/schemas/RetrievalView"
           },
           "sources": {
             "items": {
-              "$ref": "#/components/schemas/SearchResultView"
+              "$ref": "#/components/schemas/AskSourceView"
             },
             "title": "Sources",
             "type": "array"
@@ -169,6 +184,99 @@
           "retrieval"
         ],
         "title": "AskResponse",
+        "type": "object"
+      },
+      "AskSourceView": {
+        "description": "One numbered item a Cited Q&A answer could stand on: a passage, a claim or a folder.\n\n`SearchResultView` plus two fields that belong to Cited Q&A alone, so `/v1/search` and the\nknowledge-transfer console keep exactly the shape they had (ADR 0030).",
+        "properties": {
+          "char_end": {
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "claim_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Type"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "kind": {
+            "default": "passage",
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "source_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Uri"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "text",
+          "char_start",
+          "char_end",
+          "score",
+          "occurred_at"
+        ],
+        "title": "AskSourceView",
         "type": "object"
       },
       "AssignmentPayload": {
@@ -1096,6 +1204,17 @@
             "title": "Chunk Id",
             "type": "string"
           },
+          "claim_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Type"
+          },
           "document_id": {
             "title": "Document Id",
             "type": "string"
@@ -1124,9 +1243,32 @@
             "title": "Marker",
             "type": "integer"
           },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
           "source_system": {
             "title": "Source System",
             "type": "string"
+          },
+          "source_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Uri"
           }
         },
         "required": [
@@ -1137,6 +1279,78 @@
           "source_system"
         ],
         "title": "CitationView",
+        "type": "object"
+      },
+      "CitedEvidenceView": {
+        "description": "`EvidenceView`, plus the link to the document where its source keeps it (ADR 0030).\n\nA subclass rather than a field on `EvidenceView`, because the knowledge-transfer door\nreturns that model and keeps its own shape. `source_uri` is the address the source gave\n\u2014 a GitHub issue, a Drive file \u2014 and only when `jutsu_retrieval.links` finds it safe for\na browser to open. JUTSU never composes one, so a document without one has no link.",
+        "properties": {
+          "char_end": {
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_title": {
+            "title": "Document Title",
+            "type": "string"
+          },
+          "folder_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Path"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "source_system": {
+            "title": "Source System",
+            "type": "string"
+          },
+          "source_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Uri"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "source_system",
+          "text",
+          "char_start",
+          "char_end",
+          "occurred_at"
+        ],
+        "title": "CitedEvidenceView",
         "type": "object"
       },
       "Code": {
@@ -5698,7 +5912,7 @@
     },
     "/v1/ask": {
       "post": {
-        "description": "Answer a question from retrieved evidence (non-negotiable 3), or refuse.\n\nOrdering is the cost control, exactly as on /v1/search \u2014 with one extra gate at the\nvery front: an unconfigured answer service refuses before a single token is spent\non budget, embedding or retrieval, because \"search works, answers are not set up\"\nis a fact the caller deserves for free.\n\nThe same permission as search, deliberately: composing retrieved evidence into a\ncited paragraph grants access to nothing the caller could not already read one\npassage at a time.",
+        "description": "Answer a question from retrieved evidence (non-negotiable 3), or refuse.\n\nOrdering is the cost control, exactly as on /v1/search \u2014 with one extra gate at the\nvery front: an unconfigured answer service refuses before a single token is spent\non budget, embedding or retrieval, because \"search works, answers are not set up\"\nis a fact the caller deserves for free.\n\nThe same permission as search, deliberately: composing retrieved evidence into a\ncited paragraph grants access to nothing the caller could not already read one\npassage at a time.\n\n**The scope is the caller's own, and nothing about it is a parameter** (ADR 0030). The\ntenant is the session's; every arm below resolves the caller's principals inside its\nown SQL under `ACL_PREDICATE` \u2014 passages, the claims extracted from them, and folders.\nNothing here reads a knowledge-transfer package, a subject, or anybody else's reach, so\nan employee asking about their own work searches what they may read and nothing more.",
         "operationId": "ask_v1_ask_post",
         "requestBody": {
           "content": {
@@ -7084,7 +7298,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EvidenceView"
+                  "$ref": "#/components/schemas/CitedEvidenceView"
                 }
               }
             },

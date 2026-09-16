@@ -7,6 +7,7 @@ import {
   calledMethod,
   calledUrl,
   envelope,
+  routeFetch,
   scriptFetch,
   sentBody,
   type Json,
@@ -116,5 +117,145 @@ describe("asking", () => {
     expect(
       screen.getByRole("group", { name: /suggested questions/i }),
     ).toBeInTheDocument();
+  });
+
+  it("suggests questions about the asker's own work, never about someone else's handover", () => {
+    scriptFetch();
+    renderWithQuery(<AskExperience />);
+
+    const group = screen.getByRole("group", { name: /suggested questions/i });
+    expect(group).toHaveTextContent(/my|am I|have I/);
+    expect(group).not.toHaveTextContent(/package|recipient|subject|knowledge transfer|KT/i);
+  });
+});
+
+async function askSomething(question = "Tell me about my Astro Agent project") {
+  await userEvent.type(screen.getByLabelText(/your question/i), question);
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+}
+
+describe("refusals", () => {
+  it("says nothing the asker may read is searchable yet, names the organisation, and points at where content comes from", async () => {
+    routeFetch(
+      {
+        match: "/v1/ask",
+        status: 200,
+        body: answer({
+          answer: null,
+          insufficient_evidence: true,
+          refusal_reason: "no_authorized_evidence",
+          citations: [],
+          sources: [],
+          attempts: 0,
+        }),
+      },
+      { match: "/v1/me/organisation", status: 200, body: { name: "Example Analytical" } },
+    );
+    renderWithQuery(<AskExperience />);
+
+    await askSomething();
+
+    // The visible refusal, not the live region that announces the same fact.
+    expect(
+      await screen.findByText(/could be searched yet, so there was no evidence to answer from/i),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Example Analytical")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /connect an application/i })).toHaveAttribute(
+      "href",
+      "/me/integrations",
+    );
+    expect(screen.getByRole("link", { name: /knowledge basket/i })).toHaveAttribute(
+      "href",
+      "/me/basket",
+    );
+    // Not the other refusal: nothing was retrieved, so rephrasing cannot help.
+    expect(screen.queryByText(/does not answer this/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the evidence-does-not-answer refusal for evidence that was retrieved", async () => {
+    scriptFetch({
+      status: 200,
+      body: answer({
+        answer: null,
+        insufficient_evidence: true,
+        refusal_reason: "evidence_does_not_answer",
+        citations: [],
+      }),
+    });
+    renderWithQuery(<AskExperience />);
+
+    await askSomething();
+
+    expect(await screen.findByText(/does not answer this/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /connect an application/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("citations", () => {
+  it("labels an extracted claim and opens the original only at the address the server sent", async () => {
+    scriptFetch({
+      status: 200,
+      body: answer({
+        answer: "Astro Agent is your project [1], described in its notes [2].",
+        citations: [
+          {
+            marker: 1,
+            chunk_id: "c1",
+            document_id: "d1",
+            document_title: "astro-agent README",
+            source_system: "github",
+            kind: "claim",
+            claim_type: "project",
+            occurred_at: "2026-09-01T10:00:00Z",
+            source_uri: "https://github.com/example/astro-agent",
+          },
+          {
+            marker: 2,
+            chunk_id: "c2",
+            document_id: "d2",
+            document_title: "Planning notes",
+            source_system: "basket",
+            kind: "passage",
+            source_uri: null,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<AskExperience />);
+
+    await askSomething();
+
+    expect(await screen.findByText(/Project · github/)).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: /open original/i });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "https://github.com/example/astro-agent");
+    expect(links[0]).toHaveAttribute("target", "_blank");
+    expect(links[0]).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("never renders an address a browser would execute as a link", async () => {
+    scriptFetch({
+      status: 200,
+      body: answer({
+        answer: "Grounded [1].",
+        citations: [
+          {
+            marker: 1,
+            chunk_id: "c1",
+            document_id: "d1",
+            document_title: "Suspicious",
+            source_system: "local",
+            kind: "passage",
+            source_uri: "javascript:alert(1)",
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<AskExperience />);
+
+    await askSomething();
+
+    expect(await screen.findByText(/Suspicious/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open original/i })).not.toBeInTheDocument();
   });
 });

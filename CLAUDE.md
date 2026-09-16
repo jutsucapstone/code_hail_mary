@@ -897,6 +897,33 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   the file.** A 401 and a transient error still fail the fetch: losing a document over its
   location is worse than a partial path, and a dead token must still ask for reconnection.
 
+### Cited Q&A traps (`jutsu_retrieval.claims`, `routers/search.py`, ADR 0030)
+
+- **Never copy KT's latest-run join into a caller-scoped statement.** It correlates per claim
+  on `stats_json->>'document_id'`, and `->>` is not leakproof, so beneath a policy the index
+  serves the owner and never `jutsu_app`: measured **27,458 ms as the application role against
+  137 ms as the owner** on 5,000 documents. The claims arm authorizes candidates first and
+  computes the latest run once for those documents — 45 ms on the same data, 129 ms at 50,000
+  documents.
+- **Candidates are chosen by equality; everything else only orders them.** `cl.chunk_id = ANY`
+  and `cl.claim_type = ANY` are leakproof and reach their indexes under RLS. A full-text `@@`
+  as a *candidate* filter reads every claim in the tenant (610 ms at 50,000 documents) and
+  grows with it; as a rank over a bounded pool it costs nothing.
+- **The intent window is a recall trade, and the anchored arm is what covers it.** Only the 200
+  most recent claims of an asked-about kind are ranked, so an older one is found through the
+  passage it was extracted from rather than through that arm.
+- **A stored `uri` is not a link until `safe_source_uri` says so.** Connectors store whatever
+  the provider gave — a `javascript:` bookmark, a local file path — and JUTSU never composes an
+  address. Anything that is not an absolute http(s) URL with a host is no link, and the
+  citation still opens its passage.
+- **"Nothing you may read here is searchable" and "the evidence does not answer this" are
+  different facts.** Both describe the caller's own reach, so neither is the §4.5 oracle;
+  collapsing them into one sentence is what sent somebody to rephrase a question when their
+  organisation had no connected application at all.
+- **Sign-in opens an identity's OLDEST membership and there is no switcher.** An employee in two
+  organisations can be asking inside the empty one while their connectors sync into the other,
+  which is why the empty state names the organisation the session is in.
+
 ### KT console traps (`apps/api/src/jutsu_api/kt.py`, `kt_workspace.py`)
 
 - **`_open_for` is the KT session.** Binding, expiry and revocation are re-decided on

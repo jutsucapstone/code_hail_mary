@@ -1,8 +1,9 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { CircleSlash, FileText, Loader2, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { CircleSlash, ExternalLink, FileText, Loader2, Sparkles } from "lucide-react";
 
 import { VoiceButton, VoiceStatus } from "@/components/product/ask-voice";
 import { EvidenceSearch } from "@/components/product/evidence-search";
@@ -26,6 +27,13 @@ import { joinDictation, type VoiceInput } from "@/lib/voice-input";
  * page only appears to keep. Each marker in the prose, and each row of the sources list,
  * opens one panel that fetches `/v1/evidence/{chunk_id}` on demand — never eagerly, so an
  * answer citing eight documents costs one request for the one a reader actually opens.
+ * Where the source gave the document an address, the row also opens the original — using
+ * exactly the address the server sent, never one composed here (ADR 0030).
+ *
+ * The scope is the signed-in person's own: the request carries the question and nothing
+ * else, and the server decides what they may read. When nothing they may read could be
+ * searched at all, the refusal says that — and which organisation this session is in —
+ * rather than blaming evidence that was never there.
  *
  * Conversation history is component state: the API is stateless and each question is
  * answered from evidence alone, so "history" here is a reading log, not context the
@@ -39,10 +47,10 @@ interface Exchange {
 }
 
 const SUGGESTED = [
-  "What were the main responsibilities?",
-  "Which decisions were important?",
-  "What work is still unfinished?",
-  "Who were the key collaborators?",
+  "What projects am I working on?",
+  "Which decisions have I been part of?",
+  "What am I responsible for?",
+  "Where are my project documents kept?",
 ] as const;
 
 /** One citation's source span, from the moment a reader asks for it. */
@@ -68,12 +76,76 @@ function sourceMessage(failure: Failure): string {
 
 /** What a screen reader is told once an answer has landed. */
 function announcement(response: AskResponse): string {
+  if (response.refusal_reason === "no_authorized_evidence") {
+    return "No answer: nothing you are authorised to read here could be searched yet.";
+  }
   if (response.insufficient_evidence) {
     return "No answer: the evidence you are authorised to read does not answer that question.";
   }
   const count = response.citations.length;
   if (count === 0) return "Answer ready. It cites no sources.";
   return `Answer ready, citing ${count} ${count === 1 ? "source" : "sources"}. Each citation marker opens its source span.`;
+}
+
+const CLAIM_LABELS: Record<string, string> = {
+  project: "Project",
+  meeting: "Meeting",
+  person: "Person",
+  responsibility: "Responsibility",
+  decision: "Decision",
+};
+
+/** What kind of evidence a citation names, in the words a reader uses. */
+function kindLabel(citation: AskCitation): string {
+  if (citation.kind === "folder") return "Folder";
+  if (citation.kind === "claim") {
+    const type = citation.claim_type ?? "";
+    return `${CLAIM_LABELS[type] ?? "Extracted claim"} · ${citation.source_system}`;
+  }
+  return citation.source_system;
+}
+
+/** A calendar date for a source, or nothing when the value is not a date. */
+function sourceDay(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+/**
+ * The server's link to the original, if it is one a browser should follow.
+ *
+ * The API already refuses anything but an absolute http(s) address
+ * (`jutsu_retrieval.links`), so this is a second look, never the only one. The link is the
+ * exact string the server sent; nothing here composes or repairs an address.
+ */
+function webAddress(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function OriginalLink({ href, className }: { href: string; className?: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded font-mono text-[0.625rem] uppercase tracking-[0.16em] text-brand transition-colors hover:text-brand/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+        className,
+      )}
+    >
+      <ExternalLink aria-hidden="true" className="size-3" />
+      Open original
+      <span className="sr-only"> (opens in a new tab)</span>
+    </a>
+  );
 }
 
 /** `[3]` in the answer prose. The capture group keeps the markers when splitting. */
@@ -140,7 +212,8 @@ function rowLabel(state: SourceState | undefined, expanded: boolean): string {
  * One row of the resolved sources list, and the second way into the same panel.
  *
  * Somebody scanning an answer reaches for the list; somebody reading it reaches for the
- * marker. Both are the citation, so both open it.
+ * marker. Both are the citation, so both open it. The link to the original sits beside the
+ * button rather than inside it — a link inside a button is two controls pretending to be one.
  */
 function SourceRow({
   citation,
@@ -155,21 +228,25 @@ function SourceRow({
   panelId: string;
   onOpen: (citation: AskCitation) => void;
 }) {
+  const day = sourceDay(citation.occurred_at);
+  const original = webAddress(citation.source_uri);
+
   return (
-    <li>
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <button
         type="button"
         onClick={() => onOpen(citation)}
         aria-expanded={expanded}
         aria-controls={panelId}
-        className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg py-0.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg py-0.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       >
         <span className="min-w-0 break-words">
           [{citation.marker}] {citation.document_title}
         </span>
         <span className="font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground/80">
-          {citation.kind === "folder" ? "Folder" : citation.source_system}
+          {kindLabel(citation)}
         </span>
+        {day ? <span className="text-muted-foreground/80">{day}</span> : null}
         {citation.folder_path ? (
           <span className="min-w-0 break-words">{citation.folder_path}</span>
         ) : null}
@@ -182,6 +259,7 @@ function SourceRow({
           {rowLabel(state, expanded)}
         </span>
       </button>
+      {original ? <OriginalLink href={original} /> : null}
     </li>
   );
 }
@@ -206,6 +284,9 @@ function SourcePanel({
   onHide: () => void;
   onRetry: () => void;
 }) {
+  const original = state?.status === "ready" ? webAddress(state.evidence.source_uri) : null;
+  const day = state?.status === "ready" ? sourceDay(state.evidence.occurred_at) : null;
+
   return (
     <div className="rounded-xl border border-hairline bg-background/60 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
@@ -249,11 +330,94 @@ function SourcePanel({
           <p className="mt-3 whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground">
             {state.evidence.text}
           </p>
-          <p className="mt-3 font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground/80">
-            {state.evidence.source_system} · chars {state.evidence.char_start}–{state.evidence.char_end}
-          </p>
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-2">
+            <p className="font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-foreground/80">
+              {state.evidence.source_system} · chars {state.evidence.char_start}–
+              {state.evidence.char_end}
+            </p>
+            {day || state.evidence.folder_path ? (
+              <p className="text-xs text-muted-foreground/80">
+                {[day, state.evidence.folder_path].filter(Boolean).join(" · ")}
+              </p>
+            ) : null}
+            {original ? <OriginalLink href={original} /> : null}
+          </div>
         </>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The refusal when nothing the person may read could be searched at all.
+ *
+ * Distinct from "the evidence does not answer this", which is about evidence that exists:
+ * here none was retrieved, so rephrasing cannot help, and the useful facts are which
+ * organisation this session is in and where searchable content comes from. It says nothing
+ * about anybody else's documents — only that this person's own reach here is empty.
+ */
+function NothingSearchable() {
+  const organisation = useQuery({
+    queryKey: ["me", "organisation"],
+    queryFn: api.myOrganisation,
+    retry: false,
+  });
+  const name = organisation.data?.name;
+
+  return (
+    <div className="flex max-w-prose flex-col gap-3 text-pretty text-sm leading-relaxed text-muted-foreground">
+      <p>
+        Nothing you are authorised to read{" "}
+        {name ? (
+          <>
+            in <span className="font-medium text-foreground">{name}</span>
+          </>
+        ) : (
+          "in this organisation"
+        )}{" "}
+        could be searched yet, so there was no evidence to answer from. JUTSU refuses rather
+        than guesses.
+      </p>
+      <p>
+        Cited Q&amp;A searches what you may read here: the applications you connect, the files
+        you add to your Knowledge Basket, and what colleagues have shared with you. New
+        content becomes searchable once it has synced and been indexed.
+      </p>
+      <p className="flex flex-wrap gap-x-4 gap-y-2">
+        <Link
+          href="/me/integrations"
+          className="font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Connect an application
+        </Link>
+        <Link
+          href="/me/basket"
+          className="font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Add files to your Knowledge Basket
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+function Refusal({ reason }: { reason: AskResponse["refusal_reason"] }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-hairline-strong bg-surface text-muted-foreground"
+      >
+        <CircleSlash className="size-4" />
+      </span>
+      {reason === "no_authorized_evidence" ? (
+        <NothingSearchable />
+      ) : (
+        <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
+          The evidence you are authorised to read does not answer this. JUTSU refuses
+          rather than guesses — try asking it another way.
+        </p>
+      )}
     </div>
   );
 }
@@ -300,18 +464,7 @@ function AnswerCard({ exchange }: { exchange: Exchange }) {
       <p className="text-sm font-medium text-foreground">{question}</p>
 
       {response.insufficient_evidence ? (
-        <div className="flex items-start gap-3">
-          <span
-            aria-hidden="true"
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-hairline-strong bg-surface text-muted-foreground"
-          >
-            <CircleSlash className="size-4" />
-          </span>
-          <p className="max-w-prose text-pretty text-sm leading-relaxed text-muted-foreground">
-            The evidence you are authorised to read does not answer this. JUTSU refuses
-            rather than guesses — try rephrasing, or search the sources directly below.
-          </p>
-        </div>
+        <Refusal reason={response.refusal_reason} />
       ) : (
         <>
           <AnswerProse
@@ -483,7 +636,7 @@ export function AskExperience({
               readOnly={listening}
               aria-describedby={voiceReady ? voiceStatusId : undefined}
               placeholder={
-                listening ? "Listening…" : "Ask anything about your organisation's memory…"
+                listening ? "Listening…" : "Ask about your projects, documents, mail and meetings…"
               }
               maxLength={4000}
               className={cn(
@@ -573,7 +726,7 @@ export function AskExperience({
       {thread.length > 0 ? (
         <p className="max-w-prose text-pretty text-xs leading-relaxed text-muted-foreground">
           Every answer above is assembled from evidence you are authorised to read, and
-          every citation was validated against the retrieved passages before it reached
+          every citation was validated against the retrieved evidence before it reached
           this page. When the evidence cannot answer, JUTSU says so.
         </p>
       ) : null}

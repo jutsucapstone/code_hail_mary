@@ -50,6 +50,8 @@ from jutsu_db.acl import resolve_acl_principals, resolve_subject_principals
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jutsu_retrieval.links import safe_source_uri
+
 __all__ = [
     "ACL_PREDICATE",
     "DEFAULT_EF_SEARCH_LADDER",
@@ -223,6 +225,9 @@ class Evidence:
     #: Where the source keeps the document — "My Drive/Projects/Astro Agent" — or None
     #: (ADR 0029). Carried so an answer can say where something is stored.
     folder_path: str | None = None
+    #: The address the source gave for the document — a GitHub issue, a Drive file — when a
+    #: browser may safely open it (`jutsu_retrieval.links`), otherwise None (ADR 0030).
+    source_uri: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,7 +392,7 @@ _CURSOR: Final = (
 _ORDER: Final = (
     "SELECT h.id, h.document_id, h.text, h.char_start, h.char_end, "  # noqa: S608
     "1 - h.distance AS score, d.title AS document_title, d.created_at AS occurred_at, "
-    "CAST(s.system AS text) AS source_system, d.folder_path "
+    "CAST(s.system AS text) AS source_system, d.folder_path, d.uri AS source_uri "
     "FROM hits h "
     f"JOIN documents d ON d.id = h.document_id AND d.org_id = {ORG_SCOPE_SQL} "
     "JOIN sources s ON s.id = d.source_id "
@@ -650,6 +655,7 @@ async def _ladder(
             score=float(row.score),
             occurred_at=row.occurred_at,
             folder_path=row.folder_path,
+            source_uri=safe_source_uri(row.source_uri),
         )
         for row in rows
     )

@@ -88,6 +88,12 @@ export interface paths {
          *     The same permission as search, deliberately: composing retrieved evidence into a
          *     cited paragraph grants access to nothing the caller could not already read one
          *     passage at a time.
+         *
+         *     **The scope is the caller's own, and nothing about it is a parameter** (ADR 0030). The
+         *     tenant is the session's; every arm below resolves the caller's principals inside its
+         *     own SQL under `ACL_PREDICATE` — passages, the claims extracted from them, and folders.
+         *     Nothing here reads a knowledge-transfer package, a subject, or anybody else's reach, so
+         *     an employee asking about their own work searches what they may read and nothing more.
          */
         post: operations["ask_v1_ask_post"];
         delete?: never;
@@ -2080,8 +2086,9 @@ export interface components {
          * AskResponse
          * @description A grounded answer, or an honest refusal — never a fluent guess.
          *
-         *     `answer` is None exactly when `insufficient_evidence` is true. `sources` carries
-         *     the retrieved passages so the UI can render what the answer was grounded ON, and
+         *     `answer` is None exactly when `insufficient_evidence` is true, and then
+         *     `refusal_reason` says which of the two refusals it was. `sources` carries the retrieved
+         *     passages, claims and folders so the UI can render what the answer was grounded ON, and
          *     every citation's `marker` indexes into it (1-based).
          */
         AskResponse: {
@@ -2095,9 +2102,52 @@ export interface components {
             insufficient_evidence: boolean;
             /** Query Tokens */
             query_tokens: number;
+            /** Refusal Reason */
+            refusal_reason?: ("no_authorized_evidence" | "evidence_does_not_answer") | null;
             retrieval: components["schemas"]["RetrievalView"];
             /** Sources */
-            sources: components["schemas"]["SearchResultView"][];
+            sources: components["schemas"]["AskSourceView"][];
+        };
+        /**
+         * AskSourceView
+         * @description One numbered item a Cited Q&A answer could stand on: a passage, a claim or a folder.
+         *
+         *     `SearchResultView` plus two fields that belong to Cited Q&A alone, so `/v1/search` and the
+         *     knowledge-transfer console keep exactly the shape they had (ADR 0030).
+         */
+        AskSourceView: {
+            /** Char End */
+            char_end: number;
+            /** Char Start */
+            char_start: number;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Claim Type */
+            claim_type?: string | null;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
+            /**
+             * Kind
+             * @default passage
+             */
+            kind: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Score */
+            score: number;
+            /** Source System */
+            source_system: string;
+            /** Source Uri */
+            source_uri?: string | null;
+            /** Text */
+            text: string;
         };
         /**
          * AssignmentPayload
@@ -2452,6 +2502,8 @@ export interface components {
         CitationView: {
             /** Chunk Id */
             chunk_id: string;
+            /** Claim Type */
+            claim_type?: string | null;
             /** Document Id */
             document_id: string;
             /** Document Title */
@@ -2465,8 +2517,46 @@ export interface components {
             kind: string;
             /** Marker */
             marker: number;
+            /** Occurred At */
+            occurred_at?: string | null;
             /** Source System */
             source_system: string;
+            /** Source Uri */
+            source_uri?: string | null;
+        };
+        /**
+         * CitedEvidenceView
+         * @description `EvidenceView`, plus the link to the document where its source keeps it (ADR 0030).
+         *
+         *     A subclass rather than a field on `EvidenceView`, because the knowledge-transfer door
+         *     returns that model and keeps its own shape. `source_uri` is the address the source gave
+         *     — a GitHub issue, a Drive file — and only when `jutsu_retrieval.links` finds it safe for
+         *     a browser to open. JUTSU never composes one, so a document without one has no link.
+         */
+        CitedEvidenceView: {
+            /** Char End */
+            char_end: number;
+            /** Char Start */
+            char_start: number;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Folder Path */
+            folder_path?: string | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Source System */
+            source_system: string;
+            /** Source Uri */
+            source_uri?: string | null;
+            /** Text */
+            text: string;
         };
         /** Code */
         Code: {
@@ -5111,7 +5201,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EvidenceView"];
+                    "application/json": components["schemas"]["CitedEvidenceView"];
                 };
             };
             /** @description Validation Error */

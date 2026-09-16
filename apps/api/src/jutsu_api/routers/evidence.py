@@ -55,9 +55,23 @@ class EvidenceView(BaseModel):
     folder_path: str | None = None
 
 
+class CitedEvidenceView(EvidenceView):
+    """`EvidenceView`, plus the link to the document where its source keeps it (ADR 0030).
+
+    A subclass rather than a field on `EvidenceView`, because the knowledge-transfer door
+    returns that model and keeps its own shape. `source_uri` is the address the source gave
+    — a GitHub issue, a Drive file — and only when `jutsu_retrieval.links` finds it safe for
+    a browser to open. JUTSU never composes one, so a document without one has no link.
+    """
+
+    source_uri: str | None = None
+
+
 @router.get("/evidence/{chunk_id}")
 @requires(Permission.RETRIEVAL_QUERY)
-async def read_evidence(chunk_id: UUID, principal: CurrentPrincipal, session: Db) -> EvidenceView:
+async def read_evidence(
+    chunk_id: UUID, principal: CurrentPrincipal, session: Db
+) -> CitedEvidenceView:
     """The source span behind one citation, if this caller may read it.
 
     A chunk the caller is not granted is **404, not 403**. A 403 would confirm that the
@@ -67,7 +81,7 @@ async def read_evidence(chunk_id: UUID, principal: CurrentPrincipal, session: Db
     another-tenant's, and not-granted-to-you.
     """
     evidence = await fetch_evidence(session, user_id=principal.user_id, chunk_id=chunk_id)
-    return EvidenceView(
+    return CitedEvidenceView(
         chunk_id=str(evidence.chunk_id),
         document_id=str(evidence.document_id),
         document_title=evidence.document_title,
@@ -77,4 +91,5 @@ async def read_evidence(chunk_id: UUID, principal: CurrentPrincipal, session: Db
         char_end=evidence.char_end,
         occurred_at=evidence.occurred_at,
         folder_path=evidence.folder_path,
+        source_uri=evidence.source_uri,
     )

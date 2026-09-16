@@ -37,18 +37,26 @@ as they did before GraphRAG existed (ADR 0022).
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import asdict
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Final, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from jutsu_core.errors import ServiceUnavailable
 from jutsu_core.rbac import Permission
 from jutsu_llm import FailoverTransport
 from jutsu_retrieval import DEFAULT_K, Evidence, FolderEvidence, search_folders
+from jutsu_retrieval.claims import ClaimEvidence, search_claims
+from jutsu_retrieval.links import safe_source_uri
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from jutsu_api.answers import (
+    AnswerOutcome,
     AnswerTransport,
     Citation,
     answers_configured,
@@ -72,6 +80,11 @@ from jutsu_api.security import GuardedAPIRoute, requires
 QueryEmbedderDep = Annotated[QueryEmbedder, Depends(get_query_embedder)]
 
 router = APIRouter(prefix="/v1", tags=["search"], route_class=GuardedAPIRoute)
+
+#: Counts, timings and outcomes for Cited Q&A. Never the question, a passage, a claim, a
+#: title, a link or a principal (§4.9); the tenant and the opaque user id come from the
+#: request's logging context, as on every other line.
+logger = logging.getLogger("jutsu.api.ask")
 
 #: Upper bound on `k`. The default ladder tops out at `ef_search = 1000`, so asking for
 #: more than this cannot be answered well however hard the index looks, and an unbounded
@@ -133,7 +146,8 @@ class SearchResultView(BaseModel):
     score: float
     occurred_at: datetime
     #: `passage` for a retrieved chunk, or `folder` for a folder an answer named, cited
-    #: through a document kept in it (ADR 0029). Ask KT adds `claim` (ADR 0028).
+    #: through a document kept in it (ADR 0029). Cited Q&A and Ask KT add `claim` for an
+    #: extracted claim, cited through the passage it came from (ADR 0028, ADR 0030).
     kind: str = "passage"
     #: Where the source keeps the document, when it says (ADR 0029).
     folder_path: str | None = None
@@ -304,24 +318,60 @@ class CitationView(BaseModel):
     document_id: str
     document_title: str
     source_system: str
-    #: `passage`, or `folder` when the answer cited where documents are kept (ADR 0029).
+    #: `passage`; `claim` when the answer cited an extracted claim, whose chunk is the passage
+    #: it came from (ADR 0030); or `folder` when it cited where documents are kept (ADR 0029).
     kind: str = "passage"
     #: The folder cited, or the cited passage's own folder when its source says.
     folder_path: str | None = None
+    #: project, meeting, person, responsibility or decision — for a claim only.
+    claim_type: str | None = None
+    #: When the cited document was created in its source.
+    occurred_at: datetime | None = None
+    #: The address the source gave for the cited document — for a folder, the folder's own —
+    #: when a browser may safely open it. Never composed by JUTSU (ADR 0030).
+    source_uri: str | None = None
+
+
+class AskSourceView(SearchResultView):
+    """One numbered item a Cited Q&A answer could stand on: a passage, a claim or a folder.
+
+    `SearchResultView` plus two fields that belong to Cited Q&A alone, so `/v1/search` and the
+    knowledge-transfer console keep exactly the shape they had (ADR 0030).
+    """
+
+    #: project, meeting, person, responsibility or decision — for a claim only.
+    claim_type: str | None = None
+    #: As on `CitationView`: the source's own address, only when safe to open.
+    source_uri: str | None = None
+
+
+#: The two reasons a Cited Q&A answer can be refused (ADR 0030).
+RefusalReason = Literal["no_authorized_evidence", "evidence_does_not_answer"]
+
+#: Nothing the caller may read in this organisation could be retrieved at all, so no model
+#: was asked. A statement about the caller's own authorized scope — nothing connected,
+#: uploaded, shared with them or indexed yet — and about nobody else's documents.
+NO_AUTHORIZED_EVIDENCE: Final = "no_authorized_evidence"
+
+#: Evidence the caller may read was retrieved, and no answer could be grounded in it.
+EVIDENCE_DOES_NOT_ANSWER: Final = "evidence_does_not_answer"
 
 
 class AskResponse(BaseModel):
     """A grounded answer, or an honest refusal — never a fluent guess.
 
-    `answer` is None exactly when `insufficient_evidence` is true. `sources` carries
-    the retrieved passages so the UI can render what the answer was grounded ON, and
+    `answer` is None exactly when `insufficient_evidence` is true, and then
+    `refusal_reason` says which of the two refusals it was. `sources` carries the retrieved
+    passages, claims and folders so the UI can render what the answer was grounded ON, and
     every citation's `marker` indexes into it (1-based).
     """
 
     answer: str | None
     insufficient_evidence: bool
+    #: Null exactly when there is an answer.
+    refusal_reason: RefusalReason | None = None
     citations: list[CitationView]
-    sources: list[SearchResultView]
+    sources: list[AskSourceView]
     attempts: int
     query_tokens: int
     #: Which path assembled `sources`. A graph-contributed passage is cited exactly like
@@ -368,6 +418,12 @@ async def ask(
     The same permission as search, deliberately: composing retrieved evidence into a
     cited paragraph grants access to nothing the caller could not already read one
     passage at a time.
+
+    **The scope is the caller's own, and nothing about it is a parameter** (ADR 0030). The
+    tenant is the session's; every arm below resolves the caller's principals inside its
+    own SQL under `ACL_PREDICATE` — passages, the claims extracted from them, and folders.
+    Nothing here reads a knowledge-transfer package, a subject, or anybody else's reach, so
+    an employee asking about their own work searches what they may read and nothing more.
     """
     if not answers_configured():
         raise ServiceUnavailable(
@@ -375,9 +431,11 @@ async def ask(
             "an administrator must add the answer provider's credentials."
         )
 
+    started = time.monotonic()
     await spend_search_budget(org_id=principal.org_id, user_id=principal.user_id)
 
     vector, query_tokens = await embedder.embed(payload.question)
+    embedded = time.monotonic()
 
     retrieved = await retrieve(
         session,
@@ -389,39 +447,135 @@ async def ask(
         after=None,
         mode=payload.retrieval_mode,
     )
+    searched = time.monotonic()
+
+    # The claims extracted from the caller's own documents: those from the passages just
+    # retrieved, and those of a kind the question asks about (ADR 0030). The same ACL and
+    # tenant, bounded, each cited through the passage it came from.
+    claims = await _claims_for(
+        session,
+        user_id=principal.user_id,
+        question=payload.question,
+        anchors=[item.chunk_id for item in retrieved.evidence],
+    )
+    claimed = time.monotonic()
 
     # The folders the question names, among documents this caller may already read, each
     # cited through a document kept in it (ADR 0029). The same ACL and tenant, bounded.
     folders = await search_folders(session, user_id=principal.user_id, question=payload.question)
-    evidence: list[Evidence | FolderEvidence] = [*retrieved.evidence, *folders]
+    gathered = time.monotonic()
+
+    evidence: list[AskEvidence] = [*retrieved.evidence, *claims, *folders]
     outcome = await synthesise_answer(transport, question=payload.question, evidence=evidence)
+    answered = time.monotonic()
+
+    refusal = _refusal_reason(outcome, retrieved_anything=bool(evidence))
+    logger.info(
+        "%s",
+        {
+            "event": "ask_completed",
+            "passages": len(retrieved.evidence),
+            "claims": len(claims),
+            "folders": len(folders),
+            "citations": len(outcome.citations),
+            "attempts": outcome.attempts,
+            "insufficient_evidence": outcome.insufficient_evidence,
+            "refusal_reason": refusal,
+            "retrieval_mode": retrieved.report.path.value,
+            "embed_ms": _ms(started, embedded),
+            "retrieve_ms": _ms(embedded, searched),
+            "claims_ms": _ms(searched, claimed),
+            "folders_ms": _ms(claimed, gathered),
+            "answer_ms": _ms(gathered, answered),
+            "total_ms": _ms(started, answered),
+        },
+    )
 
     return AskResponse(
         answer=outcome.answer,
         insufficient_evidence=outcome.insufficient_evidence,
+        refusal_reason=refusal,
         # The gate resolved every marker against `evidence`, so each indexes into it.
         citations=[_citation(c, evidence[c.marker - 1]) for c in outcome.citations],
-        sources=[_result(item) for item in evidence],
+        sources=[_source(item) for item in evidence],
         attempts=outcome.attempts,
         query_tokens=query_tokens,
         retrieval=_retrieval_view(retrieved.report),
     )
 
 
+#: Everything a Cited Q&A answer may be grounded on.
+AskEvidence = Evidence | ClaimEvidence | FolderEvidence
+
+
+async def _claims_for(
+    session: AsyncSession, *, user_id: UUID, question: str, anchors: list[UUID]
+) -> list[ClaimEvidence]:
+    """The claims arm, which may fail without failing the answer.
+
+    Claims add to the passages rather than replace them, so a statement timeout here — on a
+    tenant large enough to reach one — costs the answer its claims, never the caller their
+    answer. The savepoint is what makes that possible: Postgres aborts a whole transaction at
+    its first error, and the folder search after this shares the transaction.
+    """
+    try:
+        async with session.begin_nested():
+            return await search_claims(
+                session, user_id=user_id, question=question, anchor_chunk_ids=anchors
+            )
+    except DBAPIError as error:
+        cause = error.orig if error.orig is not None else error
+        logger.warning("%s", {"event": "ask_claims_skipped", "error": type(cause).__name__})
+        return []
+
+
+def _refusal_reason(outcome: AnswerOutcome, *, retrieved_anything: bool) -> RefusalReason | None:
+    """Which refusal, when there was one. Both describe the caller's own scope alone."""
+    if not outcome.insufficient_evidence:
+        return None
+    return EVIDENCE_DOES_NOT_ANSWER if retrieved_anything else NO_AUTHORIZED_EVIDENCE
+
+
+def _ms(start: float, end: float) -> int:
+    return int((end - start) * 1000)
+
+
 def vars_citation(citation: Citation) -> dict[str, object]:
     return asdict(citation)
 
 
-def _kind(item: Evidence | FolderEvidence) -> str:
-    return "folder" if isinstance(item, FolderEvidence) else "passage"
+def _kind(item: AskEvidence) -> str:
+    if isinstance(item, FolderEvidence):
+        return "folder"
+    if isinstance(item, ClaimEvidence):
+        return "claim"
+    return "passage"
 
 
-def _citation(citation: Citation, item: Evidence | FolderEvidence) -> CitationView:
-    return CitationView(**vars_citation(citation), kind=_kind(item), folder_path=item.folder_path)
+def _claim_type(item: AskEvidence) -> str | None:
+    return item.claim_type if isinstance(item, ClaimEvidence) else None
 
 
-def _result(item: Evidence | FolderEvidence) -> SearchResultView:
-    return SearchResultView(
+def _link(item: AskEvidence) -> str | None:
+    """A folder opens the folder; a passage or a claim opens its document (ADR 0030)."""
+    if isinstance(item, FolderEvidence):
+        return safe_source_uri(item.folder_uri)
+    return item.source_uri
+
+
+def _citation(citation: Citation, item: AskEvidence) -> CitationView:
+    return CitationView(
+        **vars_citation(citation),
+        kind=_kind(item),
+        folder_path=item.folder_path,
+        claim_type=_claim_type(item),
+        occurred_at=item.occurred_at,
+        source_uri=_link(item),
+    )
+
+
+def _source(item: AskEvidence) -> AskSourceView:
+    return AskSourceView(
         chunk_id=str(item.chunk_id),
         document_id=str(item.document_id),
         document_title=item.document_title,
@@ -433,4 +587,6 @@ def _result(item: Evidence | FolderEvidence) -> SearchResultView:
         occurred_at=item.occurred_at,
         kind=_kind(item),
         folder_path=item.folder_path,
+        claim_type=_claim_type(item),
+        source_uri=_link(item),
     )
