@@ -21,6 +21,16 @@ verbatim quote beside its fields, so it cannot cite a claim without citing that 
 the question asks about first, then claims sharing its words, then the most recent. A
 question that names no claim type and shares no claim's words reads no claims — passages
 still answer it.
+
+**A question about the handover as a whole asks about every category (ADR 0031).** "What
+should I understand first?" names no claim type and shares no claim's words, so the rule
+above read nothing for it — while the Decisions, Projects, People, Meetings and
+Responsibilities tabs beside the copilot listed exactly what it was asking for. Such a
+question is now treated as naming every category the package covers, and the claims are
+quota'd per category in SQL rather than taken from one global ordering, so the category
+that happens to rank first cannot spend the whole allowance. Nothing about *which* claims
+are legible changes: same `KtScope.conditions`, same `KT_PACKAGE_PREDICATE`, same latest
+run, same categories. Breadth is a question about ranking, never about authorization.
 """
 
 from __future__ import annotations
@@ -33,7 +43,7 @@ from uuid import UUID
 
 from jutsu_retrieval.folders import search_subject_folders
 from jutsu_retrieval.search import Evidence
-from jutsu_retrieval.terms import query_terms, tsquery_any
+from jutsu_retrieval.terms import query_terms, tsquery_any, words_of
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,12 +51,14 @@ from jutsu_api.kt import _LATEST_RUN_JOIN, KtScope
 
 __all__ = [
     "CLAIM_LIMIT",
+    "COMPREHENSIVE_CLAIM_LIMIT",
     "EVIDENCE_CLAIM",
     "EVIDENCE_FOLDER",
     "EVIDENCE_PASSAGE",
     "KtEvidence",
     "claim_intents",
     "claims_for_question",
+    "comprehensive",
     "folders_for_question",
     "passage",
     "query_terms",
@@ -55,6 +67,12 @@ __all__ = [
 #: The most claims one question reads. A bound on the prompt and on what one answer may
 #: stand on; the tabs list everything, this is what one answer needs.
 CLAIM_LIMIT: Final = 12
+
+#: The most claims a question about the handover as a whole reads (ADR 0031). Larger than
+#: `CLAIM_LIMIT` because such a question asks about every category at once and twelve
+#: divided five ways is two of each — and still a bound, because the reason there is a
+#: ceiling at all is that a prompt has one.
+COMPREHENSIVE_CLAIM_LIMIT: Final = 25
 
 EVIDENCE_PASSAGE: Final = "passage"
 EVIDENCE_CLAIM: Final = "claim"
@@ -127,17 +145,71 @@ _INTENTS: Final[dict[str, frozenset[str]]] = {
 
 _WORD: Final = re.compile(r"[a-z0-9]+")
 
+#: Single words that ask for the handover rather than for one fact.
+_BREADTH_WORDS: Final = frozenset(
+    {"everything", "anything", "overview", "handover", "handoff", "onboarding", "onboard",
+     "comprehensive", "takeover", "background"}
+)  # fmt: skip
+
+#: Phrases that do the same, matched against the question's words joined by single spaces
+#: — so punctuation, capitalisation and doubled spaces cannot hide one.
+_BREADTH_PHRASES: Final = (
+    "should know",
+    "should understand",
+    "need to know",
+    "know about",
+    "understand first",
+    "up to speed",
+    "catch up",
+    "walk through",
+    "start with",
+    "begin with",
+    "full picture",
+    "whole picture",
+    "big picture",
+)
+
+#: Pronouns that carry no meaning here and sit in the middle of the phrases above —
+#: "what should **I** know about A" is the phrase "should know" with a word wedged in it.
+_FILLER: Final = frozenset({"i", "me", "my", "we", "us", "our", "you", "your"})
+
 #: A claim's searchable words: its structured fields and its verbatim quote.
 _CLAIM_TEXT: Final = (
     "to_tsvector('english', coalesce(cl.payload_json->>'name', '') || ' ' || "
     "coalesce(cl.payload_json->>'summary', '') || ' ' || coalesce(cl.payload_json->>'quote', ''))"
 )
 
+#: The lexical rank when a question has no words to rank by. **Not the literal `0`**:
+#: PostgreSQL reads a bare integer constant in an `ORDER BY` as a column position, so
+#: `ORDER BY 0 DESC` is an error rather than a constant. A cast expression is neither.
+_NO_LEXICAL: Final = "CAST(0 AS double precision)"
+
 
 def claim_intents(question: str) -> list[str]:
     """The claim types a question asks about, in taxonomy order."""
     words = set(_WORD.findall(question.lower()))
     return [claim_type for claim_type, cues in _INTENTS.items() if words & cues]
+
+
+def comprehensive(question: str) -> bool:
+    """Whether a question asks for the handover as a whole rather than for one fact.
+
+    "What should I understand first?", "get me up to speed on A's work", "tell me
+    everything about A" — a question a recipient asks on their first day, which names no
+    claim type and shares no claim's words, and which the type-and-terms rule therefore
+    answered from passages alone (ADR 0031).
+
+    Deliberately a small, listed vocabulary rather than a classifier: what it decides is
+    how many categories are ranked, so a wrong answer costs a wider or narrower reading of
+    **the same package**, never a different one. It errs wide — "do you know about the
+    cutover?" reads every category — because the cost of that is a longer prompt and the
+    cost of the other direction is the refusal this exists to stop.
+    """
+    words = [word for word in words_of(question) if word not in _FILLER]
+    if set(words) & _BREADTH_WORDS:
+        return True
+    joined = " ".join(words)
+    return any(phrase in joined for phrase in _BREADTH_PHRASES)
 
 
 def _claim_evidence(row: Any) -> KtEvidence:
@@ -171,57 +243,122 @@ def _claim_evidence(row: Any) -> KtEvidence:
     )
 
 
+#: Everything `_claim_evidence` reads, plus the claim's own id for a total order.
+_CLAIM_SELECT: Final = (
+    "SELECT cl.claim_type, cl.confidence, cl.payload_json, cl.chunk_id, "
+    "ch.char_start, ch.char_end, d.id AS document_id, d.title AS document_title, "
+    "CAST(s.system AS text) AS source_system, d.created_at AS occurred_at, cl.id AS claim_id"
+)
+
+_CLAIM_FROM: Final = (
+    "FROM extraction_claims cl "
+    "JOIN chunks ch ON ch.id = cl.chunk_id "
+    "JOIN documents d ON d.id = ch.document_id "
+    "JOIN sources s ON s.id = d.source_id "
+)
+
+#: The claim's own date when the extractor found one, the document's otherwise.
+_RECENCY: Final = (
+    "COALESCE(NULLIF(cl.payload_json->>'date', ''), to_char(d.created_at, 'YYYY-MM-DD')) DESC"
+)
+
+
+def _ranked_statement(lexical: str, where: str) -> str:
+    """One ordering over everything that matched: what a question about one thing reads.
+
+    The ordering this module has always run — the named categories first, then the
+    question's words, then the most recent — with two spellings changed and no behaviour:
+    the claim's id joins the projection so the balanced statement beside it can share
+    `_CLAIM_SELECT`, and the ordering key is `:named_types`, which for a question that is
+    not about the handover as a whole is exactly the set `:intent_types` used to hold.
+    """
+    return (
+        f"{_CLAIM_SELECT}, {lexical} AS lexical {_CLAIM_FROM}{_LATEST_RUN_JOIN}"
+        f"WHERE {where} "
+        f"ORDER BY (cl.claim_type = ANY(:named_types)) DESC, lexical DESC, {_RECENCY}, "
+        "cl.id DESC LIMIT :limit"
+    )
+
+
+def _balanced_statement(lexical: str, where: str) -> str:
+    """`:per_type` per category, then the categories interleaved (ADR 0031).
+
+    `ROW_NUMBER() OVER (PARTITION BY cl.claim_type …)` ranks each category on its own, and
+    the outer `ORDER BY` reads that rank across categories — every category's best claim,
+    then every category's second, and so on — so a question about five things cannot be
+    answered with five claims about one of them. Categories the question **named** still
+    lead, which is what keeps "tell me everything about A's decisions" about decisions.
+
+    The whole quota runs inside one statement over the same `WHERE` as the ranked one: the
+    balancing is an ordering, and an ordering cannot admit a row a filter excluded.
+    """
+    return (
+        f"WITH ranked AS ({_CLAIM_SELECT}, {lexical} AS lexical, "  # noqa: S608
+        f"ROW_NUMBER() OVER (PARTITION BY cl.claim_type ORDER BY {lexical} DESC, {_RECENCY}, "
+        f"cl.id DESC) AS in_type {_CLAIM_FROM}{_LATEST_RUN_JOIN}WHERE {where}) "
+        "SELECT * FROM ranked WHERE in_type <= :per_type "
+        "ORDER BY (claim_type = ANY(:named_types)) DESC, in_type, lexical DESC, "
+        "occurred_at DESC, claim_id DESC LIMIT :limit"
+    )
+
+
 async def claims_for_question(
-    session: AsyncSession, scope: KtScope, question: str, *, limit: int = CLAIM_LIMIT
+    session: AsyncSession, scope: KtScope, question: str, *, limit: int | None = None
 ) -> list[KtEvidence]:
     """The package's claims a question is about, best first, at most `limit`.
 
     Empty when the package covers no claim category, and when the question names no claim
-    type and shares no words with any claim.
+    type, shares no words with any claim and does not ask for the handover as a whole.
+
+    Two statements, one `WHERE`. A question about one category reads the ordering this
+    module has always used; a question about several reads a per-category quota so each
+    one is represented (ADR 0031). Which claims are *legible* is the same sentence in both
+    — `KtScope.conditions`, the package's categories and each document's latest finished
+    extraction run — and it is composed once, above the branch.
     """
     allowed = scope.claim_types()
-    intents = [claim_type for claim_type in claim_intents(question) if claim_type in allowed]
-    terms = query_terms(question)
-    if not allowed or (not intents and not terms):
+    if not allowed:
         return []
 
+    broad = comprehensive(question)
+    named = [claim_type for claim_type in claim_intents(question) if claim_type in allowed]
+    # A question about the handover as a whole is a question about every category the
+    # package covers, whether or not it happens to name one.
+    requested = list(allowed) if broad else named
+    terms = query_terms(question)
+    if not requested and not terms:
+        return []
+
+    ceiling = COMPREHENSIVE_CLAIM_LIMIT if broad else CLAIM_LIMIT
+    bound = ceiling if limit is None else max(1, min(limit, ceiling))
     params: dict[str, object] = {
         "allowed_types": allowed,
-        "intent_types": intents,
-        "limit": max(1, min(limit, CLAIM_LIMIT)),
+        "requested_types": requested,
+        "named_types": named,
+        "limit": bound,
     }
     filters = [*scope.conditions(params), "cl.claim_type = ANY(:allowed_types)"]
     if terms:
         params["terms"] = tsquery_any(terms)
         lexical = f"ts_rank({_CLAIM_TEXT}, to_tsquery('english', :terms))"
         filters.append(
-            f"(cl.claim_type = ANY(:intent_types) OR {_CLAIM_TEXT} @@ to_tsquery('english', :terms))"
+            f"(cl.claim_type = ANY(:requested_types) "
+            f"OR {_CLAIM_TEXT} @@ to_tsquery('english', :terms))"
         )
     else:
-        lexical = "0"
-        filters.append("cl.claim_type = ANY(:intent_types)")
+        lexical = _NO_LEXICAL
+        filters.append("cl.claim_type = ANY(:requested_types)")
 
-    rows = (
-        await session.execute(
-            text(
-                "SELECT cl.claim_type, cl.confidence, cl.payload_json, cl.chunk_id, "  # noqa: S608
-                "ch.char_start, ch.char_end, d.id AS document_id, d.title AS document_title, "
-                "CAST(s.system AS text) AS source_system, d.created_at AS occurred_at, "
-                f"{lexical} AS lexical "
-                "FROM extraction_claims cl "
-                "JOIN chunks ch ON ch.id = cl.chunk_id "
-                "JOIN documents d ON d.id = ch.document_id "
-                "JOIN sources s ON s.id = d.source_id "
-                + _LATEST_RUN_JOIN
-                + f"WHERE {' AND '.join(filters)} "
-                "ORDER BY (cl.claim_type = ANY(:intent_types)) DESC, lexical DESC, "
-                "COALESCE(NULLIF(cl.payload_json->>'date', ''), "
-                "to_char(d.created_at, 'YYYY-MM-DD')) DESC, cl.id DESC "
-                "LIMIT :limit"
-            ),
-            params,
-        )
-    ).all()
+    where = " AND ".join(filters)
+    if len(requested) > 1:
+        # Ceiling division: every requested category gets a share, and the total is still
+        # bounded by `:limit`.
+        params["per_type"] = max(1, -(-bound // len(requested)))
+        statement = _balanced_statement(lexical, where)
+    else:
+        statement = _ranked_statement(lexical, where)
+
+    rows = (await session.execute(text(statement), params)).all()
     return [_claim_evidence(row) for row in rows]
 
 

@@ -927,6 +927,10 @@ class TestTheLogs:
             "results",
             "elapsed_ms",
             "claims",
+            # How many claim categories answered, and whether the question was read as a
+            # handover question (ADR 0031): a count and a flag, like every key here.
+            "claim_types",
+            "comprehensive",
             "folders",
             "citations",
             "sources",

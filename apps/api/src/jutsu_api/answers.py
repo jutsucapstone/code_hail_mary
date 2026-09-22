@@ -108,6 +108,31 @@ identifiers and never guess what they hide.
 question refers to. It is not evidence: never cite it, and never repeat a claim from it \
 unless a numbered passage supports that claim."""
 
+#: What a handover question needs that a single-fact question does not (ADR 0031).
+#:
+#: **Added to `_SYSTEM`, never in place of it.** Rules 1 to 3 are the hallucination gate
+#: written out for the model, and `_grounded` enforces them whatever the prompt says;
+#: these two say how to lay an answer out and when a refusal is the wrong shape. A
+#: question that asks about six things and is supported on four was refused in full,
+#: because rule 2 reads "the evidence does not contain enough to answer" as a question
+#: about the whole question rather than about each part of it.
+#:
+#: **Naming a gap is not answering from memory.** "No evidence here establishes X" is a
+#: statement about the retrieved set, which is the one thing the model can see all of.
+#: Rule 1 is unchanged, so every statement about the *world* still carries a marker and an
+#: answer with no marker at all is still discarded.
+_COMPREHENSIVE = """
+
+This question asks about several things at once. Two more rules, after the six above:
+
+7. Cover every part of the question the evidence supports, under a short heading per \
+part, rather than answering only the nearest one. Rule 4's brevity applies within a \
+heading, not across them.
+8. Name the gaps instead of refusing everything. After the parts you can answer, add one \
+short line per unsupported part, in the form "Pending work: no evidence in this package \
+establishes this." Reply INSUFFICIENT_EVIDENCE only when NOT ONE part of the question is \
+supported by the evidence."""
+
 
 @dataclass(frozen=True, slots=True)
 class Citation:
@@ -231,6 +256,7 @@ async def synthesise_answer(
     question: str,
     evidence: Sequence[Groundable],
     history: Sequence[Turn] = (),
+    comprehensive: bool = False,
 ) -> AnswerOutcome:
     """A grounded answer, or an honest refusal. Never a fluent guess.
 
@@ -238,13 +264,22 @@ async def synthesise_answer(
     free — the model is not asked to confirm that nothing is nothing. That holds with a
     conversation behind the question too: history is context for reading the question,
     not something an answer may stand on.
+
+    `comprehensive` adds `_COMPREHENSIVE` to the system prompt: cover every supported part
+    of a many-part question and name the unsupported ones, rather than refusing the whole
+    of it (ADR 0031). **It defaults to off and `/v1/ask` does not pass it**, so Cited Q&A
+    composes the same two strings it always has —
+    `test_the_ask_prompt_carries_no_handover_rules` reads the system prompt the transport
+    was handed rather than trusting that sentence. The gate below is identical either way:
+    the flag changes what the model is asked for, never what is accepted back.
     """
     if not evidence:
         return AnswerOutcome(answer=None, citations=[], insufficient_evidence=True, attempts=0)
 
+    system = _SYSTEM + _COMPREHENSIVE if comprehensive else _SYSTEM
     prompt = _compose_prompt(question, evidence, history)
 
-    first = await transport.complete(system=_SYSTEM, prompt=prompt)
+    first = await transport.complete(system=system, prompt=prompt)
     grounded = _grounded(first, evidence)
     if grounded is not None:
         answer, citations = grounded
@@ -259,7 +294,7 @@ async def synthesise_answer(
         "grounded: every claim must cite an existing passage number like [1], and if "
         "the evidence cannot answer, reply exactly INSUFFICIENT_EVIDENCE."
     )
-    second = await transport.complete(system=_SYSTEM, prompt=retry_prompt)
+    second = await transport.complete(system=system, prompt=retry_prompt)
     grounded = _grounded(second, evidence)
     if grounded is not None:
         answer, citations = grounded

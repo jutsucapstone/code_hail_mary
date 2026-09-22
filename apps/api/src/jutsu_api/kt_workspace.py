@@ -72,6 +72,7 @@ from jutsu_api.kt import (
 from jutsu_api.kt_search import (
     KtEvidence,
     claims_for_question,
+    comprehensive,
     folders_for_question,
     passage,
 )
@@ -696,7 +697,8 @@ async def ask_copilot(
         within=scope.window,
     )
     # The structured half, inside the same boundary (ADR 0028): extracted claims whose type
-    # the question asks about or whose words it shares, each carrying its own chunk.
+    # the question asks about or whose words it shares — or, for a question about the
+    # handover as a whole, every category the package covers, quota'd (ADR 0031).
     claims = await claims_for_question(session, scope, question)
     # And the package's folders the question names, each citing a document kept in it
     # (ADR 0029).
@@ -709,12 +711,24 @@ async def ask_copilot(
             "package_id": str(package_id),
             "results": len(page.items),
             "claims": len(claims),
+            # How many distinct categories the claims came from, and whether the question
+            # was read as a handover question: the two numbers that say whether a thin
+            # answer was a thin package or a narrow read (ADR 0031). Counts and a flag.
+            "claim_types": len({claim.claim_type for claim in claims}),
+            "comprehensive": comprehensive(question),
             "folders": len(folders),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         },
     )
+    # Ask KT always answers in the comprehensive shape: a handover question that is
+    # supported on four of its six parts is answered on those four with the other two
+    # named, rather than refused whole (ADR 0031). The citation gate is unchanged.
     outcome = await synthesise_answer(
-        transport, question=question, evidence=evidence, history=history
+        transport,
+        question=question,
+        evidence=evidence,
+        history=history,
+        comprehensive=True,
     )
 
     citations_json = [

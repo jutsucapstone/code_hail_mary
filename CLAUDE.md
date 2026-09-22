@@ -851,6 +851,28 @@ Node runs through **pnpm** workspaces. Dev server is port **3210**, not 3000.
   composes and renders in one request; an endpoint that rendered text it was sent would
   print a JUTSU-branded handover saying anything. Narrative and PDF return together and
   are never stored.
+- **`claims=0` in an Ask KT trace does not mean the package holds no claims.** Before ADR
+  0031 it usually meant the question named no claim type and shared no claim's words — so
+  "what should I understand first?" read zero projects, decisions, people and
+  responsibilities while the tabs beside it listed all of them. `comprehensive()` now reads
+  such a question as naming every category the package covers. The passage arm's
+  `exhausted=True` is the *other* fact in that trace and it is honest: two ladder rungs
+  returning the same count means that is the whole embedded in-package set, and no larger
+  `k` finds more.
+- **The per-category quota is an ORDERING, and it runs over the same `WHERE`.** A question
+  naming two or more categories takes `ROW_NUMBER() OVER (PARTITION BY cl.claim_type …)`
+  and keeps `:per_type` of each; a question naming one or none runs the statement it always
+  ran, bounded by `CLAIM_LIMIT`. Both compose `KtScope.conditions` once, above the branch.
+  Moving a narrowing into the balancing — or building the quota as a second query merged in
+  Python — would make the boundary depend on which branch ran.
+- **`ORDER BY 0 DESC` is a column position, not a constant.** The lexical rank is `0` when a
+  question has no words to rank by, and interpolating that bare into the window's `ORDER BY`
+  is a syntax error rather than a no-op. `_NO_LEXICAL` is a cast expression for that reason.
+- **`comprehensive` is opt-in on `synthesise_answer` and `/v1/ask` must never pass it.** It
+  adds the two rules that let a partially-supported question be answered on the parts that
+  are supported. `test_the_ask_prompt_carries_no_handover_rules` reads the composed system
+  prompt, because "Cited Q&A is unchanged" is exactly the kind of claim that stays true in a
+  docstring after it has stopped being true in the code.
 - **The report's font is reportlab's bundled Vera, which draws Latin text.** Devanagari and
   most symbols become `?` and the PDF says so on its last page; `₹` is written `INR`. Never
   drop an undrawable character silently — a vanished letter in a name is a quiet
